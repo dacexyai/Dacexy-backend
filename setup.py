@@ -1215,4 +1215,5 @@ print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
 
 import os
 port = os.environ.get("PORT", "8000")
-subprocess.run([sys.executable, "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", port], check=True)
+result = subprocess.run([sys.executable, "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", port], capture_output=False)
+print("Uvicorn exit code:", result.returncode)
