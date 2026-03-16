@@ -1222,4 +1222,5 @@ async def delete_memory(memory_id: str, user: User = Depends(_get_current_user),
 ''')
 
 print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
-print("Now run: python -m uvicorn src.main:app --host 0.0.0.0 --port 8000")
+import subprocess, os, sys
+subprocess.run([sys.executable, "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", os.environ.get("PORT", "8000")], check=True)
