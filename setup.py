@@ -363,29 +363,45 @@ class DeepSeekProvider:
             timeout=settings.DEEPSEEK_TIMEOUT,
         )
 
-    async def chat(self, messages, model="deepseek-chat", stream=False):
-        payload = {"model": model, "messages": messages, "stream": stream}
+    async def chat(self, messages, model="deepseek-chat", stream=False, search=False):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+        }
+        if search:
+            payload["tools"] = [{"type": "web_search"}]
+            payload["tool_choice"] = "auto"
         if stream:
             return self._stream(payload)
         r = await self.client.post("/chat/completions", json=payload)
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        msg = data["choices"][0]["message"]
+        return msg.get("content") or ""
 
     async def _stream(self, payload):
         async with self.client.stream("POST", "/chat/completions", json=payload) as r:
             r.raise_for_status()
             async for line in r.aiter_lines():
                 if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
+                    raw = line[6:]
+                    if raw == "[DONE]":
                         break
                     try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content", "")
-                        if delta:
-                            yield delta
+                        chunk = json.loads(raw)
+                        choice = chunk["choices"][0]
+                        delta = choice.get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                        tool_calls = delta.get("tool_calls", [])
+                        for tc in tool_calls:
+                            if tc.get("type") == "web_search":
+                                yield f"\n🔍 *Searching the web...*\n"
                     except Exception:
                         pass
+                
 
     async def aclose(self):
         await self.client.aclose()
