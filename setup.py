@@ -799,6 +799,7 @@ async def get_messages(session_id: str, user: User = Depends(_get_current_user),
     if not session:
         raise HTTPException(404, "Session not found")
     return {"messages": session.messages, "session_id": session.id, "title": session.title}
+""")
 w("src/interfaces/http/routes/orgs.py", """
 import secrets
 from fastapi import APIRouter, Depends, HTTPException
