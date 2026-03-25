@@ -731,6 +731,19 @@ from src.interfaces.http.routes.auth import _get_current_user
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+SEARCH_KEYWORDS = [
+    "search", "latest", "current", "today", "news", "recent", "now",
+    "price", "weather", "who is", "what is the", "2025", "2026",
+    "trending", "happening", "live", "update", "score", "stock",
+    "find", "look up", "research", "browse", "internet"
+]
+
+def needs_search(messages: list) -> bool:
+    if not messages:
+        return False
+    last = messages[-1]["content"].lower()
+    return any(kw in last for kw in SEARCH_KEYWORDS)
+
 class MessageItem(BaseModel):
     role: str
     content: str
@@ -753,12 +766,15 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
         session = ConversationSession(org_id=user.org_id, user_id=user.id, title=title, messages=messages)
         db.add(session)
         await db.flush()
+    search = needs_search(messages)
     if body.stream:
         async def event_stream():
             full = ""
             data1 = json.dumps({"type": "session_id", "session_id": session.id})
             yield "data: " + data1 + "\\n\\n"
-            async for chunk in await ai.chat(messages, model=body.model, stream=True):
+            if search:
+                yield "data: " + json.dumps({"type": "chunk", "content": "🔍 *Searching the web...*\\n\\n"}) + "\\n\\n"
+            async for chunk in await ai.chat(messages, model=body.model, stream=True, search=search):
                 full += chunk
                 data2 = json.dumps({"type": "chunk", "content": chunk})
                 yield "data: " + data2 + "\\n\\n"
@@ -766,7 +782,7 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
             yield "data: " + data3 + "\\n\\n"
             session.messages = messages + [{"role": "assistant", "content": full}]
         return StreamingResponse(event_stream(), media_type="text/event-stream")
-    response = await ai.chat(messages, model=body.model, stream=False)
+    response = await ai.chat(messages, model=body.model, stream=False, search=search)
     session.messages = messages + [{"role": "assistant", "content": response}]
     return {"content": response, "session_id": session.id}
 
@@ -783,8 +799,6 @@ async def get_messages(session_id: str, user: User = Depends(_get_current_user),
     if not session:
         raise HTTPException(404, "Session not found")
     return {"messages": session.messages, "session_id": session.id, "title": session.title}
-""")
-
 w("src/interfaces/http/routes/orgs.py", """
 import secrets
 from fastapi import APIRouter, Depends, HTTPException
