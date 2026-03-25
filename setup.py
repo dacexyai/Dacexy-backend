@@ -398,7 +398,7 @@ class DeepSeekProvider:
                         tool_calls = delta.get("tool_calls", [])
                         for tc in tool_calls:
                             if tc.get("type") == "web_search":
-                                yield f"\n🔍 *Searching the web...*\n"
+                                yield "\\n🔍 *Searching the web...*\\n"
                     except Exception:
                         pass
                 
