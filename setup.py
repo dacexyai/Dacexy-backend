@@ -1312,7 +1312,7 @@ app.include_router(audit.router, prefix=settings.API_PREFIX)
 app.include_router(referral.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(memory.router, prefix=settings.API_PREFIX)
-
+app.include_router(upload.router, prefix=settings.API_PREFIX)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     log.error("Unhandled: %s %s %s", request.method, request.url.path, exc)
