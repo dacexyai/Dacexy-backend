@@ -1148,7 +1148,83 @@ async def list_users(user: User = Depends(_require_admin), db: AsyncSession = De
     users = result.scalars().all()
     return {"users": [{"id": u.id, "email": u.email, "full_name": u.full_name, "role": u.role, "org_id": u.org_id} for u in users]}
 """)
+w("src/interfaces/http/routes/upload.py", """
+import io
+import logging
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.infrastructure.persistence.database import get_db
+from src.infrastructure.persistence.models.orm_models import User
+from src.interfaces.http.routes.auth import _get_current_user
 
+router = APIRouter(prefix="/upload", tags=["upload"])
+log = logging.getLogger("routes.upload")
+
+def extract_text_from_pdf(content: bytes) -> str:
+    try:
+        import PyPDF2
+        reader = PyPDF2.PdfReader(io.BytesIO(content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\\n"
+        return text[:50000]
+    except Exception as e:
+        log.error("PDF extraction failed: %s", e)
+        return ""
+
+def extract_text_from_txt(content: bytes) -> str:
+    try:
+        return content.decode("utf-8", errors="ignore")[:50000]
+    except Exception:
+        return ""
+
+@router.post("/file")
+async def upload_file(
+    file: UploadFile = File(...),
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if not file.filename:
+        raise HTTPException(400, "No file provided")
+    
+    max_size = 10 * 1024 * 1024  # 10MB
+    content = await file.read()
+    
+    if len(content) > max_size:
+        raise HTTPException(400, "File too large. Maximum size is 10MB")
+    
+    filename = file.filename.lower()
+    extracted_text = ""
+    file_type = "unknown"
+    
+    if filename.endswith(".pdf"):
+        extracted_text = extract_text_from_pdf(content)
+        file_type = "pdf"
+    elif filename.endswith(".txt") or filename.endswith(".md"):
+        extracted_text = extract_text_from_txt(content)
+        file_type = "text"
+    elif filename.endswith(".py") or filename.endswith(".js") or filename.endswith(".ts") or filename.endswith(".tsx") or filename.endswith(".jsx"):
+        extracted_text = extract_text_from_txt(content)
+        file_type = "code"
+    elif filename.endswith(".csv"):
+        extracted_text = extract_text_from_txt(content)
+        file_type = "csv"
+    else:
+        raise HTTPException(400, "Unsupported file type. Supported: PDF, TXT, MD, CSV, code files")
+    
+    if not extracted_text.strip():
+        raise HTTPException(400, "Could not extract text from file")
+    
+    word_count = len(extracted_text.split())
+    
+    return {
+        "filename": file.filename,
+        "file_type": file_type,
+        "word_count": word_count,
+        "extracted_text": extracted_text,
+        "message": f"Successfully extracted {word_count} words from {file.filename}"
+    }
+""")
 w("src/interfaces/http/routes/memory.py", """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
