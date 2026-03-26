@@ -724,7 +724,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
 from src.infrastructure.persistence.database import get_db
-from src.infrastructure.persistence.models.orm_models import User, ConversationSession
+from src.infrastructure.persistence.models.orm_models import User, ConversationSession, MemoryEntry
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 from src.interfaces.http.dependencies.container import get_deepseek
 from src.interfaces.http.routes.auth import _get_current_user
@@ -767,6 +767,22 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
         db.add(session)
         await db.flush()
     search = needs_search(messages)
+    
+    # Load memories and inject into system prompt
+    memory_result = await db.execute(select(MemoryEntry).where(MemoryEntry.org_id == user.org_id).order_by(MemoryEntry.created_at.desc()).limit(20))
+    memories = memory_result.scalars().all()
+    if memories:
+        memory_context = "\\n".join([f"- {m.content}" for m in memories])
+        system_msg = {"role": "system", "content": f"You are Dacexy AI, a helpful enterprise AI assistant. Here is important context about this user and their business:\\n{memory_context}\\n\\nUse this context to personalize your responses."}
+        messages = [system_msg] + messages
+    
+    # Auto-save memory if user shares business context
+    last_content = messages[-1]["content"] if messages else ""
+    memory_keywords = ["my company", "my business", "we are", "i am", "our product", "my name is", "we sell", "our team", "my startup", "remember that", "remember this", "save this"]
+    if any(kw in last_content.lower() for kw in memory_keywords):
+        new_memory = MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500])
+        db.add(new_memory)
+        await db.flush()
     if body.stream:
         async def event_stream():
             full = ""
