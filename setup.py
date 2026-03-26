@@ -1299,7 +1299,7 @@ if settings.PROMETHEUS_ENABLED:
     metrics_app = make_asgi_app()
     app.mount("/metrics", metrics_app)
 
-from src.interfaces.http.routes import auth, ai_chat, orgs, billing, agent, media, websites, voice, audit, referral, admin, memory
+from src.interfaces.http.routes import auth, ai_chat, orgs, billing, agent, media, websites, voice, audit, referral, admin, memory, upload
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(ai_chat.router, prefix=settings.API_PREFIX)
 app.include_router(orgs.router, prefix=settings.API_PREFIX)
