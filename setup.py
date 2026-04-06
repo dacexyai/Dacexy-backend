@@ -728,7 +728,8 @@ async def logout(user: User = Depends(_get_current_user)):
 """)
 
 w("src/interfaces/http/routes/ai_chat.py", """
-import json
+
+ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -736,7 +737,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
 from src.infrastructure.persistence.database import get_db
-from src.infrastructure.persistence.models.orm_models import User, ConversationSession, MemoryEntry
+from src.infrastructure.persistence.models.orm_models import User, ConversationSession, MemoryEntry, GeneratedWebsite
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 from src.interfaces.http.dependencies.container import get_deepseek
 from src.interfaces.http.routes.auth import _get_current_user
@@ -756,6 +757,14 @@ def needs_search(messages: list) -> bool:
     last = messages[-1]["content"].lower()
     return any(kw in last for kw in SEARCH_KEYWORDS)
 
+def needs_website(messages: list) -> bool:
+    if not messages:
+        return False
+    last = messages[-1]["content"].lower()
+    has_build = any(w in last for w in ["build", "make", "create", "generate", "design"])
+    has_site = any(w in last for w in ["website", "landing page", "webpage", "site", "web app", "homepage"])
+    return has_build and has_site
+
 class MessageItem(BaseModel):
     role: str
     content: str
@@ -765,16 +774,6 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     stream: bool = True
     model: str = "deepseek-chat"
-
-WEBSITE_KEYWORDS = ["build", "make", "create", "generate", "design", "website", "landing page", "webpage", "site", "web app"]
-
-def needs_website(messages: list) -> bool:
-    if not messages:
-        return False
-    last = messages[-1]["content"].lower()
-    has_build = any(w in last for w in ["build", "make", "create", "generate", "design"])
-    has_site = any(w in last for w in ["website", "landing page", "webpage", "site", "web app", "homepage"])
-    return has_build and has_site
 
 @router.post("/chat")
 async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
@@ -788,112 +787,63 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
         session = ConversationSession(org_id=user.org_id, user_id=user.id, title=title, messages=messages)
         db.add(session)
         await db.flush()
-    
+
     search = needs_search(messages)
     website = needs_website(messages)
-    
-    # Load memories and inject into system prompt
+
     memory_result = await db.execute(select(MemoryEntry).where(MemoryEntry.org_id == user.org_id).order_by(MemoryEntry.created_at.desc()).limit(20))
     memories = memory_result.scalars().all()
     if memories:
         memory_context = "\\n".join([f"- {m.content}" for m in memories])
         system_msg = {"role": "system", "content": f"You are Dacexy AI, a helpful enterprise AI assistant. Here is important context about this user and their business:\\n{memory_context}\\n\\nUse this context to personalize your responses."}
         messages = [system_msg] + messages
-    
-    # Auto-save memory if user shares business context
-    last_content = messages[-1]["content"] if messages else ""
+
+    last_content = body.messages[-1].content if body.messages else ""
     memory_keywords = ["my company", "my business", "we are", "i am", "our product", "my name is", "we sell", "our team", "my startup", "remember that", "remember this", "save this"]
     if any(kw in last_content.lower() for kw in memory_keywords):
         new_memory = MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500])
         db.add(new_memory)
         await db.flush()
 
-    # Handle website generation
     if website and body.stream:
         from src.application.use_cases.website.website_engine import generate_website
-        from src.infrastructure.persistence.models.orm_models import GeneratedWebsite
         prompt = body.messages[-1].content
         record = GeneratedWebsite(org_id=user.org_id, user_id=user.id, prompt=prompt, status="generating")
         db.add(record)
         await db.flush()
+        record_id = record.id
+        session_id = session.id
         async def website_stream():
-            yield "data: " + json.dumps({"type": "session_id", "session_id": session.id}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "session_id", "session_id": session_id}) + "\\n\\n"
             yield "data: " + json.dumps({"type": "chunk", "content": "🌐 Building your website...\\n\\n"}) + "\\n\\n"
             try:
                 html = await generate_website(prompt, ai)
-              record.html_content = html
+                record.html_content = html
                 record.status = "completed"
-                await db.commit()  
-                preview_url = f"/api/v1/websites/{record.id}/preview"
-                msg = f"✅ Your website is ready!\\n\\nPreview: {preview_url}\\n\\nClick the preview above to see your website."
+                await db.commit()
+                preview_url = "/api/v1/websites/" + record_id + "/preview"
+                msg = "✅ Your website is ready!\\n\\nPreview: " + preview_url + "\\n\\nClick Open full screen to see your website."
                 yield "data: " + json.dumps({"type": "chunk", "content": msg}) + "\\n\\n"
-                session.messages = messages + [{"role": "assistant", "content": msg}]
             except Exception as e:
                 record.status = "failed"
-                yield "data: " + json.dumps({"type": "chunk", "content": f"Website generation failed: {str(e)}"}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": "Website generation failed: " + str(e)}) + "\\n\\n"
             yield "data: " + json.dumps({"type": "done"}) + "\\n\\n"
         return StreamingResponse(website_stream(), media_type="text/event-stream")
 
     if body.stream:
+        session_id = session.id
         async def event_stream():
             full = ""
-            data1 = json.dumps({"type": "session_id", "session_id": session.id})
-            yield "data: " + data1 + "\\n\\n"
+            yield "data: " + json.dumps({"type": "session_id", "session_id": session_id}) + "\\n\\n"
             if search:
-                yield "data: " + json.dumps({"type": "chunk", "content": "🔍 *Searching the web...*\\n\\n"}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": "🔍 Searching the web...\\n\\n"}) + "\\n\\n"
             async for chunk in await ai.chat(messages, model=body.model, stream=True, search=search):
                 full += chunk
-                data2 = json.dumps({"type": "chunk", "content": chunk})
-                yield "data: " + data2 + "\\n\\n"
-            data3 = json.dumps({"type": "done"})
-            yield "data: " + data3 + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": chunk}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "done"}) + "\\n\\n"
             session.messages = messages + [{"role": "assistant", "content": full}]
         return StreamingResponse(event_stream(), media_type="text/event-stream")
-    
-    response = await ai.chat(messages, model=body.model, stream=False, search=search)
-    session.messages = messages + [{"role": "assistant", "content": response}]
-    return {"content": response, "session_id": session.id}
-    session = None
-    if body.session_id:
-        result = await db.execute(select(ConversationSession).where(ConversationSession.id == body.session_id, ConversationSession.org_id == user.org_id))
-        session = result.scalar_one_or_none()
-    if not session:
-        title = body.messages[0].content[:60] if body.messages else "New Chat"
-        session = ConversationSession(org_id=user.org_id, user_id=user.id, title=title, messages=messages)
-        db.add(session)
-        await db.flush()
-    search = needs_search(messages)
-    
-    # Load memories and inject into system prompt
-    memory_result = await db.execute(select(MemoryEntry).where(MemoryEntry.org_id == user.org_id).order_by(MemoryEntry.created_at.desc()).limit(20))
-    memories = memory_result.scalars().all()
-    if memories:
-        memory_context = "\\n".join([f"- {m.content}" for m in memories])
-        system_msg = {"role": "system", "content": f"You are Dacexy AI, a helpful enterprise AI assistant. Here is important context about this user and their business:\\n{memory_context}\\n\\nUse this context to personalize your responses."}
-        messages = [system_msg] + messages
-    
-    # Auto-save memory if user shares business context
-    last_content = messages[-1]["content"] if messages else ""
-    memory_keywords = ["my company", "my business", "we are", "i am", "our product", "my name is", "we sell", "our team", "my startup", "remember that", "remember this", "save this"]
-    if any(kw in last_content.lower() for kw in memory_keywords):
-        new_memory = MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500])
-        db.add(new_memory)
-        await db.flush()
-    if body.stream:
-        async def event_stream():
-            full = ""
-            data1 = json.dumps({"type": "session_id", "session_id": session.id})
-            yield "data: " + data1 + "\\n\\n"
-            if search:
-                yield "data: " + json.dumps({"type": "chunk", "content": "🔍 *Searching the web...*\\n\\n"}) + "\\n\\n"
-            async for chunk in await ai.chat(messages, model=body.model, stream=True, search=search):
-                full += chunk
-                data2 = json.dumps({"type": "chunk", "content": chunk})
-                yield "data: " + data2 + "\\n\\n"
-            data3 = json.dumps({"type": "done"})
-            yield "data: " + data3 + "\\n\\n"
-            session.messages = messages + [{"role": "assistant", "content": full}]
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
     response = await ai.chat(messages, model=body.model, stream=False, search=search)
     session.messages = messages + [{"role": "assistant", "content": response}]
     return {"content": response, "session_id": session.id}
@@ -910,8 +860,9 @@ async def get_messages(session_id: str, user: User = Depends(_get_current_user),
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(404, "Session not found")
-    return {"messages": session.messages, "session_id": session.id, "title": session.title}
-""")
+    return {"messages": session.messages, "session_id": session.id, "title": session.title}       
+    
+    
 w("src/interfaces/http/routes/orgs.py", """
 import secrets
 from fastapi import APIRouter, Depends, HTTPException
