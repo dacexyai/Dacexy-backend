@@ -821,8 +821,9 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
             yield "data: " + json.dumps({"type": "chunk", "content": "🌐 Building your website...\\n\\n"}) + "\\n\\n"
             try:
                 html = await generate_website(prompt, ai)
-                record.html_content = html
+              record.html_content = html
                 record.status = "completed"
+                await db.commit()  
                 preview_url = f"/api/v1/websites/{record.id}/preview"
                 msg = f"✅ Your website is ready!\\n\\nPreview: {preview_url}\\n\\nClick the preview above to see your website."
                 yield "data: " + json.dumps({"type": "chunk", "content": msg}) + "\\n\\n"
