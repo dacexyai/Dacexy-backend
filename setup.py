@@ -618,7 +618,7 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         return FALLBACK_HTML
     except Exception as e:
         log.error("Website generation failed: %s", e)
-        return FALLBACK_HTML
+        return FALLBACK_HTML""")
         
 w("src/interfaces/http/routes/auth.py", """
 import secrets
