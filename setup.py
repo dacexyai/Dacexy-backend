@@ -726,10 +726,8 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
 async def logout(user: User = Depends(_get_current_user)):
     return {"message": "Logged out"}
 """)
-
 w("src/interfaces/http/routes/ai_chat.py", """
-
- import json
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
