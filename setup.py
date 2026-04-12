@@ -370,8 +370,7 @@ class DeepSeekProvider:
             "stream": stream,
         }
         if search:
-            payload["tools"] = [{"type": "web_search"}]
-            payload["tool_choice"] = "auto"
+            payload["model"] = "deepseek-chat"
         if stream:
             return self._stream(payload)
         r = await self.client.post("/chat/completions", json=payload)
