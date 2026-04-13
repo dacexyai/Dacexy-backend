@@ -611,7 +611,7 @@ FALLBACK_HTML = """<!DOCTYPE html>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-  .container { text-align: center; padding: 60px 40px; }
+  .container { text-align: center; padding: 60px; }
   h1 { font-size: 3rem; font-weight: 800; background: linear-gradient(135deg, #7c3aed, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 16px; }
   p { color: #9e9e9e; font-size: 1.1rem; margin-bottom: 32px; }
   .btn { display: inline-block; background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; padding: 14px 32px; border-radius: 12px; font-weight: 600; cursor: pointer; text-decoration: none; }
