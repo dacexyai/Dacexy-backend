@@ -584,52 +584,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 w("src/application/use_cases/website/website_engine.py", """
 import logging
-import logging
 import asyncio
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 
 log = logging.getLogger("website")
 
-SYSTEM_PROMPT = '''You are an expert web developer. Generate a complete, beautiful, production-ready single-page HTML website.
+SYSTEM_PROMPT = 'You are an expert web developer. Generate a complete, beautiful, production-ready single-page HTML website. STRICT RULES: Return ONLY raw HTML code. No explanations. No markdown. No backticks. Use inline CSS only. Use inline JavaScript only. Make it visually stunning with modern design, gradients, shadows, animations. Use Google Fonts via @import in style tag. Include real content relevant to the prompt. Must start with <!DOCTYPE html>.'
 
-STRICT RULES:
-- Return ONLY raw HTML code. No explanations. No markdown. No backticks. No comments outside HTML.
-- Use inline CSS only (no external stylesheets)
-- Use inline JavaScript only (no external scripts)
-- Make it visually stunning with modern design: gradients, shadows, animations
-- Use a real color palette, real fonts (Google Fonts via @import in style tag)
-- Include real sections with real content relevant to the prompt
-- Minimum 400 lines of quality HTML/CSS
-- Must start with <!DOCTYPE html>'''
-
-FALLBACK_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Generated Website</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-  .container { text-align: center; padding: 60px; }
-  h1 { font-size: 3rem; font-weight: 800; background: linear-gradient(135deg, #7c3aed, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 16px; }
-  p { color: #9e9e9e; font-size: 1.1rem; margin-bottom: 32px; }
-  .btn { display: inline-block; background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; padding: 14px 32px; border-radius: 12px; font-weight: 600; cursor: pointer; text-decoration: none; }
-</style>
-</head>
-<body>
-  <div class="container">
-    <h1>Generation Failed</h1>
-    <p>The AI took too long. Please try again with a simpler description.</p>
-    <a class="btn" href="javascript:history.back()">Try Again</a>
-  </div>
-</body>
-</html>"""
+FALLBACK_HTML = '<html><head><meta charset="UTF-8"><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:60px}h1{font-size:2.5rem;background:linear-gradient(135deg,#7c3aed,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}p{color:#9e9e9e;margin:16px 0 32px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class="box"><h1>Generation Failed</h1><p>The AI took too long. Please try again.</p><a href="javascript:history.back()">Try Again</a></div></body></html>'
 
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "Create a complete beautiful website for: " + prompt + "\\n\\nReturn ONLY the HTML code starting with <!DOCTYPE html>"}
+        {"role": "user", "content": "Create a complete beautiful website for: " + prompt + "\\\\nReturn ONLY HTML starting with <!DOCTYPE html>"}
     ]
     try:
         html = await asyncio.wait_for(
@@ -644,7 +611,7 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         elif "```" in html:
             html = html.split("```")[1].split("```")[0].strip()
         if not html.startswith("<!") and not html.lower().startswith("<html"):
-            html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Generated Site</title></head><body>" + html + "</body></html>"
+            html = "<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>" + html + "</body></html>"
         return html
     except asyncio.TimeoutError:
         log.error("Website generation timed out")
