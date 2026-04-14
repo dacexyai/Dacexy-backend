@@ -589,14 +589,14 @@ from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 
 log = logging.getLogger("website")
 
-SYSTEM_PROMPT = 'You are an expert web developer. Generate a complete, beautiful, production-ready single-page HTML website. STRICT RULES: Return ONLY raw HTML code. No explanations. No markdown. No backticks. Use inline CSS only. Use inline JavaScript only. Make it visually stunning with modern design, gradients, shadows, animations. Use Google Fonts via @import in style tag. Include real content relevant to the prompt. Must start with <!DOCTYPE html>.'
+SYSTEM_PROMPT = 'You are an expert web developer. Generate a COMPLETE, FULL, production-ready single-page HTML website. You must include ALL sections: hero, about, menu/services/features, gallery, testimonials, contact, footer. Make it visually stunning with gradients, animations, real content. Use Google Fonts. Return ONLY raw HTML starting with <!DOCTYPE html>. No explanations. No markdown. No backticks. The HTML must be complete and not cut off.'
 
-FALLBACK_HTML = '<html><head><meta charset="UTF-8"><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:60px}h1{font-size:2.5rem;background:linear-gradient(135deg,#7c3aed,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}p{color:#9e9e9e;margin:16px 0 32px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class="box"><h1>Generation Failed</h1><p>The AI took too long. Please try again.</p><a href="javascript:history.back()">Try Again</a></div></body></html>'
+FALLBACK_HTML = '<html><head><meta charset="UTF-8"><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center}h1{font-size:2.5rem;background:linear-gradient(135deg,#7c3aed,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}p{color:#9e9e9e;margin:16px 0 32px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class="box"><h1>Generation Failed</h1><p>Please try again.</p><a href="javascript:history.back()">Try Again</a></div></body></html>'
 
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "Create a complete beautiful website for: " + prompt + "\\\\nReturn ONLY HTML starting with <!DOCTYPE html>"}
+        {"role": "user", "content": "Build a COMPLETE, FULL website for: " + prompt + ". Include ALL sections with real content, menu items with prices, real images using unsplash URLs, animations. Return complete HTML from <!DOCTYPE html> to </html>. Do not cut off or truncate."}
     ]
     try:
         html = await asyncio.wait_for(
@@ -612,6 +612,8 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
             html = html.split("```")[1].split("```")[0].strip()
         if not html.startswith("<!") and not html.lower().startswith("<html"):
             html = "<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>" + html + "</body></html>"
+        if not html.rstrip().endswith("</html>"):
+            html = html + "</body></html>"
         return html
     except asyncio.TimeoutError:
         log.error("Website generation timed out")
