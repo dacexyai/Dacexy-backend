@@ -1059,22 +1059,35 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
 """)
 
 w("src/interfaces/http/routes/websites.py", """
+import httpx
+import re
+import random
+import string
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from typing import Optional
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, GeneratedWebsite
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 from src.interfaces.http.dependencies.container import get_deepseek
 from src.interfaces.http.routes.auth import _get_current_user
 from src.application.use_cases.website.website_engine import generate_website
+from src.shared.config.settings import settings
 
 router = APIRouter(prefix="/websites", tags=["websites"])
 
 class WebsiteRequest(BaseModel):
     prompt: str
+
+class DeployRequest(BaseModel):
+    website_id: str
+    subdomain: Optional[str] = None
+
+def random_subdomain():
+    return 'site-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 @router.post("/generate")
 async def create_website(body: WebsiteRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
@@ -1085,23 +1098,64 @@ async def create_website(body: WebsiteRequest, user: User = Depends(_get_current
         html = await generate_website(body.prompt, ai)
         record.html_content = html
         record.status = "completed"
-        return {"id": record.id, "status": "completed", "preview_url": "/api/v1/websites/" + record.id + "/preview"}
+        await db.commit()
+        return {"id": record.id, "status": "completed", "preview_url": "/api/v1/websites/" + str(record.id) + "/preview"}
     except Exception as e:
         record.status = "failed"
+        await db.commit()
         raise HTTPException(500, "Website generation failed: " + str(e))
+
+@router.post("/deploy")
+async def deploy_website(body: DeployRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(GeneratedWebsite).where(GeneratedWebsite.id == body.website_id, GeneratedWebsite.org_id == user.org_id))
+    site = result.scalar_one_or_none()
+    if not site or not site.html_content:
+        raise HTTPException(404, "Website not found")
+    subdomain = body.subdomain or random_subdomain()
+    subdomain = re.sub(r'[^a-z0-9-]', '-', subdomain.lower()).strip('-')
+    if len(subdomain) < 3:
+        subdomain = random_subdomain()
+    try:
+        vercel_token = getattr(settings, 'VERCEL_TOKEN', None)
+        if not vercel_token:
+            raise HTTPException(500, "Vercel token not configured")
+        files = [{"file": "index.html", "data": site.html_content}]
+        async with httpx.AsyncClient(timeout=60) as client:
+            deploy_res = await client.post(
+                "https://api.vercel.com/v13/deployments",
+                headers={"Authorization": "Bearer " + vercel_token, "Content-Type": "application/json"},
+                json={
+                    "name": "dacexy-" + subdomain,
+                    "files": files,
+                    "projectSettings": {"framework": None},
+                    "target": "production"
+                }
+            )
+            if deploy_res.status_code not in [200, 201]:
+                raise HTTPException(500, "Deployment failed: " + deploy_res.text)
+            deploy_data = deploy_res.json()
+            deploy_url = "https://" + deploy_data.get("url", "")
+            site.deployed_url = deploy_url
+            await db.commit()
+            return {"url": deploy_url, "subdomain": subdomain, "status": "deployed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, "Deployment error: " + str(e))
 
 @router.get("/{website_id}/preview", response_class=HTMLResponse)
 async def preview_website(website_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(GeneratedWebsite).where(GeneratedWebsite.id == website_id))
     site = result.scalar_one_or_none()
-    if not site or not site.html_content: raise HTTPException(404, "Website not found")
+    if not site or not site.html_content:
+        raise HTTPException(404, "Website not found")
     return HTMLResponse(content=site.html_content)
 
 @router.get("/")
 async def list_websites(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(GeneratedWebsite).where(GeneratedWebsite.org_id == user.org_id).order_by(GeneratedWebsite.created_at.desc()).limit(20))
     sites = result.scalars().all()
-    return {"websites": [{"id": s.id, "prompt": s.prompt[:80], "status": s.status, "created_at": str(s.created_at)} for s in sites]}
+    return {"websites": [{"id": str(s.id), "prompt": s.prompt[:80], "status": s.status, "created_at": str(s.created_at), "deployed_url": getattr(s, 'deployed_url', None)} for s in sites]}
 """)
 
 w("src/interfaces/http/routes/voice.py", """
