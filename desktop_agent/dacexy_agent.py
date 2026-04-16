@@ -1,245 +1,298 @@
-
-
-#!/usr/bin/env python3
 """
 Dacexy Desktop Agent
-Connects to your Dacexy account and lets AI control your computer.
+Double-click to run. Connects to Dacexy AI and controls your computer.
+Requirements: pip install pyautogui pillow websockets requests
 """
-
+import asyncio
+import base64
+import io
 import json
+import logging
 import os
-import sys
-import time
-import threading
-import subprocess
 import platform
-import requests
+import subprocess
+import sys
+import threading
+import time
+import webbrowser
+from pathlib import Path
+
+# Auto-install dependencies
+def install(pkg):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
+
+for pkg in ["pyautogui", "pillow", "websockets", "requests"]:
+    try:
+        __import__(pkg.replace("-", "_"))
+    except ImportError:
+        print(f"Installing {pkg}...")
+        install(pkg)
+
 import pyautogui
-import keyboard
+import requests
+import websockets
 from PIL import ImageGrab
 
-SYSTEM = platform.system()
-CONFIG_FILE = "config.json"
-SERVER_URL = "https://dacexy-backend-v7ku.onrender.com"
-WAKE_WORD = "hey dacexy"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("dacexy-agent")
+
+BACKEND_WS = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
+BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
+CONFIG_FILE = Path.home() / ".dacexy_agent.json"
 
 pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.5
+pyautogui.PAUSE = 0.3
+
+# ─── Config ───────────────────────────────────────────────────────────────────
 
 def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        print("Config not found. Please run installer first.")
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
+    if CONFIG_FILE.exists():
+        try:
+            return json.loads(CONFIG_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+def save_config(cfg):
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+def get_token():
+    cfg = load_config()
+    return cfg.get("access_token")
+
+def save_token(token):
+    cfg = load_config()
+    cfg["access_token"] = token
+    save_config(cfg)
+
+# ─── Login ────────────────────────────────────────────────────────────────────
+
+def login():
+    print("\n" + "="*50)
+    print("  Dacexy Desktop Agent — Login")
+    print("="*50)
+    email = input("Email: ").strip()
+    password = input("Password: ").strip()
+    try:
+        r = requests.post(f"{BACKEND_HTTP}/auth/login",
+            data={"username": email, "password": password},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30)
+        if r.status_code == 200:
+            token = r.json().get("access_token")
+            save_token(token)
+            print("✅ Logged in successfully!")
+            return token
+        else:
+            print(f"❌ Login failed: {r.text}")
+            return None
+    except Exception as e:
+        print(f"❌ Connection error: {e}")
+        return None
+
+# ─── Screenshot ───────────────────────────────────────────────────────────────
 
 def take_screenshot():
-    img = ImageGrab.grab()
-    img.save("screenshot.png")
-    return "screenshot.png"
-
-def execute_command(command: str, token: str) -> str:
-    cmd = command.lower().strip()
     try:
-        # Open applications
-        if "open chrome" in cmd or "open browser" in cmd:
-            if SYSTEM == "Windows":
-                subprocess.Popen(["start", "chrome"], shell=True)
-            elif SYSTEM == "Darwin":
-                subprocess.Popen(["open", "-a", "Google Chrome"])
-            return "Chrome opened successfully"
+        img = ImageGrab.grab()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        log.error(f"Screenshot failed: {e}")
+        return None
 
-        elif "open youtube" in cmd:
-            import webbrowser
-            webbrowser.open("https://www.youtube.com")
-            return "YouTube opened in browser"
+# ─── Execute command ──────────────────────────────────────────────────────────
 
-        elif "open whatsapp" in cmd:
-            import webbrowser
-            webbrowser.open("https://web.whatsapp.com")
-            return "WhatsApp Web opened in browser"
+def execute_command(cmd: dict) -> str:
+    action = cmd.get("action", "")
+    try:
+        if action == "screenshot":
+            data = take_screenshot()
+            return json.dumps({"status": "ok", "screenshot": data})
 
-        elif "open excel" in cmd or "open spreadsheet" in cmd:
-            if SYSTEM == "Windows":
-                subprocess.Popen(["start", "excel"], shell=True)
-            elif SYSTEM == "Darwin":
-                subprocess.Popen(["open", "-a", "Microsoft Excel"])
-            return "Excel opened"
+        elif action == "click":
+            x, y = cmd.get("x", 0), cmd.get("y", 0)
+            pyautogui.click(x, y)
+            return json.dumps({"status": "ok", "action": f"clicked ({x},{y})"})
 
-        elif "open notepad" in cmd or "open text editor" in cmd:
-            if SYSTEM == "Windows":
-                subprocess.Popen(["notepad"])
-            elif SYSTEM == "Darwin":
-                subprocess.Popen(["open", "-a", "TextEdit"])
-            return "Text editor opened"
+        elif action == "type":
+            text = cmd.get("text", "")
+            pyautogui.typewrite(text, interval=0.03)
+            return json.dumps({"status": "ok", "action": f"typed: {text[:30]}"})
 
-        elif "take screenshot" in cmd or "screenshot" in cmd:
-            path = take_screenshot()
-            return f"Screenshot saved as {path}"
+        elif action == "key":
+            key = cmd.get("key", "")
+            pyautogui.press(key)
+            return json.dumps({"status": "ok", "action": f"pressed: {key}"})
 
-        elif "type " in cmd:
-            text = command[command.lower().index("type ") + 5:]
-            pyautogui.typewrite(text, interval=0.05)
-            return f"Typed: {text}"
+        elif action == "hotkey":
+            keys = cmd.get("keys", [])
+            pyautogui.hotkey(*keys)
+            return json.dumps({"status": "ok", "action": f"hotkey: {'+'.join(keys)}"})
 
-        elif "click" in cmd:
-            pyautogui.click()
-            return "Clicked"
+        elif action == "scroll":
+            x, y = cmd.get("x", 0), cmd.get("y", 0)
+            clicks = cmd.get("clicks", 3)
+            pyautogui.scroll(clicks, x=x, y=y)
+            return json.dumps({"status": "ok", "action": f"scrolled {clicks}"})
 
-        elif "scroll down" in cmd:
-            pyautogui.scroll(-3)
-            return "Scrolled down"
+        elif action == "move":
+            x, y = cmd.get("x", 0), cmd.get("y", 0)
+            pyautogui.moveTo(x, y, duration=0.3)
+            return json.dumps({"status": "ok", "action": f"moved to ({x},{y})"})
 
-        elif "scroll up" in cmd:
-            pyautogui.scroll(3)
-            return "Scrolled up"
+        elif action == "open_url":
+            url = cmd.get("url", "")
+            webbrowser.open(url)
+            return json.dumps({"status": "ok", "action": f"opened {url}"})
 
-        elif "press enter" in cmd:
-            pyautogui.press("enter")
-            return "Pressed Enter"
+        elif action == "run_shell":
+            command = cmd.get("command", "")
+            # Safety check — only allow safe commands
+            blocked = ["rm -rf", "format", "del /", "shutdown", "reboot", "mkfs"]
+            if any(b in command.lower() for b in blocked):
+                return json.dumps({"status": "error", "message": "Command blocked for safety"})
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            return json.dumps({"status": "ok", "stdout": result.stdout[:2000], "stderr": result.stderr[:500]})
 
-        elif "press escape" in cmd or "press esc" in cmd:
-            pyautogui.press("escape")
-            return "Pressed Escape"
+        elif action == "get_screen_size":
+            size = pyautogui.size()
+            return json.dumps({"status": "ok", "width": size.width, "height": size.height})
 
-        elif "copy" in cmd:
-            pyautogui.hotkey("ctrl", "c")
-            return "Copied to clipboard"
-
-        elif "paste" in cmd:
-            pyautogui.hotkey("ctrl", "v")
-            return "Pasted from clipboard"
-
-        elif "search for " in cmd or "google " in cmd:
-            query = cmd.replace("search for ", "").replace("google ", "")
-            import webbrowser
-            webbrowser.open(f"https://www.google.com/search?q={query}")
-            return f"Searching Google for: {query}"
+        elif action == "get_system_info":
+            return json.dumps({
+                "status": "ok",
+                "os": platform.system(),
+                "os_version": platform.version(),
+                "machine": platform.machine(),
+                "python": sys.version,
+                "screen": {"width": pyautogui.size().width, "height": pyautogui.size().height}
+            })
 
         else:
-            # Send to AI for interpretation
-            response = requests.post(
-                f"{SERVER_URL}/api/v1/ai/chat",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "messages": [
-                        {"role": "system", "content": "You are a desktop automation assistant. The user wants to perform a computer action. Describe exactly what pyautogui commands to use, or say CANNOT_DO if it's not possible."},
-                        {"role": "user", "content": command}
-                    ],
-                    "stream": False
-                },
-                timeout=30
-            )
-            if response.ok:
-                return response.json().get("content", "Command processed")
-            return f"Unknown command: {command}"
+            return json.dumps({"status": "error", "message": f"Unknown action: {action}"})
 
     except Exception as e:
-        return f"Error executing command: {str(e)}"
+        log.error(f"Command error: {e}")
+        return json.dumps({"status": "error", "message": str(e)})
 
-def listen_for_voice(token: str):
-    try:
-        import speech_recognition as sr
-        import pyttsx3
+# ─── WebSocket loop ───────────────────────────────────────────────────────────
 
-        recognizer = sr.Recognizer()
-        tts = pyttsx3.init()
+async def run_agent(token: str):
+    log.info("Connecting to Dacexy backend...")
+    headers = {"Authorization": f"Bearer {token}"}
+    retry_delay = 5
 
-        def speak(text):
-            tts.say(text)
-            tts.runAndWait()
-
-        print("Voice mode active. Say 'Hey Dacexy' to give a command.")
-        speak("Dacexy agent is ready. Say Hey Dacexy to give me a command.")
-
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            while True:
-                try:
-                    print("Listening...")
-                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                    text = recognizer.recognize_google(audio).lower()
-                    print(f"Heard: {text}")
-
-                    if WAKE_WORD in text:
-                        command = text.replace(WAKE_WORD, "").strip()
-                        if command:
-                            print(f"Command: {command}")
-                            speak("Got it, working on it.")
-                            result = execute_command(command, token)
-                            print(f"Result: {result}")
-                            speak(result[:100])
-                        else:
-                            speak("Yes? What would you like me to do?")
-                            audio2 = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                            command = recognizer.recognize_google(audio2)
-                            result = execute_command(command, token)
-                            speak(result[:100])
-
-                except sr.WaitTimeoutError:
-                    pass
-                except sr.UnknownValueError:
-                    pass
-                except Exception as e:
-                    print(f"Voice error: {e}")
-                    time.sleep(1)
-
-    except ImportError:
-        print("Voice libraries not available. Running in text mode only.")
-
-def poll_commands(token: str):
-    print("Polling for commands from server...")
     while True:
         try:
-            response = requests.get(
-                f"{SERVER_URL}/api/v1/agent/desktop/commands",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10
-            )
-            if response.ok:
-                data = response.json()
-                commands = data.get("commands", [])
-                for cmd in commands:
-                    print(f"Executing: {cmd['command']}")
-                    result = execute_command(cmd["command"], token)
-                    requests.post(
-                        f"{SERVER_URL}/api/v1/agent/desktop/result",
-                        headers={"Authorization": f"Bearer {token}"},
-                        json={"command_id": cmd["id"], "result": result}
-                    )
+            async with websockets.connect(BACKEND_WS, extra_headers=headers, ping_interval=30) as ws:
+                log.info("✅ Connected to Dacexy! Agent is running.")
+                print("\n" + "="*50)
+                print("  ✅ Dacexy Agent is ACTIVE")
+                print("  Go to dacexy.vercel.app and give commands!")
+                print("  Press Ctrl+C to stop")
+                print("="*50 + "\n")
+                retry_delay = 5
+
+                # Send initial system info
+                info = execute_command({"action": "get_system_info"})
+                await ws.send(json.dumps({"type": "system_info", "data": json.loads(info)}))
+
+                async for message in ws:
+                    try:
+                        cmd = json.loads(message)
+                        log.info(f"Received command: {cmd.get('action', 'unknown')}")
+
+                        # Take screenshot before executing
+                        if cmd.get("action") not in ["screenshot", "get_system_info", "get_screen_size"]:
+                            screenshot = take_screenshot()
+                            if screenshot:
+                                await ws.send(json.dumps({"type": "screenshot_before", "data": screenshot}))
+
+                        result = execute_command(cmd)
+                        await ws.send(json.dumps({"type": "result", "data": json.loads(result)}))
+
+                        # Take screenshot after executing
+                        time.sleep(0.5)
+                        screenshot = take_screenshot()
+                        if screenshot:
+                            await ws.send(json.dumps({"type": "screenshot_after", "data": screenshot}))
+
+                    except json.JSONDecodeError:
+                        log.error("Invalid JSON received")
+                    except Exception as e:
+                        log.error(f"Error processing command: {e}")
+                        await ws.send(json.dumps({"type": "error", "message": str(e)}))
+
+        except websockets.exceptions.ConnectionClosed:
+            log.warning(f"Connection closed. Reconnecting in {retry_delay}s...")
         except Exception as e:
-            pass
-        time.sleep(3)
+            log.error(f"Connection error: {e}. Retrying in {retry_delay}s...")
+
+        await asyncio.sleep(retry_delay)
+        retry_delay = min(retry_delay * 2, 60)
+
+# ─── System tray icon (optional) ─────────────────────────────────────────────
+
+def try_systray(token):
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+
+        def create_icon():
+            img = Image.new("RGB", (64, 64), "#7c3aed")
+            d = ImageDraw.Draw(img)
+            d.text((20, 20), "D", fill="white")
+            return img
+
+        def on_quit(icon, item):
+            icon.stop()
+            os._exit(0)
+
+        def open_dashboard(icon, item):
+            webbrowser.open("https://dacexy.vercel.app/chat")
+
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Dacexy", open_dashboard),
+            pystray.MenuItem("Quit Agent", on_quit)
+        )
+        icon = pystray.Icon("Dacexy Agent", create_icon(), "Dacexy Agent", menu)
+
+        # Run WebSocket in background thread
+        def run_ws():
+            asyncio.run(run_agent(token))
+
+        t = threading.Thread(target=run_ws, daemon=True)
+        t.start()
+        icon.run()
+
+    except ImportError:
+        # No systray, just run normally
+        asyncio.run(run_agent(token))
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    print("=" * 40)
-    print("   DACEXY DESKTOP AGENT v1.0")
-    print("=" * 40)
+    print("\n" + "="*50)
+    print("  🤖 Dacexy Desktop Agent")
+    print("  AI that controls your computer")
+    print("="*50)
 
-    config = load_config()
-    token = config.get("token")
-
+    token = get_token()
     if not token:
-        print("No token found in config. Please run installer.")
-        sys.exit(1)
+        print("\nFirst time setup — please login to Dacexy")
+        token = login()
+        if not token:
+            print("❌ Could not login. Exiting.")
+            input("Press Enter to exit...")
+            return
 
-    print(f"Connected to: {SERVER_URL}")
-    print("Agent is running. Press Ctrl+C to stop.")
-    print("")
-    print("You can:")
-    print("- Say 'Hey Dacexy' for voice commands")
-    print("- Commands will also be received from the chat")
-    print("")
-
-    # Start voice in background thread
-    voice_thread = threading.Thread(target=listen_for_voice, args=(token,), daemon=True)
-    voice_thread.start()
-
-    # Start polling for commands from server
+    print(f"\n✅ Token found. Starting agent...")
     try:
-        poll_commands(token)
+        try_systray(token)
     except KeyboardInterrupt:
-        print("\nDacexy Agent stopped.")
+        print("\n👋 Agent stopped.")
 
 if __name__ == "__main__":
     main()
