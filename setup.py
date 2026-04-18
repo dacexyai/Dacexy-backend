@@ -605,8 +605,7 @@ MANDATORY RULES - FOLLOW EXACTLY:
 10. Add smooth scroll, hover animations, fade-in effects with JavaScript
 11. The HTML must be COMPLETE - do not cut off or truncate"""
 
-FALLBACK_HTML = \'\'\'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Website</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh}.box{text-align:center;padding:40px}h1{font-size:2rem;color:#7c3aed;margin-bottom:16px}p{color:#9e9e9e;margin-bottom:24px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class="box"><h1>Generation Failed</h1><p>Please try again with a simpler prompt.</p><a href="javascript:history.back()">Try Again</a></div></body></html>\'\'\'
-
+FALLBACK_HTML = "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:40px}h1{font-size:2rem;color:#7c3aed;margin-bottom:16px}p{color:#9e9e9e;margin-bottom:24px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class='box'><h1>Generation Failed</h1><p>Please try again.</p><a href='javascript:history.back()'>Try Again</a></div></body></html>"
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -1111,7 +1110,7 @@ async def desktop_websocket(websocket: WebSocket):
             agent_results.pop(user_id, None)
 """)
 
-w("src/interfaces/http/routes/media.py", '''
+w("src/application/use_cases/website/website_engine.py", '''
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
