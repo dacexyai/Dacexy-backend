@@ -1111,17 +1111,25 @@ async def desktop_websocket(websocket: WebSocket):
             agent_results.pop(user_id, None)
 """)
 
-w("src/interfaces/http/routes/media.py", """
+w("src/interfaces/http/routes/media.py", '''
+from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
+import base64
+
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, GeneratedImage, GeneratedVideo
 from src.interfaces.http.routes.auth import _get_current_user
 from src.shared.config.settings import settings
 
 router = APIRouter(prefix="/media", tags=["media"])
+
+# Best free image model on Bytez
+IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
+# Best free video model on Bytez  
+VIDEO_MODEL = "genmo/mochi-1-preview"
 
 class ImageRequest(BaseModel):
     prompt: str
@@ -1132,45 +1140,125 @@ class VideoRequest(BaseModel):
     prompt: str
 
 @router.post("/image")
-async def generate_image(body: ImageRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    record = GeneratedImage(org_id=user.org_id, user_id=user.id, prompt=body.prompt, status="processing")
+async def generate_image(
+    body: ImageRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    record = GeneratedImage(
+        org_id=user.org_id, user_id=user.id,
+        prompt=body.prompt, status="processing"
+    )
     db.add(record)
     await db.flush()
+
     if not settings.BYTEZ_API_KEY:
         record.status = "failed"
-        raise HTTPException(400, "Media API key not configured")
+        await db.commit()
+        raise HTTPException(400, "BYTEZ_API_KEY not configured in environment")
+
     try:
-        async with httpx.AsyncClient(timeout=60) as c:
-            r = await c.post("https://api.bytez.com/v2/generate/image", headers={"Authorization": "Key " + settings.BYTEZ_API_KEY}, json={"prompt": body.prompt, "width": body.width, "height": body.height})
-            r.raise_for_status()
-            url = r.json().get("url") or r.json().get("image_url") or ""
-            record.url = url
-            record.status = "completed"
-            return {"id": record.id, "url": url, "status": "completed"}
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"https://api.bytez.com/models/v2/{IMAGE_MODEL}",
+                headers={
+                    "Authorization": settings.BYTEZ_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "text": body.prompt,
+                    "params": {"width": body.width, "height": body.height}
+                }
+            )
+            if r.status_code not in [200, 201]:
+                raise HTTPException(500, f"Bytez API error {r.status_code}: {r.text[:200]}")
+            
+            data = r.json()
+            # Bytez returns base64 image data
+            output = data.get("output", "")
+            
+            if isinstance(output, str) and output.startswith("data:"):
+                # It's base64 data URI — store and return as-is
+                record.url = output
+                record.status = "completed"
+                await db.commit()
+                return {"id": str(record.id), "url": output, "status": "completed"}
+            elif isinstance(output, str) and output.startswith("http"):
+                record.url = output
+                record.status = "completed"
+                await db.commit()
+                return {"id": str(record.id), "url": output, "status": "completed"}
+            elif isinstance(output, list) and len(output) > 0:
+                url = output[0] if isinstance(output[0], str) else str(output[0])
+                record.url = url
+                record.status = "completed"
+                await db.commit()
+                return {"id": str(record.id), "url": url, "status": "completed"}
+            else:
+                raise HTTPException(500, f"Unexpected response format: {str(data)[:200]}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         record.status = "failed"
-        raise HTTPException(500, "Image generation failed: " + str(e))
+        await db.commit()
+        raise HTTPException(500, f"Image generation failed: {str(e)}")
 
 @router.post("/video")
-async def generate_video(body: VideoRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    record = GeneratedVideo(org_id=user.org_id, user_id=user.id, prompt=body.prompt, status="processing")
+async def generate_video(
+    body: VideoRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    record = GeneratedVideo(
+        org_id=user.org_id, user_id=user.id,
+        prompt=body.prompt, status="processing"
+    )
     db.add(record)
     await db.flush()
+
     if not settings.BYTEZ_API_KEY:
         record.status = "failed"
-        raise HTTPException(400, "Media API key not configured")
+        await db.commit()
+        raise HTTPException(400, "BYTEZ_API_KEY not configured in environment")
+
     try:
-        async with httpx.AsyncClient(timeout=120) as c:
-            r = await c.post("https://api.bytez.com/v2/generate/video", headers={"Authorization": "Key " + settings.BYTEZ_API_KEY}, json={"prompt": body.prompt})
-            r.raise_for_status()
-            url = r.json().get("url") or r.json().get("video_url") or ""
-            record.url = url
-            record.status = "completed"
-            return {"id": record.id, "url": url, "status": "completed"}
+        async with httpx.AsyncClient(timeout=180) as client:
+            r = await client.post(
+                f"https://api.bytez.com/models/v2/{VIDEO_MODEL}",
+                headers={
+                    "Authorization": settings.BYTEZ_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={"text": body.prompt}
+            )
+            if r.status_code not in [200, 201]:
+                raise HTTPException(500, f"Bytez API error {r.status_code}: {r.text[:200]}")
+
+            data = r.json()
+            output = data.get("output", "")
+
+            if isinstance(output, str) and (output.startswith("http") or output.startswith("data:")):
+                record.url = output
+                record.status = "completed"
+                await db.commit()
+                return {"id": str(record.id), "url": output, "status": "completed"}
+            elif isinstance(output, list) and len(output) > 0:
+                url = output[0] if isinstance(output[0], str) else str(output[0])
+                record.url = url
+                record.status = "completed"
+                await db.commit()
+                return {"id": str(record.id), "url": url, "status": "completed"}
+            else:
+                raise HTTPException(500, f"Unexpected response format: {str(data)[:200]}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         record.status = "failed"
-        raise HTTPException(500, "Video generation failed: " + str(e))
-""")
+        await db.commit()
+        raise HTTPException(500, f"Video generation failed: {str(e)}")
+''')
 
 w("src/interfaces/http/routes/websites.py", """
 import httpx
