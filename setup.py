@@ -1040,7 +1040,7 @@ async def desktop_status(user: User = Depends(_get_current_user)):
 async def send_desktop_command(
     body: DesktopCommandRequest,
     user: User = Depends(_get_current_user),
-w("src/interfaces/http/routes/agent.py", """)
+w("src/interfaces/http/routes/agent.py",")
 from __future__ import annotations
 import json
 import asyncio
