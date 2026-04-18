@@ -1040,10 +1040,88 @@ async def desktop_status(user: User = Depends(_get_current_user)):
 async def send_desktop_command(
     body: DesktopCommandRequest,
     user: User = Depends(_get_current_user),
-):
+w("src/interfaces/http/routes/agent.py", """
+from __future__ import annotations
+import json
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, Dict
+from src.infrastructure.persistence.database import get_db
+from src.infrastructure.persistence.models.orm_models import User, AiTask
+from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
+from src.interfaces.http.dependencies.container import get_deepseek
+from src.interfaces.http.routes.auth import _get_current_user
+from src.shared.config.settings import settings
+
+router = APIRouter(prefix="/agent", tags=["agent"])
+
+active_agents: Dict[str, WebSocket] = {}
+agent_results: Dict[str, dict] = {}
+
+class AgentRunRequest(BaseModel):
+    task: str
+    context: Optional[str] = None
+    max_steps: int = 10
+
+class DesktopCommandRequest(BaseModel):
+    action: str
+    x: Optional[int] = None
+    y: Optional[int] = None
+    text: Optional[str] = None
+    key: Optional[str] = None
+    keys: Optional[list] = None
+    url: Optional[str] = None
+    command: Optional[str] = None
+    clicks: Optional[int] = 3
+    app: Optional[str] = None
+    button: Optional[str] = "left"
+    duration: Optional[float] = 0.3
+
+@router.post("/run")
+async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
+    system_prompt = "You are an autonomous AI agent for Dacexy. Break down tasks into steps and execute them systematically."
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Task: {body.task}" + (f"\\nContext: {body.context}" if body.context else "")}
+    ]
+    task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": body.task})
+    db.add(task_record)
+    await db.flush()
+    try:
+        result = await ai.chat(messages, model="deepseek-chat", stream=False)
+        task_record.status = "completed"
+        task_record.output_data = {"result": result}
+        await db.commit()
+        return {"task_id": task_record.id, "status": "completed", "result": result}
+    except Exception as e:
+        task_record.status = "failed"
+        await db.commit()
+        raise HTTPException(500, f"Agent error: {str(e)}")
+
+@router.get("/tasks")
+async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(20))
+    tasks = result.scalars().all()
+    return {"tasks": [{"id": t.id, "task_type": t.task_type, "status": t.status, "created_at": str(t.created_at)} for t in tasks]}
+
+@router.get("/desktop/status")
+async def desktop_status(user: User = Depends(_get_current_user)):
+    user_id = str(user.id)
+    return {"connected": user_id in active_agents, "user_id": user_id}
+
+@router.get("/desktop/last_result")
+async def get_last_result(user: User = Depends(_get_current_user)):
+    user_id = str(user.id)
+    return {"result": agent_results.get(user_id), "connected": user_id in active_agents}
+
+@router.post("/desktop/command")
+async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
-        raise HTTPException(400, "Desktop agent not connected. Please run the agent on your computer first.")
+        raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
     ws = active_agents[user_id]
     try:
         await ws.send_text(json.dumps(body.dict()))
@@ -1057,32 +1135,29 @@ async def desktop_websocket(websocket: WebSocket):
     await websocket.accept()
     user_id = None
     try:
-        # First message must be auth token
-        auth_msg = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+        auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
         try:
-            auth_data = json.loads(auth_msg)
+            auth_data = json.loads(auth_raw)
             token = auth_data.get("token", "")
         except Exception:
-            token = auth_msg.strip()
+            token = auth_raw.strip()
 
-        # Validate token
         try:
-            payload = decode_token(token)
+            from jose import jwt
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
             user_id = str(payload.get("sub") or payload.get("user_id") or "")
             if not user_id:
-                await websocket.send_text(json.dumps({"type": "error", "message": "Invalid token"}))
+                await websocket.send_text(json.dumps({"type": "error", "message": "Invalid token payload"}))
                 await websocket.close()
                 return
-        except Exception:
+        except Exception as e:
             await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
             await websocket.close()
             return
 
-        # Register connection
         active_agents[user_id] = websocket
-        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected successfully", "user_id": user_id}))
+        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
 
-        # Keep alive and receive results from agent
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
@@ -1090,32 +1165,23 @@ async def desktop_websocket(websocket: WebSocket):
                 msg_type = msg.get("type", "")
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
-                elif msg_type in ["result", "screenshot_before", "screenshot_after", "system_info", "error"]:
-                    # Store latest screenshot/result - frontend polls for this
-                    active_agents[f"{user_id}_last_result"] = msg
+                elif msg_type in ["result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"]:
+                    agent_results[user_id] = msg
             except asyncio.TimeoutError:
-                # Send ping to keep alive
                 try:
                     await websocket.send_text(json.dumps({"type": "ping"}))
                 except Exception:
                     break
             except WebSocketDisconnect:
                 break
-            except Exception as e:
+            except Exception:
                 break
-
-    except Exception as e:
+    except Exception:
         pass
     finally:
         if user_id:
             active_agents.pop(user_id, None)
-            active_agents.pop(f"{user_id}_last_result", None)
-
-@router.get("/desktop/last_result")
-async def get_last_result(user: User = Depends(_get_current_user)):
-    user_id = str(user.id)
-    result = active_agents.get(f"{user_id}_last_result")
-    return {"result": result, "connected": user_id in active_agents}
+            agent_results.pop(user_id, None)
 """)
 
 w("src/interfaces/http/routes/media.py", """
