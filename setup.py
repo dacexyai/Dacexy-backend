@@ -582,7 +582,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 """)
 
-w("src/application/use_cases/website/website_engine.py", """
+
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import asyncio
