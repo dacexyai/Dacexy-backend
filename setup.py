@@ -581,6 +581,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
+
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import asyncio
@@ -589,28 +590,28 @@ from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 log = logging.getLogger("website")
 
 SYSTEM_PROMPT = (
-    "You are an expert web developer. Generate a complete single-page HTML website. "
-    "Rules: Return ONLY raw HTML starting with <!DOCTYPE html> and ending with </html>. "
-    "Use inline CSS in a <style> tag. Include Google Fonts. Make it beautiful with gradients and animations. "
-    "Include these sections: navbar, hero, features or menu, about, contact, footer. "
-    "Use https://picsum.photos/800/500 for images. Make it mobile responsive. "
-    "Do NOT truncate. Return complete HTML only."
+    "You are a web developer. Generate a complete HTML webpage. "
+    "RULES: Return ONLY raw HTML starting with <!DOCTYPE html> ending with </html>. "
+    "Use a <style> tag for CSS. Import one Google Font. "
+    "Include: sticky navbar, hero section with gradient background, "
+    "content section, and footer. Use https://picsum.photos/600/300 for images. "
+    "Make it mobile responsive. NO explanations. NO markdown. NO backticks."
 )
 
-FALLBACK_HTML = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}.b{padding:40px}h1{font-size:2rem;color:#7c3aed;margin-bottom:16px}p{color:#9e9e9e;margin-bottom:24px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class='b'><h1>Generation Failed</h1><p>The AI took too long. Please try again.</p><a href='javascript:history.back()'>Try Again</a></div></body></html>"
+FALLBACK = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}</style></head><body><div><h1 style='color:#7c3aed;font-size:2rem;margin-bottom:16px'>Generation Failed</h1><p style='color:#9e9e9e;margin-bottom:24px'>The AI took too long. Please try again.</p><a href='javascript:history.back()' style='background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none'>Try Again</a></div></body></html>"
 
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "Create a complete website for: " + prompt + ". Return ONLY complete HTML from <!DOCTYPE html> to </html>."}
+        {"role": "user", "content": "Build a webpage for: " + prompt + ". Return ONLY HTML from <!DOCTYPE html> to </html>."}
     ]
     try:
         html = await asyncio.wait_for(
             ai.chat(messages, model="deepseek-chat", stream=False),
-            timeout=90.0
+            timeout=85.0
         )
-        if not html or len(html.strip()) < 200:
-            return FALLBACK_HTML
+        if not html or len(html.strip()) < 100:
+            return FALLBACK
         html = html.strip()
         if "```html" in html:
             html = html.split("```html")[1].split("```")[0].strip()
@@ -623,10 +624,10 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         return html
     except asyncio.TimeoutError:
         log.error("Website generation timed out")
-        return FALLBACK_HTML
+        return FALLBACK
     except Exception as e:
         log.error("Website generation failed: %s", e)
-        return FALLBACK_HTML
+        return FALLBACK
 ''')
 
 w("src/interfaces/http/routes/auth.py", """
