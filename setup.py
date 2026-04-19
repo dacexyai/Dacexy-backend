@@ -1442,9 +1442,8 @@ from src.shared.config.settings import settings
 
 router = APIRouter(prefix="/media", tags=["media"])
 
-IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
-VIDEO_MODEL = "genmo/mochi-1-preview"
-
+IMAGE_MODEL = "stabilityai/stable-diffusion-2"
+VIDEO_MODEL = "damo-vilab/text-to-video-ms-1.7b"
 class ImageRequest(BaseModel):
     prompt: str
     width: int = 512
