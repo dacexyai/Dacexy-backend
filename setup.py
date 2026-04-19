@@ -619,12 +619,12 @@ FALLBACK_HTML = (
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "Build a COMPLETE beautiful website for: " + prompt + ". Include ALL sections with real content. Use picsum.photos for images. Return complete HTML from <!DOCTYPE html> to </html>. Do NOT truncate."}
+        {"role": "user", "content": "Build a complete website for: " + prompt + ". Keep it simple but beautiful. Maximum 200 lines of HTML. Must include nav, hero with background color, content section, and footer. Return ONLY complete HTML from <!DOCTYPE html> to </html>."}
     ]
     try:
         html = await asyncio.wait_for(
             ai.chat(messages, model="deepseek-chat", stream=False),
-            timeout=120.0
+            timeout=90.0
         )
         if not html or len(html.strip()) < 500:
             return FALLBACK_HTML
