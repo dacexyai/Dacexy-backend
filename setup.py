@@ -582,7 +582,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 """)
 
-
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import asyncio
@@ -590,22 +589,33 @@ from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 
 log = logging.getLogger("website")
 
-SYSTEM_PROMPT = """You are an expert senior web developer. Your job is to generate a COMPLETE, BEAUTIFUL, PRODUCTION-READY single page HTML website.
+SYSTEM_PROMPT = (
+    "You are an expert senior web developer. Your job is to generate a COMPLETE, BEAUTIFUL, PRODUCTION-READY single page HTML website.\\n\\n"
+    "MANDATORY RULES - FOLLOW EXACTLY:\\n"
+    "1. Return ONLY raw HTML. Zero explanations. Zero markdown. Zero backticks.\\n"
+    "2. Start with <!DOCTYPE html> and end with </html>\\n"
+    "3. Use a <style> tag with extensive CSS - minimum 150 lines of CSS\\n"
+    "4. Include Google Fonts via @import in the style tag\\n"
+    "5. Use beautiful gradients, shadows, hover effects, animations\\n"
+    "6. Include ALL these sections: navigation, hero, features/menu/services, about, gallery, testimonials, pricing/contact, footer\\n"
+    "7. Use real placeholder content relevant to the prompt\\n"
+    "8. Use https://picsum.photos for images e.g. https://picsum.photos/800/400\\n"
+    "9. Make it fully responsive with mobile CSS\\n"
+    "10. Add smooth scroll, hover animations, fade-in effects with JavaScript\\n"
+    "11. The HTML must be COMPLETE - do not cut off or truncate"
+)
 
-MANDATORY RULES - FOLLOW EXACTLY:
-1. Return ONLY raw HTML. Zero explanations. Zero markdown. Zero backticks.
-2. Start with <!DOCTYPE html> and end with </html>
-3. Use a <style> tag with extensive CSS - minimum 150 lines of CSS
-4. Include Google Fonts via @import in the style tag
-5. Use beautiful gradients, shadows, hover effects, animations
-6. Include ALL these sections: navigation, hero, features/menu/services, about, gallery/portfolio, testimonials, pricing/contact, footer
-7. Use real placeholder content relevant to the prompt
-8. Use https://picsum.photos for images (e.g. https://picsum.photos/800/400)
-9. Make it fully responsive with mobile CSS
-10. Add smooth scroll, hover animations, fade-in effects with JavaScript
-11. The HTML must be COMPLETE - do not cut off or truncate"""
+FALLBACK_HTML = (
+    "<!DOCTYPE html><html lang=\\"en\\"><head><meta charset=\\"UTF-8\\"><title>Error</title>"
+    "<style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;"
+    "align-items:center;justify-content:center;min-height:100vh;margin:0}"
+    ".box{text-align:center;padding:40px}h1{font-size:2rem;color:#7c3aed;margin-bottom:16px}"
+    "p{color:#9e9e9e;margin-bottom:24px}a{background:#7c3aed;color:#fff;padding:12px 28px;"
+    "border-radius:10px;text-decoration:none}</style></head><body>"
+    "<div class=\\"box\\"><h1>Generation Failed</h1><p>Please try again.</p>"
+    "<a href=\\"javascript:history.back()\\">Try Again</a></div></body></html>"
+)
 
-FALLBACK_HTML = "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.box{text-align:center;padding:40px}h1{font-size:2rem;color:#7c3aed;margin-bottom:16px}p{color:#9e9e9e;margin-bottom:24px}a{background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none}</style></head><body><div class='box'><h1>Generation Failed</h1><p>Please try again.</p><a href='javascript:history.back()'>Try Again</a></div></body></html>"
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -624,7 +634,7 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         elif "```" in html:
             html = html.split("```")[1].split("```")[0].strip()
         if not html.startswith("<!") and not html.lower().startswith("<html"):
-            html = "<!DOCTYPE html><html><head><meta charset=\'UTF-8\'></head><body>" + html + "</body></html>"
+            html = "<!DOCTYPE html><html><head><meta charset=\\"UTF-8\\"></head><body>" + html + "</body></html>"
         if not html.rstrip().endswith("</html>"):
             html = html + "</body></html>"
         return html
