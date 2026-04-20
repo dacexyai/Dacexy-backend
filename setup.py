@@ -581,142 +581,261 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
-
+    
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import asyncio
 import urllib.parse
+import re
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 
 log = logging.getLogger("website")
 
+def extract_name(prompt: str) -> str:
+    p = prompt.strip()
+    patterns = [
+        r"(?:named?|called?|for)\s+([A-Z][a-zA-Z0-9\s]{1,30}?)(?:\s+(?:with|that|which|a\s|an\s|the\s|website|app|saas|platform|startup|business|restaurant|store|shop|company|landing|page)|\.|,|$)",
+        r"^(?:a\s+)?(?:website|landing page|page|site|app|saas|platform|startup|business|restaurant|store|shop|company|portfolio)\s+(?:for\s+)?([A-Z][a-zA-Z0-9\s]{1,25}?)(?:\s+with|\s+that|$)",
+        r"^([A-Z][a-zA-Z0-9]{1,20})\s+",
+    ]
+    for pat in patterns:
+        m = re.search(pat, p, re.IGNORECASE)
+        if m:
+            name = m.group(1).strip()
+            if 2 <= len(name) <= 30 and not name.lower() in ["a","an","the","my","our","build","make","create","generate"]:
+                return name.title()
+    words = [w for w in p.replace(",","").replace(".","").split() if len(w) > 2 and w.lower() not in ["for","the","with","that","this","and","build","make","create","generate","website","page","site","app","landing","saas","platform","startup","business","restaurant","store","shop","company","portfolio","a","an","my","our"]]
+    if words:
+        return words[0].title()
+    return "Our Business"
+
+def get_category(prompt: str) -> str:
+    p = prompt.lower()
+    if any(x in p for x in ["restaurant","food","cafe","kitchen","dining","menu","eat","chef","pizza","hotel"]):
+        return "restaurant"
+    if any(x in p for x in ["saas","software","app","platform","tech","startup","ai","tool","dashboard","crm"]):
+        return "saas"
+    if any(x in p for x in ["portfolio","designer","freelance","artist","creative","photography","studio"]):
+        return "portfolio"
+    if any(x in p for x in ["shop","store","ecommerce","product","sell","buy","fashion","clothing","brand"]):
+        return "ecommerce"
+    if any(x in p for x in ["agency","marketing","consultant","service","firm","company","corporate"]):
+        return "agency"
+    return "business"
+
 def build_template(prompt: str) -> str:
-    title = prompt[:60].title()
-    encoded = urllib.parse.quote(prompt[:50])
+    name = extract_name(prompt)
+    category = get_category(prompt)
+    encoded = urllib.parse.quote(prompt[:80])
     seed1 = abs(hash(prompt)) % 99999
-    seed2 = abs(hash(prompt + "2")) % 99999
-    seed3 = abs(hash(prompt + "3")) % 99999
-    img1 = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=600&seed={seed1}&nologo=true&model=flux"
-    img2 = f"https://image.pollinations.ai/prompt/{encoded}_team?width=600&height=400&seed={seed2}&nologo=true&model=flux"
-    img3 = f"https://image.pollinations.ai/prompt/{encoded}_product?width=600&height=400&seed={seed3}&nologo=true&model=flux"
+    seed2 = abs(hash(prompt + "hero")) % 99999
+    seed3 = abs(hash(prompt + "about")) % 99999
+    seed4 = abs(hash(prompt + "gallery")) % 99999
+    img_hero = f"https://image.pollinations.ai/prompt/professional_{encoded}_hero_banner?width=1200&height=600&seed={seed1}&nologo=true&model=flux"
+    img_about = f"https://image.pollinations.ai/prompt/professional_{encoded}_team_office?width=700&height=500&seed={seed2}&nologo=true&model=flux"
+    img2 = f"https://image.pollinations.ai/prompt/{encoded}_showcase?width=600&height=400&seed={seed3}&nologo=true&model=flux"
+    img3 = f"https://image.pollinations.ai/prompt/{encoded}_product?width=600&height=400&seed={seed4}&nologo=true&model=flux"
+
+    if category == "restaurant":
+        tagline = f"Authentic flavors, unforgettable experiences at {name}"
+        features = [("🍽️","Exquisite Menu","From starters to desserts, every dish is crafted with the finest ingredients."),("👨‍🍳","Expert Chefs","Our award-winning chefs bring decades of culinary expertise to your plate."),("🌿","Fresh Ingredients","We source locally and seasonally to ensure the highest quality in every bite."),("🎉","Private Dining","Perfect for celebrations, corporate events, and intimate gatherings."),("⭐","5-Star Service","Attentive, warm hospitality that makes every visit memorable."),("🚗","Free Parking","Convenient free parking available for all our guests.")]
+        cta = "Reserve a Table"
+        section2 = "Our Signature Dishes"
+    elif category == "saas":
+        tagline = f"{name} — The smarter way to work, grow, and succeed"
+        features = [("⚡","Lightning Fast","10x faster than traditional solutions with our optimized infrastructure."),("🔒","Enterprise Security","Bank-grade encryption and SOC2 compliance keeps your data safe."),("🤖","AI-Powered","Smart automation that learns and adapts to your workflow automatically."),("📊","Real-time Analytics","Beautiful dashboards with actionable insights at your fingertips."),("🔗","Easy Integration","Connect with 200+ tools you already use in just a few clicks."),("💬","24/7 Support","Dedicated support team available around the clock to help you succeed.")]
+        cta = "Start Free Trial"
+        section2 = "Powerful Features"
+    elif category == "portfolio":
+        tagline = f"Creative work that speaks for itself — {name}"
+        features = [("🎨","UI/UX Design","Beautiful, intuitive interfaces that users love and businesses need."),("💻","Web Development","Clean, performant code built with modern frameworks and best practices."),("📱","Mobile Apps","Native and cross-platform apps that delight users on every device."),("🎬","Motion Design","Stunning animations and video content that bring brands to life."),("📸","Photography","Professional photography that captures moments and tells stories."),("🚀","Brand Strategy","Complete brand identity from logo to full design system.")]
+        cta = "View Portfolio"
+        section2 = "Featured Projects"
+    elif category == "ecommerce":
+        tagline = f"Shop the finest collection at {name}"
+        features = [("🚚","Fast Delivery","Free delivery on orders above ₹999. Get it in 2-3 business days."),("↩️","Easy Returns","30-day hassle-free returns. No questions asked."),("✅","Quality Assured","Every product is quality-checked before shipping to you."),("💳","Secure Payments","UPI, cards, net banking — all payments are 100% secure."),("🎁","Gift Wrapping","Beautiful gift packaging available for all orders."),("⭐","Premium Quality","Handpicked products from the best brands and artisans.")]
+        cta = "Shop Now"
+        section2 = "Featured Products"
+    else:
+        tagline = f"Delivering excellence and innovation — {name}"
+        features = [("⚡","Fast & Reliable","We deliver results quickly without compromising on quality or reliability."),("🛡️","Trusted Partner","Hundreds of businesses trust us with their most important projects."),("🎯","Results Driven","Every strategy is focused on measurable outcomes and real growth."),("🌍","Global Reach","Serving clients across India and internationally with consistent excellence."),("💡","Innovation First","We stay ahead of trends to give you a competitive advantage."),("🤝","Dedicated Support","Our team is always available to ensure your complete satisfaction.")]
+        cta = "Get Started"
+        section2 = "Our Services"
+
+    features_html = "".join([f'<div class="feature-card"><div class="feature-icon">{f[0]}</div><h3>{f[1]}</h3><p>{f[2]}</p></div>' for f in features])
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<title>{name}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:"Inter",sans-serif;color:#1a1a2e;background:#fff}}
-nav{{position:fixed;top:0;width:100%;background:rgba(255,255,255,0.95);backdrop-filter:blur(10px);border-bottom:1px solid #e5e7eb;z-index:100;padding:0 5%}}
-.nav-inner{{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:64px}}
-.logo{{font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.nav-links{{display:flex;gap:32px;list-style:none}}
-.nav-links a{{color:#4b5563;text-decoration:none;font-weight:500;font-size:0.9rem;transition:color 0.2s}}
-.nav-links a:hover{{color:#667eea}}
-.nav-cta{{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff!important;padding:8px 20px;border-radius:8px!important}}
-.hero{{min-height:100vh;background:linear-gradient(135deg,#667eea 0%,#764ba2 50%,#f093fb 100%);display:flex;align-items:center;padding:80px 5% 60px;position:relative;overflow:hidden}}
-.hero::before{{content:"";position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle,rgba(255,255,255,0.1) 0%,transparent 60%);animation:pulse 4s ease-in-out infinite}}
-@keyframes pulse{{0%,100%{{transform:scale(1)}}50%{{transform:scale(1.05)}}}}
-.hero-content{{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}}
-.hero-text h1{{font-size:3.5rem;font-weight:800;color:#fff;line-height:1.2;margin-bottom:20px}}
-.hero-text p{{font-size:1.2rem;color:rgba(255,255,255,0.85);margin-bottom:32px;line-height:1.7}}
+:root{{--primary:#6366f1;--primary-dark:#4f46e5;--accent:#f59e0b;--dark:#0f172a;--gray:#64748b;--light:#f8fafc}}
+body{{font-family:"Inter",sans-serif;color:var(--dark);background:#fff;overflow-x:hidden}}
+html{{scroll-behavior:smooth}}
+/* NAV */
+nav{{position:fixed;top:0;width:100%;z-index:1000;transition:all 0.3s;padding:0 5%}}
+nav.scrolled{{background:rgba(255,255,255,0.97);backdrop-filter:blur(20px);box-shadow:0 1px 30px rgba(0,0,0,0.08)}}
+.nav-inner{{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:70px}}
+.logo{{font-family:"Playfair Display",serif;font-size:1.6rem;font-weight:800;background:linear-gradient(135deg,var(--primary),#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.nav-links{{display:flex;gap:36px;list-style:none;align-items:center}}
+.nav-links a{{color:rgba(255,255,255,0.9);text-decoration:none;font-weight:500;font-size:0.9rem;transition:all 0.2s}}
+nav.scrolled .nav-links a{{color:var(--gray)}}
+.nav-links a:hover{{color:#fff}}
+nav.scrolled .nav-links a:hover{{color:var(--primary)}}
+.nav-cta{{background:linear-gradient(135deg,var(--primary),#8b5cf6)!important;color:#fff!important;padding:10px 24px;border-radius:50px!important;font-weight:600!important}}
+/* HERO */
+.hero{{min-height:100vh;background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 40%,#312e81 70%,#4c1d95 100%);display:flex;align-items:center;padding:90px 5% 60px;position:relative;overflow:hidden}}
+.hero::before{{content:"";position:absolute;top:0;left:0;right:0;bottom:0;background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%239C92AC' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");opacity:0.4}}
+.hero-content{{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1.1fr 0.9fr;gap:80px;align-items:center;position:relative;z-index:1}}
+.hero-badge{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:8px 16px;border-radius:50px;font-size:0.8rem;font-weight:600;margin-bottom:24px;backdrop-filter:blur(10px)}}
+.hero-badge::before{{content:"✨"}}
+.hero-text h1{{font-family:"Playfair Display",serif;font-size:4rem;font-weight:800;color:#fff;line-height:1.15;margin-bottom:24px}}
+.hero-text h1 span{{background:linear-gradient(135deg,#f59e0b,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.hero-text p{{font-size:1.15rem;color:rgba(255,255,255,0.75);margin-bottom:40px;line-height:1.8;max-width:520px}}
 .hero-btns{{display:flex;gap:16px;flex-wrap:wrap}}
-.btn-primary{{background:#fff;color:#667eea;padding:14px 32px;border-radius:12px;font-weight:700;font-size:1rem;text-decoration:none;transition:transform 0.2s,box-shadow 0.2s}}
-.btn-primary:hover{{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,0.2)}}
-.btn-secondary{{border:2px solid rgba(255,255,255,0.6);color:#fff;padding:14px 32px;border-radius:12px;font-weight:600;font-size:1rem;text-decoration:none;transition:all 0.2s}}
-.btn-secondary:hover{{background:rgba(255,255,255,0.15)}}
-.hero-image img{{width:100%;border-radius:20px;box-shadow:0 25px 60px rgba(0,0,0,0.3)}}
-.section{{padding:80px 5%}}
+.btn-hero-primary{{background:linear-gradient(135deg,var(--accent),#f97316);color:#fff;padding:16px 36px;border-radius:50px;font-weight:700;font-size:1rem;text-decoration:none;transition:all 0.3s;box-shadow:0 8px 30px rgba(245,158,11,0.4)}}
+.btn-hero-primary:hover{{transform:translateY(-3px);box-shadow:0 15px 40px rgba(245,158,11,0.5)}}
+.btn-hero-secondary{{border:2px solid rgba(255,255,255,0.4);color:#fff;padding:16px 36px;border-radius:50px;font-weight:600;font-size:1rem;text-decoration:none;transition:all 0.3s;backdrop-filter:blur(10px)}}
+.btn-hero-secondary:hover{{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.7)}}
+.hero-stats{{display:flex;gap:32px;margin-top:48px}}
+.hero-stat{{text-align:center}}
+.hero-stat-num{{font-size:2rem;font-weight:800;color:#fff}}
+.hero-stat-label{{font-size:0.75rem;color:rgba(255,255,255,0.6);margin-top:4px;text-transform:uppercase;letter-spacing:1px}}
+.hero-image{{position:relative}}
+.hero-image img{{width:100%;border-radius:24px;box-shadow:0 40px 80px rgba(0,0,0,0.5);transform:perspective(1000px) rotateY(-5deg)}}
+.hero-image::before{{content:"";position:absolute;inset:-2px;border-radius:26px;background:linear-gradient(135deg,rgba(99,102,241,0.5),rgba(139,92,246,0.5));z-index:-1;filter:blur(20px)}}
+/* SECTIONS */
+.section{{padding:100px 5%}}
 .section-inner{{max-width:1200px;margin:0 auto}}
-.section-title{{font-size:2.5rem;font-weight:800;text-align:center;margin-bottom:16px;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.section-subtitle{{text-align:center;color:#6b7280;font-size:1.1rem;margin-bottom:60px;max-width:600px;margin-left:auto;margin-right:auto}}
-.features-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}}
-.feature-card{{background:#f9fafb;border-radius:16px;padding:36px 28px;border:1px solid #e5e7eb;transition:transform 0.2s,box-shadow 0.2s}}
-.feature-card:hover{{transform:translateY(-4px);box-shadow:0 20px 40px rgba(102,126,234,0.15)}}
-.feature-icon{{width:56px;height:56px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin-bottom:20px}}
-.feature-card h3{{font-size:1.2rem;font-weight:700;margin-bottom:12px;color:#1a1a2e}}
-.feature-card p{{color:#6b7280;line-height:1.7;font-size:0.95rem}}
-.about{{background:linear-gradient(135deg,#f8f9ff,#f0f4ff)}}
-.about-grid{{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}}
-.about-img img{{width:100%;border-radius:20px;box-shadow:0 20px 50px rgba(102,126,234,0.2)}}
-.about-text h2{{font-size:2.2rem;font-weight:800;margin-bottom:16px;color:#1a1a2e}}
-.about-text p{{color:#6b7280;line-height:1.8;margin-bottom:16px;font-size:1rem}}
-.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:32px}}
-.stat{{text-align:center;background:#fff;border-radius:12px;padding:20px;box-shadow:0 4px 15px rgba(102,126,234,0.1)}}
-.stat-number{{font-size:2rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.stat-label{{font-size:0.85rem;color:#6b7280;margin-top:4px}}
-.gallery-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
-.gallery-item{{border-radius:16px;overflow:hidden;box-shadow:0 8px 25px rgba(0,0,0,0.1);transition:transform 0.2s}}
-.gallery-item:hover{{transform:scale(1.03)}}
-.gallery-item img{{width:100%;height:220px;object-fit:cover}}
-.testimonials{{background:#1a1a2e}}
-.testimonials .section-title{{color:#fff;background:none;-webkit-text-fill-color:#fff}}
+.section-badge{{display:inline-block;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1));color:var(--primary);font-size:0.75rem;font-weight:700;padding:6px 16px;border-radius:50px;border:1px solid rgba(99,102,241,0.2);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px}}
+.section-title{{font-family:"Playfair Display",serif;font-size:2.8rem;font-weight:800;margin-bottom:16px;color:var(--dark)}}
+.section-subtitle{{color:var(--gray);font-size:1.1rem;max-width:580px;margin:0 auto 60px;line-height:1.7}}
+.text-center{{text-align:center}}
+/* FEATURES */
+.features{{background:var(--light)}}
+.features-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}}
+.feature-card{{background:#fff;border-radius:20px;padding:36px 28px;border:1px solid #e2e8f0;transition:all 0.3s;position:relative;overflow:hidden}}
+.feature-card::before{{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(135deg,var(--primary),#8b5cf6);transform:scaleX(0);transition:transform 0.3s;transform-origin:left}}
+.feature-card:hover{{transform:translateY(-6px);box-shadow:0 25px 50px rgba(99,102,241,0.15);border-color:rgba(99,102,241,0.3)}}
+.feature-card:hover::before{{transform:scaleX(1)}}
+.feature-icon{{width:60px;height:60px;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1));border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;margin-bottom:20px}}
+.feature-card h3{{font-size:1.15rem;font-weight:700;margin-bottom:12px;color:var(--dark)}}
+.feature-card p{{color:var(--gray);line-height:1.7;font-size:0.93rem}}
+/* ABOUT */
+.about{{background:#fff}}
+.about-grid{{display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
+.about-img{{position:relative}}
+.about-img img{{width:100%;border-radius:24px;box-shadow:0 30px 60px rgba(0,0,0,0.12)}}
+.about-img::after{{content:"";position:absolute;bottom:-20px;right:-20px;width:70%;height:70%;border-radius:24px;background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(139,92,246,0.15));z-index:-1}}
+.about-text h2{{font-family:"Playfair Display",serif;font-size:2.4rem;font-weight:800;margin-bottom:20px;color:var(--dark)}}
+.about-text p{{color:var(--gray);line-height:1.8;margin-bottom:16px;font-size:1rem}}
+.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:36px}}
+.stat{{text-align:center;background:var(--light);border-radius:16px;padding:24px 16px}}
+.stat-number{{font-size:2.2rem;font-weight:900;background:linear-gradient(135deg,var(--primary),#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.stat-label{{font-size:0.8rem;color:var(--gray);margin-top:6px;font-weight:500}}
+/* GALLERY */
+.gallery{{background:var(--light)}}
+.gallery-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}}
+.gallery-item{{border-radius:20px;overflow:hidden;position:relative;group:cursor-pointer}}
+.gallery-item img{{width:100%;height:250px;object-fit:cover;transition:transform 0.4s}}
+.gallery-item:hover img{{transform:scale(1.08)}}
+.gallery-overlay{{position:absolute;inset:0;background:linear-gradient(to top,rgba(99,102,241,0.8),transparent);opacity:0;transition:opacity 0.3s;display:flex;align-items:flex-end;padding:20px}}
+.gallery-item:hover .gallery-overlay{{opacity:1}}
+.gallery-overlay-text{{color:#fff;font-weight:600;font-size:0.9rem}}
+/* TESTIMONIALS */
+.testimonials{{background:linear-gradient(135deg,#0f172a,#1e1b4b)}}
+.testimonials .section-title{{color:#fff}}
 .testimonials .section-subtitle{{color:rgba(255,255,255,0.6)}}
 .testimonials-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
-.testimonial-card{{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px}}
-.testimonial-text{{color:rgba(255,255,255,0.85);line-height:1.7;font-style:italic;margin-bottom:20px;font-size:0.95rem}}
+.testimonial-card{{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:32px;backdrop-filter:blur(10px);transition:all 0.3s}}
+.testimonial-card:hover{{background:rgba(255,255,255,0.08);transform:translateY(-4px)}}
+.stars{{color:#f59e0b;font-size:1rem;margin-bottom:16px;letter-spacing:2px}}
+.testimonial-text{{color:rgba(255,255,255,0.85);line-height:1.8;font-style:italic;margin-bottom:24px;font-size:0.95rem}}
 .testimonial-author{{display:flex;align-items:center;gap:12px}}
-.author-avatar{{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}}
-.author-name{{color:#fff;font-weight:600;font-size:0.95rem}}
-.author-role{{color:rgba(255,255,255,0.5);font-size:0.8rem}}
-.pricing{{background:#f9fafb}}
-.pricing-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
-.pricing-card{{background:#fff;border:2px solid #e5e7eb;border-radius:20px;padding:36px;text-align:center;transition:transform 0.2s}}
-.pricing-card.popular{{border-color:#667eea;transform:scale(1.05);box-shadow:0 20px 50px rgba(102,126,234,0.2)}}
-.popular-badge{{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:0.75rem;font-weight:700;padding:4px 12px;border-radius:20px;display:inline-block;margin-bottom:16px}}
-.pricing-name{{font-size:1.3rem;font-weight:700;color:#1a1a2e;margin-bottom:8px}}
-.pricing-price{{font-size:3rem;font-weight:800;color:#667eea;margin:16px 0}}
-.pricing-price span{{font-size:1rem;color:#6b7280;font-weight:400}}
-.pricing-features{{list-style:none;margin:24px 0;text-align:left}}
-.pricing-features li{{color:#6b7280;padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:0.9rem}}
-.pricing-features li:before{{content:"✓ ";color:#667eea;font-weight:700}}
-.btn-plan{{display:block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:14px;border-radius:12px;font-weight:700;text-decoration:none;margin-top:24px;transition:opacity 0.2s}}
-.btn-plan:hover{{opacity:0.9}}
-.contact{{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}}
-.contact .section-title{{color:#fff;background:none;-webkit-text-fill-color:#fff}}
-.contact .section-subtitle{{color:rgba(255,255,255,0.8)}}
-.contact-form{{max-width:600px;margin:0 auto}}
+.author-avatar{{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:1.1rem}}
+.author-name{{color:#fff;font-weight:700;font-size:0.95rem}}
+.author-role{{color:rgba(255,255,255,0.5);font-size:0.8rem;margin-top:2px}}
+/* PRICING */
+.pricing-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;max-width:1000px;margin:0 auto}}
+.pricing-card{{background:#fff;border:2px solid #e2e8f0;border-radius:24px;padding:40px 32px;text-align:center;transition:all 0.3s;position:relative}}
+.pricing-card.popular{{border-color:var(--primary);box-shadow:0 25px 60px rgba(99,102,241,0.2)}}
+.popular-badge{{position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;font-size:0.75rem;font-weight:700;padding:6px 20px;border-radius:50px;white-space:nowrap}}
+.pricing-name{{font-size:1.1rem;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}}
+.pricing-price{{font-size:3.5rem;font-weight:900;color:var(--dark);line-height:1}}
+.pricing-price sub{{font-size:1rem;color:var(--gray);font-weight:400}}
+.pricing-features{{list-style:none;margin:28px 0;text-align:left}}
+.pricing-features li{{color:var(--gray);padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:0.9rem;display:flex;align-items:center;gap:8px}}
+.pricing-features li::before{{content:"✓";color:var(--primary);font-weight:700;flex-shrink:0}}
+.btn-plan{{display:block;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;padding:16px;border-radius:14px;font-weight:700;text-decoration:none;margin-top:24px;transition:all 0.3s}}
+.btn-plan:hover{{transform:translateY(-2px);box-shadow:0 10px 30px rgba(99,102,241,0.4)}}
+.btn-plan.outline{{background:transparent;border:2px solid var(--primary);color:var(--primary)}}
+.btn-plan.outline:hover{{background:var(--primary);color:#fff}}
+/* CTA */
+.cta-section{{background:linear-gradient(135deg,var(--primary),#8b5cf6,#ec4899);padding:100px 5%;text-align:center}}
+.cta-section h2{{font-family:"Playfair Display",serif;font-size:3rem;font-weight:800;color:#fff;margin-bottom:16px}}
+.cta-section p{{color:rgba(255,255,255,0.85);font-size:1.15rem;margin-bottom:40px}}
+.btn-cta{{display:inline-block;background:#fff;color:var(--primary);padding:18px 48px;border-radius:50px;font-weight:800;font-size:1.05rem;text-decoration:none;transition:all 0.3s;box-shadow:0 10px 40px rgba(0,0,0,0.2)}}
+.btn-cta:hover{{transform:translateY(-3px);box-shadow:0 20px 50px rgba(0,0,0,0.3)}}
+/* CONTACT */
+.contact-grid{{display:grid;grid-template-columns:1fr 1.5fr;gap:60px;align-items:start}}
+.contact-info h3{{font-size:1.4rem;font-weight:700;margin-bottom:16px}}
+.contact-detail{{display:flex;align-items:center;gap:12px;margin-bottom:20px;color:var(--gray)}}
+.contact-detail-icon{{width:44px;height:44px;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1));border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}}
+.contact-form-card{{background:var(--light);border-radius:24px;padding:40px}}
 .form-row{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}}
-.form-group{{display:flex;flex-direction:column}}
-.form-group label{{color:rgba(255,255,255,0.8);font-size:0.85rem;font-weight:600;margin-bottom:6px}}
-.form-group input,.form-group textarea,.form-group select{{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:10px;padding:12px 16px;color:#fff;font-size:0.95rem;outline:none;width:100%;font-family:inherit}}
-.form-group input::placeholder,.form-group textarea::placeholder{{color:rgba(255,255,255,0.5)}}
-.form-group textarea{{height:120px;resize:vertical;margin-bottom:16px}}
-.btn-submit{{width:100%;background:#fff;color:#667eea;padding:16px;border-radius:12px;font-weight:700;font-size:1rem;border:none;cursor:pointer;transition:transform 0.2s}}
-.btn-submit:hover{{transform:translateY(-2px)}}
-footer{{background:#0f172a;color:rgba(255,255,255,0.6);padding:48px 5% 24px}}
+.form-group{{display:flex;flex-direction:column;margin-bottom:16px}}
+.form-group label{{color:var(--dark);font-size:0.85rem;font-weight:600;margin-bottom:8px}}
+.form-group input,.form-group textarea,.form-group select{{background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:14px 16px;color:var(--dark);font-size:0.95rem;outline:none;width:100%;font-family:inherit;transition:border-color 0.2s}}
+.form-group input:focus,.form-group textarea:focus{{border-color:var(--primary)}}
+.form-group textarea{{height:130px;resize:vertical}}
+.btn-submit{{width:100%;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;padding:16px;border-radius:14px;font-weight:700;font-size:1rem;border:none;cursor:pointer;transition:all 0.3s}}
+.btn-submit:hover{{transform:translateY(-2px);box-shadow:0 10px 30px rgba(99,102,241,0.4)}}
+/* FOOTER */
+footer{{background:#0f172a;color:rgba(255,255,255,0.6);padding:64px 5% 28px}}
 .footer-inner{{max-width:1200px;margin:0 auto}}
-.footer-grid{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:40px;margin-bottom:40px}}
-.footer-brand .logo{{font-size:1.5rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;display:block;margin-bottom:12px}}
-.footer-brand p{{font-size:0.9rem;line-height:1.6}}
-.footer-col h4{{color:#fff;font-weight:700;margin-bottom:16px;font-size:0.95rem}}
+.footer-grid{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:48px;margin-bottom:48px}}
+.footer-brand .logo{{font-size:1.6rem;display:block;margin-bottom:16px}}
+.footer-brand p{{font-size:0.9rem;line-height:1.7;max-width:260px}}
+.footer-col h4{{color:#fff;font-weight:700;margin-bottom:20px;font-size:0.9rem;text-transform:uppercase;letter-spacing:1px}}
 .footer-col ul{{list-style:none}}
-.footer-col ul li{{margin-bottom:10px}}
-.footer-col ul li a{{color:rgba(255,255,255,0.6);text-decoration:none;font-size:0.9rem;transition:color 0.2s}}
-.footer-col ul li a:hover{{color:#667eea}}
-.footer-bottom{{border-top:1px solid rgba(255,255,255,0.1);padding-top:24px;text-align:center;font-size:0.85rem}}
+.footer-col ul li{{margin-bottom:12px}}
+.footer-col ul li a{{color:rgba(255,255,255,0.5);text-decoration:none;font-size:0.9rem;transition:color 0.2s}}
+.footer-col ul li a:hover{{color:var(--primary)}}
+.footer-bottom{{border-top:1px solid rgba(255,255,255,0.08);padding-top:28px;display:flex;justify-content:space-between;align-items:center;font-size:0.85rem;flex-wrap:gap;gap:12px}}
+.footer-links{{display:flex;gap:24px}}
+.footer-links a{{color:rgba(255,255,255,0.5);text-decoration:none;transition:color 0.2s}}
+.footer-links a:hover{{color:var(--primary)}}
+/* MOBILE */
 @media(max-width:768px){{
-  .hero-content,.about-grid,.footer-grid{{grid-template-columns:1fr}}
-  .hero-text h1{{font-size:2.2rem}}
+  .hero-content,.about-grid,.contact-grid,.footer-grid{{grid-template-columns:1fr}}
+  .hero-text h1{{font-size:2.4rem}}
+  .section-title{{font-size:2rem}}
   .features-grid,.testimonials-grid,.pricing-grid,.gallery-grid{{grid-template-columns:1fr}}
   .form-row{{grid-template-columns:1fr}}
   .stats{{grid-template-columns:repeat(2,1fr)}}
-  .pricing-card.popular{{transform:scale(1)}}
   .nav-links{{display:none}}
+  .hero-stats{{gap:20px}}
+  .hero-stat-num{{font-size:1.5rem}}
+  .footer-bottom{{flex-direction:column;text-align:center}}
 }}
+/* ANIMATIONS */
+.fade-up{{opacity:0;transform:translateY(30px);transition:all 0.6s ease}}
+.fade-up.visible{{opacity:1;transform:translateY(0)}}
 </style>
 </head>
 <body>
-<nav>
+<nav id="navbar">
   <div class="nav-inner">
-    <span class="logo">{title}</span>
+    <span class="logo">{name}</span>
     <ul class="nav-links">
       <li><a href="#features">Features</a></li>
       <li><a href="#about">About</a></li>
       <li><a href="#pricing">Pricing</a></li>
-      <li><a href="#contact" class="nav-cta">Contact</a></li>
+      <li><a href="#contact" class="nav-cta">{cta}</a></li>
     </ul>
   </div>
 </nav>
@@ -724,165 +843,138 @@ footer{{background:#0f172a;color:rgba(255,255,255,0.6);padding:48px 5% 24px}}
 <section class="hero">
   <div class="hero-content">
     <div class="hero-text">
-      <h1>Welcome to {title}</h1>
-      <p>Experience the next generation of excellence. We deliver outstanding results with passion, innovation, and dedication to quality.</p>
+      <div class="hero-badge">Introducing {name}</div>
+      <h1>{name} — <span>Built for the future</span></h1>
+      <p>{tagline}</p>
       <div class="hero-btns">
-        <a href="#contact" class="btn-primary">Get Started Today</a>
-        <a href="#features" class="btn-secondary">Learn More</a>
+        <a href="#contact" class="btn-hero-primary">{cta} →</a>
+        <a href="#features" class="btn-hero-secondary">See How It Works</a>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat"><div class="hero-stat-num">10K+</div><div class="hero-stat-label">Happy Users</div></div>
+        <div class="hero-stat"><div class="hero-stat-num">99%</div><div class="hero-stat-label">Satisfaction</div></div>
+        <div class="hero-stat"><div class="hero-stat-num">24/7</div><div class="hero-stat-label">Support</div></div>
       </div>
     </div>
-    <div class="hero-image">
-      <img src="{img1}" alt="{title}" loading="lazy">
+    <div class="hero-image fade-up">
+      <img src="{img_hero}" alt="{name}" loading="lazy">
     </div>
   </div>
 </section>
 
-<section class="section" id="features">
+<section class="section features" id="features">
   <div class="section-inner">
-    <h2 class="section-title">Why Choose Us</h2>
-    <p class="section-subtitle">We provide exceptional services tailored to your needs with cutting-edge solutions.</p>
-    <div class="features-grid">
-      <div class="feature-card">
-        <div class="feature-icon">⚡</div>
-        <h3>Lightning Fast</h3>
-        <p>Our solutions are optimized for maximum performance, delivering results faster than ever before.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🛡️</div>
-        <h3>Secure & Reliable</h3>
-        <p>Enterprise-grade security ensures your data and operations are always protected and available.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🎯</div>
-        <h3>Precision Results</h3>
-        <p>Every detail is crafted with precision to deliver exactly what you need, when you need it.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🌍</div>
-        <h3>Global Reach</h3>
-        <p>Serving customers worldwide with consistent quality and dedicated support across all time zones.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">💡</div>
-        <h3>Innovation First</h3>
-        <p>We constantly innovate and improve to stay ahead of the curve and deliver the best solutions.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">🤝</div>
-        <h3>24/7 Support</h3>
-        <p>Our dedicated team is always available to help you succeed and resolve any challenges quickly.</p>
-      </div>
+    <div class="text-center">
+      <span class="section-badge">{section2}</span>
+      <h2 class="section-title">Everything You Need</h2>
+      <p class="section-subtitle">Powerful features designed to help you grow faster and work smarter.</p>
     </div>
+    <div class="features-grid">{features_html}</div>
   </div>
 </section>
 
 <section class="section about" id="about">
   <div class="section-inner">
     <div class="about-grid">
-      <div class="about-img">
-        <img src="{img2}" alt="About {title}" loading="lazy">
+      <div class="about-img fade-up">
+        <img src="{img_about}" alt="About {name}" loading="lazy">
       </div>
       <div class="about-text">
-        <h2>About {title}</h2>
-        <p>We are a passionate team dedicated to delivering exceptional experiences. Our journey started with a simple mission: to make a difference through quality and innovation.</p>
-        <p>With years of experience and a customer-first approach, we have built a reputation for excellence that speaks for itself.</p>
+        <span class="section-badge">Our Story</span>
+        <h2>Why {name} is Different</h2>
+        <p>We started with a simple belief: that great experiences should be accessible to everyone. Since our founding, we've been dedicated to delivering excellence in everything we do.</p>
+        <p>Our team of passionate experts works tirelessly to ensure every customer gets the best possible experience. We don't just meet expectations — we exceed them.</p>
         <div class="stats">
           <div class="stat"><div class="stat-number">500+</div><div class="stat-label">Happy Clients</div></div>
-          <div class="stat"><div class="stat-number">98%</div><div class="stat-label">Satisfaction</div></div>
-          <div class="stat"><div class="stat-number">10+</div><div class="stat-label">Years Experience</div></div>
+          <div class="stat"><div class="stat-number">98%</div><div class="stat-label">Satisfaction Rate</div></div>
+          <div class="stat"><div class="stat-number">5★</div><div class="stat-label">Average Rating</div></div>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section" id="gallery">
+<section class="section gallery" id="gallery">
   <div class="section-inner">
-    <h2 class="section-title">Our Gallery</h2>
-    <p class="section-subtitle">A showcase of our finest work and achievements.</p>
+    <div class="text-center">
+      <span class="section-badge">Showcase</span>
+      <h2 class="section-title">See It in Action</h2>
+      <p class="section-subtitle">A glimpse of what we've created and achieved.</p>
+    </div>
     <div class="gallery-grid">
-      <div class="gallery-item"><img src="{img1}" alt="Gallery 1" loading="lazy"></div>
-      <div class="gallery-item"><img src="{img2}" alt="Gallery 2" loading="lazy"></div>
-      <div class="gallery-item"><img src="{img3}" alt="Gallery 3" loading="lazy"></div>
+      <div class="gallery-item fade-up"><img src="{img_hero}" alt="Gallery 1" loading="lazy"><div class="gallery-overlay"><span class="gallery-overlay-text">View Project →</span></div></div>
+      <div class="gallery-item fade-up"><img src="{img2}" alt="Gallery 2" loading="lazy"><div class="gallery-overlay"><span class="gallery-overlay-text">View Project →</span></div></div>
+      <div class="gallery-item fade-up"><img src="{img3}" alt="Gallery 3" loading="lazy"><div class="gallery-overlay"><span class="gallery-overlay-text">View Project →</span></div></div>
     </div>
   </div>
 </section>
 
 <section class="section testimonials">
   <div class="section-inner">
-    <h2 class="section-title">What Clients Say</h2>
-    <p class="section-subtitle">Real feedback from our valued customers worldwide.</p>
+    <div class="text-center">
+      <span class="section-badge" style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);border-color:rgba(255,255,255,0.2)">Testimonials</span>
+      <h2 class="section-title">Loved by Thousands</h2>
+      <p class="section-subtitle">Real stories from real customers who transformed their business with {name}.</p>
+    </div>
     <div class="testimonials-grid">
-      <div class="testimonial-card">
-        <p class="testimonial-text">"Absolutely outstanding service. The team went above and beyond to deliver exactly what we needed. Highly recommended!"</p>
-        <div class="testimonial-author">
-          <div class="author-avatar">R</div>
-          <div><div class="author-name">Rahul Sharma</div><div class="author-role">CEO, TechCorp India</div></div>
-        </div>
-      </div>
-      <div class="testimonial-card">
-        <p class="testimonial-text">"The quality and attention to detail is unmatched. We have been working with them for 3 years and results are always exceptional."</p>
-        <div class="testimonial-author">
-          <div class="author-avatar">P</div>
-          <div><div class="author-name">Priya Patel</div><div class="author-role">Marketing Director</div></div>
-        </div>
-      </div>
-      <div class="testimonial-card">
-        <p class="testimonial-text">"Fast, reliable, and professional. They transformed our business completely. Worth every rupee invested."</p>
-        <div class="testimonial-author">
-          <div class="author-avatar">A</div>
-          <div><div class="author-name">Arjun Mehta</div><div class="author-role">Founder, StartupHub</div></div>
-        </div>
-      </div>
+      <div class="testimonial-card fade-up"><div class="stars">★★★★★</div><p class="testimonial-text">"Absolutely incredible. {name} completely transformed how we operate. The results speak for themselves — 3x growth in just 6 months!"</p><div class="testimonial-author"><div class="author-avatar">R</div><div><div class="author-name">Rahul Sharma</div><div class="author-role">CEO, TechVentures India</div></div></div></div>
+      <div class="testimonial-card fade-up"><div class="stars">★★★★★</div><p class="testimonial-text">"The best investment we made this year. The team is exceptional and the product delivers exactly what it promises. Highly recommend!"</p><div class="testimonial-author"><div class="author-avatar">P</div><div><div class="author-name">Priya Patel</div><div class="author-role">Marketing Director</div></div></div></div>
+      <div class="testimonial-card fade-up"><div class="stars">★★★★★</div><p class="testimonial-text">"Fast, reliable, and genuinely world-class. {name} sets the gold standard. I cannot imagine running my business without it now."</p><div class="testimonial-author"><div class="author-avatar">A</div><div><div class="author-name">Arjun Mehta</div><div class="author-role">Founder, GrowthLab</div></div></div></div>
     </div>
   </div>
 </section>
 
-<section class="section pricing" id="pricing">
+<section class="section" id="pricing">
   <div class="section-inner">
-    <h2 class="section-title">Simple Pricing</h2>
-    <p class="section-subtitle">Choose the plan that works best for you.</p>
+    <div class="text-center">
+      <span class="section-badge">Pricing</span>
+      <h2 class="section-title">Simple, Transparent Pricing</h2>
+      <p class="section-subtitle">No hidden fees. Choose the plan that works for you.</p>
+    </div>
     <div class="pricing-grid">
-      <div class="pricing-card">
-        <div class="pricing-name">Starter</div>
-        <div class="pricing-price">₹999<span>/month</span></div>
-        <ul class="pricing-features">
-          <li>5 Projects</li><li>10GB Storage</li><li>Email Support</li><li>Basic Analytics</li>
-        </ul>
-        <a href="#contact" class="btn-plan">Get Started</a>
-      </div>
-      <div class="pricing-card popular">
-        <div class="popular-badge">Most Popular</div>
-        <div class="pricing-name">Professional</div>
-        <div class="pricing-price">₹2,499<span>/month</span></div>
-        <ul class="pricing-features">
-          <li>Unlimited Projects</li><li>100GB Storage</li><li>Priority Support</li><li>Advanced Analytics</li><li>Custom Domain</li>
-        </ul>
-        <a href="#contact" class="btn-plan">Get Started</a>
-      </div>
-      <div class="pricing-card">
-        <div class="pricing-name">Enterprise</div>
-        <div class="pricing-price">₹9,999<span>/month</span></div>
-        <ul class="pricing-features">
-          <li>Everything in Pro</li><li>Unlimited Storage</li><li>Dedicated Support</li><li>Custom Integrations</li><li>SLA Guarantee</li>
-        </ul>
-        <a href="#contact" class="btn-plan">Contact Sales</a>
-      </div>
+      <div class="pricing-card fade-up"><div class="pricing-name">Starter</div><div class="pricing-price">₹999<sub>/mo</sub></div><ul class="pricing-features"><li>5 Projects</li><li>10GB Storage</li><li>Email Support</li><li>Basic Analytics</li><li>API Access</li></ul><a href="#contact" class="btn-plan outline">Get Started</a></div>
+      <div class="pricing-card popular fade-up"><div class="popular-badge">⭐ Most Popular</div><div class="pricing-name">Professional</div><div class="pricing-price">₹2,499<sub>/mo</sub></div><ul class="pricing-features"><li>Unlimited Projects</li><li>100GB Storage</li><li>Priority Support</li><li>Advanced Analytics</li><li>Custom Domain</li><li>Team Collaboration</li></ul><a href="#contact" class="btn-plan">Get Started</a></div>
+      <div class="pricing-card fade-up"><div class="pricing-name">Enterprise</div><div class="pricing-price">₹9,999<sub>/mo</sub></div><ul class="pricing-features"><li>Everything in Pro</li><li>Unlimited Storage</li><li>Dedicated Manager</li><li>Custom Integrations</li><li>SLA Guarantee</li><li>White Label</li></ul><a href="#contact" class="btn-plan outline">Contact Sales</a></div>
     </div>
   </div>
 </section>
 
-<section class="section contact" id="contact">
+<section class="cta-section">
   <div class="section-inner">
-    <h2 class="section-title">Get In Touch</h2>
-    <p class="section-subtitle">Ready to get started? We would love to hear from you.</p>
-    <div class="contact-form">
-      <div class="form-row">
-        <div class="form-group"><label>Full Name</label><input type="text" placeholder="Your name"></div>
-        <div class="form-group"><label>Email</label><input type="email" placeholder="your@email.com"></div>
+    <h2>Ready to Get Started?</h2>
+    <p>Join thousands of satisfied customers. Start your journey with {name} today.</p>
+    <a href="#contact" class="btn-cta">{cta} — It\'s Free to Start</a>
+  </div>
+</section>
+
+<section class="section" id="contact">
+  <div class="section-inner">
+    <div class="text-center" style="margin-bottom:60px">
+      <span class="section-badge">Contact</span>
+      <h2 class="section-title">Let\'s Talk</h2>
+      <p class="section-subtitle">Have a question or ready to get started? We would love to hear from you.</p>
+    </div>
+    <div class="contact-grid">
+      <div class="contact-info">
+        <h3>Get in Touch</h3>
+        <p style="color:var(--gray);margin-bottom:28px;line-height:1.7">We\'re here to help. Reach out through any channel and our team will respond within 24 hours.</p>
+        <div class="contact-detail"><div class="contact-detail-icon">📧</div><div><strong>Email</strong><br>hello@{name.lower().replace(" ","")}.com</div></div>
+        <div class="contact-detail"><div class="contact-detail-icon">📞</div><div><strong>Phone</strong><br>+91 98765 43210</div></div>
+        <div class="contact-detail"><div class="contact-detail-icon">📍</div><div><strong>Location</strong><br>Mumbai, Maharashtra, India</div></div>
+        <div class="contact-detail"><div class="contact-detail-icon">⏰</div><div><strong>Hours</strong><br>Mon–Sat, 9 AM – 8 PM IST</div></div>
       </div>
-      <div class="form-group"><label>Message</label><textarea placeholder="Tell us about your project..."></textarea></div>
-      <button class="btn-submit" onclick="alert('Thank you! We will contact you shortly.')">Send Message</button>
+      <div class="contact-form-card">
+        <div class="form-row">
+          <div class="form-group"><label>Full Name *</label><input type="text" placeholder="Your full name"></div>
+          <div class="form-group"><label>Email *</label><input type="email" placeholder="your@email.com"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Phone</label><input type="tel" placeholder="+91 98765 43210"></div>
+          <div class="form-group"><label>Subject</label><select><option>General Inquiry</option><option>Pricing</option><option>Partnership</option><option>Support</option></select></div>
+        </div>
+        <div class="form-group"><label>Message *</label><textarea placeholder="Tell us about your project or question..."></textarea></div>
+        <button class="btn-submit" onclick="this.textContent='✓ Message Sent!';this.style.background='#10b981';setTimeout(()=>{{this.textContent='Send Message';this.style.background=''}},3000)">Send Message</button>
+      </div>
     </div>
   </div>
 </section>
@@ -890,25 +982,22 @@ footer{{background:#0f172a;color:rgba(255,255,255,0.6);padding:48px 5% 24px}}
 <footer>
   <div class="footer-inner">
     <div class="footer-grid">
-      <div class="footer-brand">
-        <span class="logo">{title}</span>
-        <p>Delivering excellence and innovation to help businesses grow and succeed in the digital world.</p>
-      </div>
+      <div class="footer-brand"><span class="logo">{name}</span><p>Delivering excellence and innovation to help businesses grow and succeed in the digital age.</p></div>
       <div class="footer-col"><h4>Company</h4><ul><li><a href="#about">About Us</a></li><li><a href="#features">Services</a></li><li><a href="#pricing">Pricing</a></li><li><a href="#contact">Contact</a></li></ul></div>
-      <div class="footer-col"><h4>Services</h4><ul><li><a href="#">Consulting</a></li><li><a href="#">Development</a></li><li><a href="#">Design</a></li><li><a href="#">Support</a></li></ul></div>
-      <div class="footer-col"><h4>Connect</h4><ul><li><a href="#">Twitter</a></li><li><a href="#">LinkedIn</a></li><li><a href="#">Instagram</a></li><li><a href="#">Facebook</a></li></ul></div>
+      <div class="footer-col"><h4>Services</h4><ul><li><a href="#">Consulting</a></li><li><a href="#">Development</a></li><li><a href="#">Design</a></li><li><a href="#">Analytics</a></li></ul></div>
+      <div class="footer-col"><h4>Follow Us</h4><ul><li><a href="#">Twitter / X</a></li><li><a href="#">LinkedIn</a></li><li><a href="#">Instagram</a></li><li><a href="#">YouTube</a></li></ul></div>
     </div>
-    <div class="footer-bottom">© 2026 {title}. All rights reserved. Built with Dacexy AI.</div>
+    <div class="footer-bottom"><span>© 2026 {name}. All rights reserved.</span><div class="footer-links"><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Sitemap</a></div><span>Built with ❤️ using Dacexy AI</span></div>
   </div>
 </footer>
 
 <script>
-document.querySelectorAll('a[href^="#"]').forEach(a=>{{a.addEventListener("click",e=>{{e.preventDefault();const t=document.querySelector(a.getAttribute("href"));t&&t.scrollIntoView({{behavior:"smooth"}})}})}}));
-window.addEventListener("scroll",()=>{{const nav=document.querySelector("nav");nav.style.boxShadow=window.scrollY>50?"0 2px 20px rgba(0,0,0,0.1)":"none"}});
-const observer=new IntersectionObserver(entries=>entries.forEach(e=>{{if(e.isIntersecting)e.target.style.animation="fadeIn 0.6s ease forwards"}}),{{threshold:0.1}});
-document.querySelectorAll(".feature-card,.testimonial-card,.pricing-card,.gallery-item").forEach(el=>{{el.style.opacity="0";observer.observe(el)}});
+const navbar=document.getElementById("navbar");
+window.addEventListener("scroll",()=>{{navbar.classList.toggle("scrolled",window.scrollY>50)}});
+document.querySelectorAll("a[href^='#']").forEach(a=>{{a.addEventListener("click",e=>{{e.preventDefault();const t=document.querySelector(a.getAttribute("href"));if(t)t.scrollIntoView({{behavior:"smooth",block:"start"}})}})}});
+const observer=new IntersectionObserver(entries=>{{entries.forEach(e=>{{if(e.isIntersecting){{e.target.classList.add("visible");observer.unobserve(e.target)}}}})}},{{threshold:0.15}});
+document.querySelectorAll(".fade-up").forEach(el=>observer.observe(el));
 </script>
-<style>@keyframes fadeIn{{from{{opacity:0;transform:translateY(20px)}}to{{opacity:1;transform:translateY(0)}}}}</style>
 </body>
 </html>"""
 
@@ -917,19 +1006,8 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         return build_template(prompt)
     except Exception as e:
         log.error("Website generation failed: %s", e)
-        try:
-            messages = [
-                {"role": "system", "content": "Generate a complete HTML webpage. Return ONLY HTML starting with <!DOCTYPE html> ending with </html>. No markdown."},
-                {"role": "user", "content": "Simple webpage for: " + prompt}
-            ]
-            html = await asyncio.wait_for(ai.chat(messages, model="deepseek-chat", stream=False), timeout=60.0)
-            if html and len(html.strip()) > 200:
-                return html.strip()
-        except Exception:
-            pass
         return build_template("Business")
 ''')
-
 
 w("src/interfaces/http/routes/auth.py", """
 import secrets
