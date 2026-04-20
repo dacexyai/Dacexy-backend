@@ -585,50 +585,351 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import asyncio
+import urllib.parse
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
 
 log = logging.getLogger("website")
 
-SYSTEM_PROMPT = (
-    "You are a web developer. Generate a complete HTML webpage. "
-    "RULES: Return ONLY raw HTML starting with <!DOCTYPE html> ending with </html>. "
-    "Use a <style> tag for CSS. Import one Google Font. "
-    "Include: sticky navbar, hero section with gradient background, "
-    "content section, and footer. Use https://picsum.photos/600/300 for images. "
-    "Make it mobile responsive. NO explanations. NO markdown. NO backticks."
-)
+def build_template(prompt: str) -> str:
+    title = prompt[:60].title()
+    encoded = urllib.parse.quote(prompt[:50])
+    seed1 = abs(hash(prompt)) % 99999
+    seed2 = abs(hash(prompt + "2")) % 99999
+    seed3 = abs(hash(prompt + "3")) % 99999
+    img1 = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=600&seed={seed1}&nologo=true&model=flux"
+    img2 = f"https://image.pollinations.ai/prompt/{encoded}_team?width=600&height=400&seed={seed2}&nologo=true&model=flux"
+    img3 = f"https://image.pollinations.ai/prompt/{encoded}_product?width=600&height=400&seed={seed3}&nologo=true&model=flux"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:"Inter",sans-serif;color:#1a1a2e;background:#fff}}
+nav{{position:fixed;top:0;width:100%;background:rgba(255,255,255,0.95);backdrop-filter:blur(10px);border-bottom:1px solid #e5e7eb;z-index:100;padding:0 5%}}
+.nav-inner{{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:64px}}
+.logo{{font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.nav-links{{display:flex;gap:32px;list-style:none}}
+.nav-links a{{color:#4b5563;text-decoration:none;font-weight:500;font-size:0.9rem;transition:color 0.2s}}
+.nav-links a:hover{{color:#667eea}}
+.nav-cta{{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff!important;padding:8px 20px;border-radius:8px!important}}
+.hero{{min-height:100vh;background:linear-gradient(135deg,#667eea 0%,#764ba2 50%,#f093fb 100%);display:flex;align-items:center;padding:80px 5% 60px;position:relative;overflow:hidden}}
+.hero::before{{content:"";position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle,rgba(255,255,255,0.1) 0%,transparent 60%);animation:pulse 4s ease-in-out infinite}}
+@keyframes pulse{{0%,100%{{transform:scale(1)}}50%{{transform:scale(1.05)}}}}
+.hero-content{{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}}
+.hero-text h1{{font-size:3.5rem;font-weight:800;color:#fff;line-height:1.2;margin-bottom:20px}}
+.hero-text p{{font-size:1.2rem;color:rgba(255,255,255,0.85);margin-bottom:32px;line-height:1.7}}
+.hero-btns{{display:flex;gap:16px;flex-wrap:wrap}}
+.btn-primary{{background:#fff;color:#667eea;padding:14px 32px;border-radius:12px;font-weight:700;font-size:1rem;text-decoration:none;transition:transform 0.2s,box-shadow 0.2s}}
+.btn-primary:hover{{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,0.2)}}
+.btn-secondary{{border:2px solid rgba(255,255,255,0.6);color:#fff;padding:14px 32px;border-radius:12px;font-weight:600;font-size:1rem;text-decoration:none;transition:all 0.2s}}
+.btn-secondary:hover{{background:rgba(255,255,255,0.15)}}
+.hero-image img{{width:100%;border-radius:20px;box-shadow:0 25px 60px rgba(0,0,0,0.3)}}
+.section{{padding:80px 5%}}
+.section-inner{{max-width:1200px;margin:0 auto}}
+.section-title{{font-size:2.5rem;font-weight:800;text-align:center;margin-bottom:16px;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.section-subtitle{{text-align:center;color:#6b7280;font-size:1.1rem;margin-bottom:60px;max-width:600px;margin-left:auto;margin-right:auto}}
+.features-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}}
+.feature-card{{background:#f9fafb;border-radius:16px;padding:36px 28px;border:1px solid #e5e7eb;transition:transform 0.2s,box-shadow 0.2s}}
+.feature-card:hover{{transform:translateY(-4px);box-shadow:0 20px 40px rgba(102,126,234,0.15)}}
+.feature-icon{{width:56px;height:56px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin-bottom:20px}}
+.feature-card h3{{font-size:1.2rem;font-weight:700;margin-bottom:12px;color:#1a1a2e}}
+.feature-card p{{color:#6b7280;line-height:1.7;font-size:0.95rem}}
+.about{{background:linear-gradient(135deg,#f8f9ff,#f0f4ff)}}
+.about-grid{{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}}
+.about-img img{{width:100%;border-radius:20px;box-shadow:0 20px 50px rgba(102,126,234,0.2)}}
+.about-text h2{{font-size:2.2rem;font-weight:800;margin-bottom:16px;color:#1a1a2e}}
+.about-text p{{color:#6b7280;line-height:1.8;margin-bottom:16px;font-size:1rem}}
+.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:32px}}
+.stat{{text-align:center;background:#fff;border-radius:12px;padding:20px;box-shadow:0 4px 15px rgba(102,126,234,0.1)}}
+.stat-number{{font-size:2rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.stat-label{{font-size:0.85rem;color:#6b7280;margin-top:4px}}
+.gallery-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
+.gallery-item{{border-radius:16px;overflow:hidden;box-shadow:0 8px 25px rgba(0,0,0,0.1);transition:transform 0.2s}}
+.gallery-item:hover{{transform:scale(1.03)}}
+.gallery-item img{{width:100%;height:220px;object-fit:cover}}
+.testimonials{{background:#1a1a2e}}
+.testimonials .section-title{{color:#fff;background:none;-webkit-text-fill-color:#fff}}
+.testimonials .section-subtitle{{color:rgba(255,255,255,0.6)}}
+.testimonials-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
+.testimonial-card{{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px}}
+.testimonial-text{{color:rgba(255,255,255,0.85);line-height:1.7;font-style:italic;margin-bottom:20px;font-size:0.95rem}}
+.testimonial-author{{display:flex;align-items:center;gap:12px}}
+.author-avatar{{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}}
+.author-name{{color:#fff;font-weight:600;font-size:0.95rem}}
+.author-role{{color:rgba(255,255,255,0.5);font-size:0.8rem}}
+.pricing{{background:#f9fafb}}
+.pricing-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}}
+.pricing-card{{background:#fff;border:2px solid #e5e7eb;border-radius:20px;padding:36px;text-align:center;transition:transform 0.2s}}
+.pricing-card.popular{{border-color:#667eea;transform:scale(1.05);box-shadow:0 20px 50px rgba(102,126,234,0.2)}}
+.popular-badge{{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:0.75rem;font-weight:700;padding:4px 12px;border-radius:20px;display:inline-block;margin-bottom:16px}}
+.pricing-name{{font-size:1.3rem;font-weight:700;color:#1a1a2e;margin-bottom:8px}}
+.pricing-price{{font-size:3rem;font-weight:800;color:#667eea;margin:16px 0}}
+.pricing-price span{{font-size:1rem;color:#6b7280;font-weight:400}}
+.pricing-features{{list-style:none;margin:24px 0;text-align:left}}
+.pricing-features li{{color:#6b7280;padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:0.9rem}}
+.pricing-features li:before{{content:"✓ ";color:#667eea;font-weight:700}}
+.btn-plan{{display:block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:14px;border-radius:12px;font-weight:700;text-decoration:none;margin-top:24px;transition:opacity 0.2s}}
+.btn-plan:hover{{opacity:0.9}}
+.contact{{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}}
+.contact .section-title{{color:#fff;background:none;-webkit-text-fill-color:#fff}}
+.contact .section-subtitle{{color:rgba(255,255,255,0.8)}}
+.contact-form{{max-width:600px;margin:0 auto}}
+.form-row{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}}
+.form-group{{display:flex;flex-direction:column}}
+.form-group label{{color:rgba(255,255,255,0.8);font-size:0.85rem;font-weight:600;margin-bottom:6px}}
+.form-group input,.form-group textarea,.form-group select{{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:10px;padding:12px 16px;color:#fff;font-size:0.95rem;outline:none;width:100%;font-family:inherit}}
+.form-group input::placeholder,.form-group textarea::placeholder{{color:rgba(255,255,255,0.5)}}
+.form-group textarea{{height:120px;resize:vertical;margin-bottom:16px}}
+.btn-submit{{width:100%;background:#fff;color:#667eea;padding:16px;border-radius:12px;font-weight:700;font-size:1rem;border:none;cursor:pointer;transition:transform 0.2s}}
+.btn-submit:hover{{transform:translateY(-2px)}}
+footer{{background:#0f172a;color:rgba(255,255,255,0.6);padding:48px 5% 24px}}
+.footer-inner{{max-width:1200px;margin:0 auto}}
+.footer-grid{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:40px;margin-bottom:40px}}
+.footer-brand .logo{{font-size:1.5rem;font-weight:800;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;display:block;margin-bottom:12px}}
+.footer-brand p{{font-size:0.9rem;line-height:1.6}}
+.footer-col h4{{color:#fff;font-weight:700;margin-bottom:16px;font-size:0.95rem}}
+.footer-col ul{{list-style:none}}
+.footer-col ul li{{margin-bottom:10px}}
+.footer-col ul li a{{color:rgba(255,255,255,0.6);text-decoration:none;font-size:0.9rem;transition:color 0.2s}}
+.footer-col ul li a:hover{{color:#667eea}}
+.footer-bottom{{border-top:1px solid rgba(255,255,255,0.1);padding-top:24px;text-align:center;font-size:0.85rem}}
+@media(max-width:768px){{
+  .hero-content,.about-grid,.footer-grid{{grid-template-columns:1fr}}
+  .hero-text h1{{font-size:2.2rem}}
+  .features-grid,.testimonials-grid,.pricing-grid,.gallery-grid{{grid-template-columns:1fr}}
+  .form-row{{grid-template-columns:1fr}}
+  .stats{{grid-template-columns:repeat(2,1fr)}}
+  .pricing-card.popular{{transform:scale(1)}}
+  .nav-links{{display:none}}
+}}
+</style>
+</head>
+<body>
+<nav>
+  <div class="nav-inner">
+    <span class="logo">{title}</span>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#about">About</a></li>
+      <li><a href="#pricing">Pricing</a></li>
+      <li><a href="#contact" class="nav-cta">Contact</a></li>
+    </ul>
+  </div>
+</nav>
 
-FALLBACK = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error</title><style>body{font-family:sans-serif;background:#0f0f0f;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}</style></head><body><div><h1 style='color:#7c3aed;font-size:2rem;margin-bottom:16px'>Generation Failed</h1><p style='color:#9e9e9e;margin-bottom:24px'>The AI took too long. Please try again.</p><a href='javascript:history.back()' style='background:#7c3aed;color:#fff;padding:12px 28px;border-radius:10px;text-decoration:none'>Try Again</a></div></body></html>"
+<section class="hero">
+  <div class="hero-content">
+    <div class="hero-text">
+      <h1>Welcome to {title}</h1>
+      <p>Experience the next generation of excellence. We deliver outstanding results with passion, innovation, and dedication to quality.</p>
+      <div class="hero-btns">
+        <a href="#contact" class="btn-primary">Get Started Today</a>
+        <a href="#features" class="btn-secondary">Learn More</a>
+      </div>
+    </div>
+    <div class="hero-image">
+      <img src="{img1}" alt="{title}" loading="lazy">
+    </div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="section-inner">
+    <h2 class="section-title">Why Choose Us</h2>
+    <p class="section-subtitle">We provide exceptional services tailored to your needs with cutting-edge solutions.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Lightning Fast</h3>
+        <p>Our solutions are optimized for maximum performance, delivering results faster than ever before.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🛡️</div>
+        <h3>Secure & Reliable</h3>
+        <p>Enterprise-grade security ensures your data and operations are always protected and available.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🎯</div>
+        <h3>Precision Results</h3>
+        <p>Every detail is crafted with precision to deliver exactly what you need, when you need it.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌍</div>
+        <h3>Global Reach</h3>
+        <p>Serving customers worldwide with consistent quality and dedicated support across all time zones.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">💡</div>
+        <h3>Innovation First</h3>
+        <p>We constantly innovate and improve to stay ahead of the curve and deliver the best solutions.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🤝</div>
+        <h3>24/7 Support</h3>
+        <p>Our dedicated team is always available to help you succeed and resolve any challenges quickly.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section about" id="about">
+  <div class="section-inner">
+    <div class="about-grid">
+      <div class="about-img">
+        <img src="{img2}" alt="About {title}" loading="lazy">
+      </div>
+      <div class="about-text">
+        <h2>About {title}</h2>
+        <p>We are a passionate team dedicated to delivering exceptional experiences. Our journey started with a simple mission: to make a difference through quality and innovation.</p>
+        <p>With years of experience and a customer-first approach, we have built a reputation for excellence that speaks for itself.</p>
+        <div class="stats">
+          <div class="stat"><div class="stat-number">500+</div><div class="stat-label">Happy Clients</div></div>
+          <div class="stat"><div class="stat-number">98%</div><div class="stat-label">Satisfaction</div></div>
+          <div class="stat"><div class="stat-number">10+</div><div class="stat-label">Years Experience</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="gallery">
+  <div class="section-inner">
+    <h2 class="section-title">Our Gallery</h2>
+    <p class="section-subtitle">A showcase of our finest work and achievements.</p>
+    <div class="gallery-grid">
+      <div class="gallery-item"><img src="{img1}" alt="Gallery 1" loading="lazy"></div>
+      <div class="gallery-item"><img src="{img2}" alt="Gallery 2" loading="lazy"></div>
+      <div class="gallery-item"><img src="{img3}" alt="Gallery 3" loading="lazy"></div>
+    </div>
+  </div>
+</section>
+
+<section class="section testimonials">
+  <div class="section-inner">
+    <h2 class="section-title">What Clients Say</h2>
+    <p class="section-subtitle">Real feedback from our valued customers worldwide.</p>
+    <div class="testimonials-grid">
+      <div class="testimonial-card">
+        <p class="testimonial-text">"Absolutely outstanding service. The team went above and beyond to deliver exactly what we needed. Highly recommended!"</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">R</div>
+          <div><div class="author-name">Rahul Sharma</div><div class="author-role">CEO, TechCorp India</div></div>
+        </div>
+      </div>
+      <div class="testimonial-card">
+        <p class="testimonial-text">"The quality and attention to detail is unmatched. We have been working with them for 3 years and results are always exceptional."</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">P</div>
+          <div><div class="author-name">Priya Patel</div><div class="author-role">Marketing Director</div></div>
+        </div>
+      </div>
+      <div class="testimonial-card">
+        <p class="testimonial-text">"Fast, reliable, and professional. They transformed our business completely. Worth every rupee invested."</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">A</div>
+          <div><div class="author-name">Arjun Mehta</div><div class="author-role">Founder, StartupHub</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section pricing" id="pricing">
+  <div class="section-inner">
+    <h2 class="section-title">Simple Pricing</h2>
+    <p class="section-subtitle">Choose the plan that works best for you.</p>
+    <div class="pricing-grid">
+      <div class="pricing-card">
+        <div class="pricing-name">Starter</div>
+        <div class="pricing-price">₹999<span>/month</span></div>
+        <ul class="pricing-features">
+          <li>5 Projects</li><li>10GB Storage</li><li>Email Support</li><li>Basic Analytics</li>
+        </ul>
+        <a href="#contact" class="btn-plan">Get Started</a>
+      </div>
+      <div class="pricing-card popular">
+        <div class="popular-badge">Most Popular</div>
+        <div class="pricing-name">Professional</div>
+        <div class="pricing-price">₹2,499<span>/month</span></div>
+        <ul class="pricing-features">
+          <li>Unlimited Projects</li><li>100GB Storage</li><li>Priority Support</li><li>Advanced Analytics</li><li>Custom Domain</li>
+        </ul>
+        <a href="#contact" class="btn-plan">Get Started</a>
+      </div>
+      <div class="pricing-card">
+        <div class="pricing-name">Enterprise</div>
+        <div class="pricing-price">₹9,999<span>/month</span></div>
+        <ul class="pricing-features">
+          <li>Everything in Pro</li><li>Unlimited Storage</li><li>Dedicated Support</li><li>Custom Integrations</li><li>SLA Guarantee</li>
+        </ul>
+        <a href="#contact" class="btn-plan">Contact Sales</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section contact" id="contact">
+  <div class="section-inner">
+    <h2 class="section-title">Get In Touch</h2>
+    <p class="section-subtitle">Ready to get started? We would love to hear from you.</p>
+    <div class="contact-form">
+      <div class="form-row">
+        <div class="form-group"><label>Full Name</label><input type="text" placeholder="Your name"></div>
+        <div class="form-group"><label>Email</label><input type="email" placeholder="your@email.com"></div>
+      </div>
+      <div class="form-group"><label>Message</label><textarea placeholder="Tell us about your project..."></textarea></div>
+      <button class="btn-submit" onclick="alert('Thank you! We will contact you shortly.')">Send Message</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <span class="logo">{title}</span>
+        <p>Delivering excellence and innovation to help businesses grow and succeed in the digital world.</p>
+      </div>
+      <div class="footer-col"><h4>Company</h4><ul><li><a href="#about">About Us</a></li><li><a href="#features">Services</a></li><li><a href="#pricing">Pricing</a></li><li><a href="#contact">Contact</a></li></ul></div>
+      <div class="footer-col"><h4>Services</h4><ul><li><a href="#">Consulting</a></li><li><a href="#">Development</a></li><li><a href="#">Design</a></li><li><a href="#">Support</a></li></ul></div>
+      <div class="footer-col"><h4>Connect</h4><ul><li><a href="#">Twitter</a></li><li><a href="#">LinkedIn</a></li><li><a href="#">Instagram</a></li><li><a href="#">Facebook</a></li></ul></div>
+    </div>
+    <div class="footer-bottom">© 2026 {title}. All rights reserved. Built with Dacexy AI.</div>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll('a[href^="#"]').forEach(a=>{{a.addEventListener("click",e=>{{e.preventDefault();const t=document.querySelector(a.getAttribute("href"));t&&t.scrollIntoView({{behavior:"smooth"}})}})}}));
+window.addEventListener("scroll",()=>{{const nav=document.querySelector("nav");nav.style.boxShadow=window.scrollY>50?"0 2px 20px rgba(0,0,0,0.1)":"none"}});
+const observer=new IntersectionObserver(entries=>entries.forEach(e=>{{if(e.isIntersecting)e.target.style.animation="fadeIn 0.6s ease forwards"}}),{{threshold:0.1}});
+document.querySelectorAll(".feature-card,.testimonial-card,.pricing-card,.gallery-item").forEach(el=>{{el.style.opacity="0";observer.observe(el)}});
+</script>
+<style>@keyframes fadeIn{{from{{opacity:0;transform:translateY(20px)}}to{{opacity:1;transform:translateY(0)}}}}</style>
+</body>
+</html>"""
 
 async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": "Build a webpage for: " + prompt + ". Return ONLY HTML from <!DOCTYPE html> to </html>."}
-    ]
     try:
-        html = await asyncio.wait_for(
-            ai.chat(messages, model="deepseek-chat", stream=False),
-            timeout=85.0
-        )
-        if not html or len(html.strip()) < 100:
-            return FALLBACK
-        html = html.strip()
-        if "```html" in html:
-            html = html.split("```html")[1].split("```")[0].strip()
-        elif "```" in html:
-            html = html.split("```")[1].split("```")[0].strip()
-        if not html.startswith("<!") and not html.lower().startswith("<html"):
-            html = "<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>" + html + "</body></html>"
-        if not html.rstrip().endswith("</html>"):
-            html = html + "</body></html>"
-        return html
-    except asyncio.TimeoutError:
-        log.error("Website generation timed out")
-        return FALLBACK
+        return build_template(prompt)
     except Exception as e:
         log.error("Website generation failed: %s", e)
-        return FALLBACK
+        try:
+            messages = [
+                {"role": "system", "content": "Generate a complete HTML webpage. Return ONLY HTML starting with <!DOCTYPE html> ending with </html>. No markdown."},
+                {"role": "user", "content": "Simple webpage for: " + prompt}
+            ]
+            html = await asyncio.wait_for(ai.chat(messages, model="deepseek-chat", stream=False), timeout=60.0)
+            if html and len(html.strip()) > 200:
+                return html.strip()
+        except Exception:
+            pass
+        return build_template("Business")
 ''')
+
 
 w("src/interfaces/http/routes/auth.py", """
 import secrets
