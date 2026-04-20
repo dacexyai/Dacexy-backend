@@ -1791,6 +1791,7 @@ async def delete_memory(memory_id: str, user: User = Depends(_get_current_user),
     return {"message": "Deleted"}
 """)
 w("src/interfaces/http/routes/media.py", '''
+import asyncio
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -1841,24 +1842,55 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
     record = GeneratedVideo(org_id=user.org_id, user_id=user.id, prompt=body.prompt, status="processing")
     db.add(record)
     await db.flush()
-    try:
-        encoded = urllib.parse.quote(body.prompt)
-        video_url = f"https://video.pollinations.ai/prompt/{encoded}"
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.get(video_url)
-            if r.status_code != 200:
-                raise HTTPException(500, f"Video generation failed: {r.status_code}")
-        record.url = video_url
+    wavespeed_key = getattr(settings, "WAVESPEED_API_KEY", "")
+    if not wavespeed_key:
+        encoded = urllib.parse.quote(body.prompt[:80])
+        seed = abs(hash(body.prompt)) % 99999
+        image_url = f"https://image.pollinations.ai/prompt/cinematic_video_frame_{encoded}?width=1280&height=720&seed={seed}&nologo=true&model=flux"
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            r = await client.get(image_url)
+        record.url = image_url
         record.status = "completed"
         await db.commit()
-        return {"id": str(record.id), "url": video_url, "status": "completed"}
+        return {"id": str(record.id), "url": image_url, "status": "completed", "type": "image_preview", "note": "Add WAVESPEED_API_KEY for real video"}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                "https://api.wavespeed.ai/api/v2/wavespeed-ai/wan-t2v-480p",
+                headers={"Authorization": f"Bearer {wavespeed_key}", "Content-Type": "application/json"},
+                json={"prompt": body.prompt, "duration": "5", "ratio": "16:9"}
+            )
+            if r.status_code not in [200, 201]:
+                raise HTTPException(500, f"WaveSpeed error {r.status_code}: {r.text[:200]}")
+            data = r.json()
+            request_id = data.get("data", {}).get("id", "")
+            video_url = ""
+            for _ in range(30):
+                await asyncio.sleep(4)
+                poll = await client.get(
+                    f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result",
+                    headers={"Authorization": f"Bearer {wavespeed_key}"}
+                )
+                pdata = poll.json()
+                status = pdata.get("data", {}).get("status", "")
+                if status == "completed":
+                    video_url = pdata.get("data", {}).get("outputs", [""])[0]
+                    break
+                elif status == "failed":
+                    raise HTTPException(500, "Video generation failed")
+            if not video_url:
+                raise HTTPException(500, "Video generation timed out")
+            record.url = video_url
+            record.status = "completed"
+            await db.commit()
+            return {"id": str(record.id), "url": video_url, "status": "completed"}
     except HTTPException:
         raise
     except Exception as e:
         record.status = "failed"
         await db.commit()
         raise HTTPException(500, f"Video generation failed: {str(e)}")
-''')
+        ''')
 
 w("src/main.py", """
 import logging
