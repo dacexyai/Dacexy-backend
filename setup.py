@@ -1791,13 +1791,12 @@ async def delete_memory(memory_id: str, user: User = Depends(_get_current_user),
     await db.delete(entry)
     return {"message": "Deleted"}
 """)
-w("src/interfaces/http/routes/media.py", '''
-import asyncio
-from __future__ import annotations
+w("src/interfaces/http/routes/media.py", '''from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
+import asyncio
 import urllib.parse
 
 from src.infrastructure.persistence.database import get_db
@@ -1821,12 +1820,13 @@ async def generate_image(body: ImageRequest, user: User = Depends(_get_current_u
     db.add(record)
     await db.flush()
     try:
-        encoded = urllib.parse.quote(body.prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={body.width}&height={body.height}&nologo=true&enhance=true"
-        async with httpx.AsyncClient(timeout=60) as client:
+        encoded = urllib.parse.quote(body.prompt[:80])
+        seed = abs(hash(body.prompt)) % 99999
+        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={body.width}&height={body.height}&seed={seed}&nologo=true&model=flux"
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             r = await client.get(image_url)
             if r.status_code != 200:
-                raise HTTPException(500, f"Image generation failed: {r.status_code}")
+                raise HTTPException(500, f"Image generation failed: status {r.status_code}")
         record.url = image_url
         record.status = "completed"
         await db.commit()
@@ -1847,13 +1847,13 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
     if not wavespeed_key:
         encoded = urllib.parse.quote(body.prompt[:80])
         seed = abs(hash(body.prompt)) % 99999
-        image_url = f"https://image.pollinations.ai/prompt/cinematic_video_frame_{encoded}?width=1280&height=720&seed={seed}&nologo=true&model=flux"
+        image_url = f"https://image.pollinations.ai/prompt/cinematic_{encoded}?width=1280&height=720&seed={seed}&nologo=true&model=flux"
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             r = await client.get(image_url)
         record.url = image_url
         record.status = "completed"
         await db.commit()
-        return {"id": str(record.id), "url": image_url, "status": "completed", "type": "image_preview", "note": "Add WAVESPEED_API_KEY for real video"}
+        return {"id": str(record.id), "url": image_url, "status": "completed", "note": "Add WAVESPEED_API_KEY for real video"}
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(
@@ -1891,7 +1891,8 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
         record.status = "failed"
         await db.commit()
         raise HTTPException(500, f"Video generation failed: {str(e)}")
-        ''')
+''')
+
 
 w("src/main.py", """
 import logging
