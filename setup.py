@@ -2078,4 +2078,22 @@ async def config():
 async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
 ''')
+
+# ── START SERVER ──────────────────────────────────────────────────────────────
+import os
+import subprocess
+import sys
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    subprocess.run(
+        [
+            sys.executable, "-m", "uvicorn",
+            "src.main:app",
+            "--host", "0.0.0.0",
+            "--port", str(port),
+            "--workers", "1",
+        ],
+        check=True,
+    )
        
