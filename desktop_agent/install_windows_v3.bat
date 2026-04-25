@@ -1,77 +1,93 @@
 @echo off
-title Dacexy Agent v3 Installer
-color 0D
+title Dacexy Desktop Agent Installer
 echo.
-echo  ============================================
-echo    Dacexy Desktop Agent v3.0 - Installer
-echo    Voice + AI Computer Control
-echo  ============================================
+echo  ██████╗  █████╗  ██████╗███████╗██╗  ██╗██╗   ██╗
+echo  ██╔══██╗██╔══██╗██╔════╝██╔════╝╚██╗██╔╝╚██╗ ██╔╝
+echo  ██║  ██║███████║██║     █████╗   ╚███╔╝  ╚████╔╝ 
+echo  ██║  ██║██╔══██║██║     ██╔══╝   ██╔██╗   ╚██╔╝  
+echo  ██████╔╝██║  ██║╚██████╗███████╗██╔╝ ██╗   ██║   
+echo  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝   ╚═╝   
+echo.
+echo  Desktop Agent Installer v3.0
+echo  ================================
 echo.
 
 :: Check Python
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  Python not found. Downloading Python 3.11...
-    powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.0/python-3.11.0-amd64.exe' -OutFile '%TEMP%\python_setup.exe'"
-    echo  Installing Python...
-    %TEMP%\python_setup.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
-    echo  Python installed!
-    timeout /t 3 >nul
+if errorlevel 1 (
+    echo [ERROR] Python not found. Installing Python...
+    echo Please download Python from https://python.org/downloads
+    echo Make sure to check "Add Python to PATH" during install.
+    pause
+    start https://python.org/downloads
+    exit /b 1
 )
 
-echo  Upgrading pip...
-python -m pip install --upgrade pip -q
+echo [OK] Python found.
+echo.
 
-echo  Installing core packages...
-pip install pyautogui pillow websockets requests pyttsx3 SpeechRecognition numpy -q
-
-echo  Installing PyAudio for microphone...
-pip install pyaudio -q 2>nul
-if %errorlevel% neq 0 (
-    echo  Trying alternative PyAudio install...
-    pip install pipwin -q
-    pipwin install pyaudio -q 2>nul
-    if %errorlevel% neq 0 (
-        echo  Downloading PyAudio wheel...
-        powershell -Command "Invoke-WebRequest -Uri 'https://files.pythonhosted.org/packages/PyAudio-0.2.14-cp311-cp311-win_amd64.whl' -OutFile '%TEMP%\PyAudio.whl'" 2>nul
-        pip install %TEMP%\PyAudio.whl -q 2>nul
-    )
+:: Install dependencies
+echo [1/4] Installing dependencies...
+pip install websockets pyautogui requests pillow speechrecognition pyaudio psutil --quiet
+if errorlevel 1 (
+    echo [ERROR] Failed to install dependencies.
+    pause
+    exit /b 1
 )
-
-echo  Installing system tray support...
-pip install pystray -q
-
+echo [OK] Dependencies installed.
 echo.
-echo  Downloading Dacexy Agent...
-powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\dacexy_agent.py'"
 
-echo  Creating desktop shortcut...
-set AGENT_PATH=%USERPROFILE%\dacexy_agent.py
-set SHORTCUT=%USERPROFILE%\Desktop\Dacexy Agent.bat
+:: Create agent folder
+echo [2/4] Setting up agent folder...
+if not exist "%USERPROFILE%\DacexyAgent" mkdir "%USERPROFILE%\DacexyAgent"
 
-echo @echo off > "%SHORTCUT%"
-echo title Dacexy Desktop Agent >> "%SHORTCUT%"
-echo echo Starting Dacexy Agent... >> "%SHORTCUT%"
-echo python "%AGENT_PATH%" >> "%SHORTCUT%"
-echo if %%errorlevel%% neq 0 pause >> "%SHORTCUT%"
-
-echo  Creating startup shortcut (auto-start with Windows)...
-set STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\DacexyAgent.bat
-echo @echo off > "%STARTUP%"
-echo start /min python "%AGENT_PATH%" >> "%STARTUP%"
-
-echo.
-echo  ============================================
-echo    Installation Complete!
-echo.
-echo    Desktop shortcut: "Dacexy Agent"
-echo    Auto-starts with Windows
-echo.
-echo    Say "Hey Dacexy" to activate voice control
-echo  ============================================
-echo.
-set /p LAUNCH="Launch Dacexy Agent now? (y/n): "
-if /i "%LAUNCH%"=="y" (
-    start "" "%SHORTCUT%"
+:: Download the agent script
+echo [3/4] Downloading Dacexy Agent...
+powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\DacexyAgent\dacexy_agent.py'"
+if errorlevel 1 (
+    echo [ERROR] Failed to download agent. Check your internet connection.
+    pause
+    exit /b 1
 )
+echo [OK] Agent downloaded.
+echo.
+
+:: Ask for token
+echo [4/4] Setup Token
+echo.
+echo  To get your token:
+echo  1. Go to https://dacexy.vercel.app/login
+echo  2. Login to your account
+echo  3. Open DevTools (F12) - Application - Local Storage
+echo  4. Copy the value of 'token'
+echo.
+set /p TOKEN="Paste your Dacexy token here: "
+
+:: Save token
+echo %TOKEN% > "%USERPROFILE%\DacexyAgent\token.txt"
+
+:: Create desktop shortcut to launch agent
+echo.
+echo Creating desktop shortcut...
+set SCRIPT="%TEMP%\CreateShortcut.vbs"
+echo Set oWS = WScript.CreateObject("WScript.Shell") > %SCRIPT%
+echo sLinkFile = "%USERPROFILE%\Desktop\Dacexy Agent.lnk" >> %SCRIPT%
+echo Set oLink = oWS.CreateShortcut(sLinkFile) >> %SCRIPT%
+echo oLink.TargetPath = "python" >> %SCRIPT%
+echo oLink.Arguments = "%USERPROFILE%\DacexyAgent\dacexy_agent.py" >> %SCRIPT%
+echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> %SCRIPT%
+echo oLink.Description = "Dacexy Desktop Agent" >> %SCRIPT%
+echo oLink.Save >> %SCRIPT%
+cscript /nologo %SCRIPT%
+del %SCRIPT%
+
+:: Launch agent
+echo.
+echo ================================
+echo  Installation Complete!
+echo  Launching Dacexy Agent now...
+echo ================================
+echo.
+cd "%USERPROFILE%\DacexyAgent"
+python dacexy_agent.py
 pause
