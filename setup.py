@@ -1534,8 +1534,16 @@ async def download_windows_agent():
     q = chr(34)
     lines = [
         "@echo off",
-        "title Dacexy Desktop Agent Installer",
-        "color 0A",
+"setlocal enabledelayedexpansion",
+":: Request admin privileges",
+"net session >nul 2>&1",
+"if errorlevel 1 (",
+"    echo Requesting administrator access...",
+"    powershell -Command \"Start-Process '%~f0' -Verb RunAs\"",
+"    exit /b",
+")",
+"title Dacexy Desktop Agent Installer",
+"color 0A",
         "echo.",
         "echo  DACEXY Desktop Agent v3.0",
         "echo.",
