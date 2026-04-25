@@ -2083,6 +2083,29 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
+import sys, os, subprocess, traceback
+
+# Step 1: Test import
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+print("=== Testing import ===", flush=True)
+try:
+    from src.main import app
+    print("✅ Import OK", flush=True)
+except Exception:
+    print("❌ Import FAILED:", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+# Step 2: Start uvicorn
+print("=== Starting uvicorn ===", flush=True)
+port = int(os.environ.get("PORT", 8000))
+proc = subprocess.run(
+    [sys.executable, "-m", "uvicorn", "src.main:app",
+     "--host", "0.0.0.0", "--port", str(port), "--workers", "1"],
+    stderr=subprocess.STDOUT  # merge stderr into stdout so Render captures it
+)
+sys.exit(proc.returncode)
+
 # ── Start server ─────────────────────────────────────────────────────────────
 port = int(os.environ.get("PORT", 8000))
 result = subprocess.run([
