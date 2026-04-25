@@ -21,8 +21,8 @@ PACKAGES = [
     "speechrecognition",
     "pyttsx3",
     "pyaudio",
-    "openai-whisper",
     "numpy",
+]
 ]
 
 print("Checking dependencies (first run may take a few minutes)...")
