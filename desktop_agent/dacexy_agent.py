@@ -23,7 +23,6 @@ PACKAGES = [
     "pyaudio",
     "numpy",
 ]
-]
 
 print("Checking dependencies (first run may take a few minutes)...")
 for pkg in PACKAGES:
