@@ -1385,11 +1385,12 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
 
-w("src/interfaces/http/routes/agent.py", """
+w("src/interfaces/http/routes/agent.py", '''
 from __future__ import annotations
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Dict
@@ -1429,7 +1430,7 @@ async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_use
     system_prompt = "You are an autonomous AI agent for Dacexy. Break down tasks into steps and execute them systematically."
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Task: {body.task}" + (f"\\nContext: {body.context}" if body.context else "")}
+        {"role": "user", "content": "Task: " + body.task + ("\nContext: " + body.context if body.context else "")}
     ]
     task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": body.task})
     db.add(task_record)
@@ -1443,7 +1444,7 @@ async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_use
     except Exception as e:
         task_record.status = "failed"
         await db.commit()
-        raise HTTPException(500, f"Agent error: {str(e)}")
+        raise HTTPException(500, "Agent error: " + str(e))
 
 @router.get("/tasks")
 async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
@@ -1473,7 +1474,7 @@ async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends
         return {"status": "sent", "action": body.action}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, f"Failed to send command: {str(e)}")
+        raise HTTPException(500, "Failed to send command: " + str(e))
 
 @router.websocket("/desktop/ws")
 async def desktop_websocket(websocket: WebSocket):
@@ -1486,7 +1487,6 @@ async def desktop_websocket(websocket: WebSocket):
             token = auth_data.get("token", "")
         except Exception:
             token = auth_raw.strip()
-
         try:
             from jose import jwt
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
@@ -1499,10 +1499,8 @@ async def desktop_websocket(websocket: WebSocket):
             await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
             await websocket.close()
             return
-
         active_agents[user_id] = websocket
         await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
-
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
@@ -1527,9 +1525,81 @@ async def desktop_websocket(websocket: WebSocket):
         if user_id:
             active_agents.pop(user_id, None)
             agent_results.pop(user_id, None)
-""")
 
-
+@router.get("/download/windows")
+async def download_windows_agent():
+    lines = [
+        "@echo off",
+        "setlocal enabledelayedexpansion",
+        "title Dacexy Desktop Agent Installer",
+        "color 0A",
+        "echo.",
+        "echo  ================================",
+        "echo   DACEXY Desktop Agent v3.0",
+        "echo  ================================",
+        "echo.",
+        "echo [1/5] Checking Python...",
+        "python --version >nul 2>&1",
+        "if errorlevel 1 (",
+        "    echo Python not found. Auto-installing Python 3.11...",
+        "    echo Please wait 2-3 minutes...",
+        "    powershell -Command \"Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing\"",
+        "    \"%TEMP%\\python_installer.exe\" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
+        "    timeout /t 15 /nobreak >nul",
+        "    del \"%TEMP%\\python_installer.exe\"",
+        "    set \"PATH=%PATH%;C:\\Program Files\\Python311;C:\\Program Files\\Python311\\Scripts\"",
+        "    set \"PATH=%PATH%;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311\"",
+        "    set \"PATH=%PATH%;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\"",
+        ")",
+        "echo OK: Python ready",
+        "echo.",
+        "echo [2/5] Creating agent folder...",
+        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"",
+        "echo.",
+        "echo [3/5] Installing packages (please wait 2-3 minutes)...",
+        "python -m pip install --upgrade pip --quiet --no-warn-script-location",
+        "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet --no-warn-script-location",
+        "if errorlevel 1 (",
+        "    echo Retrying package install...",
+        "    python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil",
+        ")",
+        "echo OK: Packages installed",
+        "echo.",
+        "echo [4/5] Downloading Dacexy Agent script...",
+        "powershell -Command \"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing\"",
+        "if errorlevel 1 (",
+        "    echo ERROR: Download failed. Check internet connection.",
+        "    pause",
+        "    exit /b 1",
+        ")",
+        "echo OK: Agent downloaded",
+        "echo.",
+        "echo [5/5] Creating desktop shortcut...",
+        "set SCRIPT=\"%TEMP%\\dacexy_sc.vbs\"",
+        "echo Set oWS = WScript.CreateObject(\"WScript.Shell\") > %SCRIPT%",
+        "echo Set oLink = oWS.CreateShortcut(\"%USERPROFILE%\\Desktop\\Dacexy Agent.lnk\") >> %SCRIPT%",
+        "echo oLink.TargetPath = \"cmd.exe\" >> %SCRIPT%",
+        "echo oLink.Arguments = \"/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" >> %SCRIPT%",
+        "echo oLink.WorkingDirectory = \"%USERPROFILE%\\DacexyAgent\" >> %SCRIPT%",
+        "echo oLink.Save >> %SCRIPT%",
+        "cscript /nologo %SCRIPT%",
+        "del %SCRIPT%",
+        "echo.",
+        "echo  ================================",
+        "echo   Done! Launching agent now...",
+        "echo  ================================",
+        "echo.",
+        "cd \"%USERPROFILE%\\DacexyAgent\"",
+        "python dacexy_agent.py",
+        "pause",
+    ]
+    bat = "\r\n".join(lines) + "\r\n"
+    return Response(
+        content=bat.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
+    )
+''')
 
 w("src/interfaces/http/routes/websites.py", """
 import httpx
