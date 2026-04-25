@@ -1939,13 +1939,14 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
 ''')
 
 
-w("src/main.py", """
+w("src/main.py", '''
+from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import make_asgi_app
 from src.shared.config.settings import settings
 
@@ -1990,6 +1991,7 @@ app.include_router(referral.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(memory.router, prefix=settings.API_PREFIX)
 app.include_router(upload.router, prefix=settings.API_PREFIX)
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     log.error("Unhandled: %s %s %s", request.method, request.url.path, exc)
@@ -2006,10 +2008,10 @@ async def config():
 @app.get("/")
 async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
-    @app.get("/api/v1/agent/download/windows")
+
+@app.get("/api/v1/agent/download/windows")
 async def download_windows_agent():
-    from fastapi.responses import Response
-    content = r'''@echo off
+    content = r\'\'\'@echo off
 setlocal enabledelayedexpansion
 title Dacexy Desktop Agent Installer
 color 0A
@@ -2044,7 +2046,7 @@ echo OK: Packages done
 
 echo.
 echo [4/5] Downloading agent script...
-powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\DacexyAgent\dacexy_agent.py' -UseBasicParsing"
+powershell -Command "Invoke-WebRequest -Uri \'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py\' -OutFile \'%USERPROFILE%\DacexyAgent\dacexy_agent.py\' -UseBasicParsing"
 echo OK: Agent downloaded
 
 echo.
@@ -2068,13 +2070,13 @@ pause
 cd "%USERPROFILE%\DacexyAgent"
 python dacexy_agent.py
 pause
-'''
+\'\'\'
     return Response(
         content=content,
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
     )
-""")
+''')
 
 print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
 import os, sys, subprocess
