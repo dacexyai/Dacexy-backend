@@ -2078,7 +2078,18 @@ async def config():
 async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
 ''')
-
+# Debug: try importing the app first to surface any import errors
+try:
+    import importlib
+    import sys as _sys
+    _sys.path.insert(0, "/opt/render/project/src")
+    from src.main import app
+    print("✅ src.main imported successfully")
+except Exception as _e:
+    print(f"❌ Import error in src.main: {_e}")
+    import traceback
+    traceback.print_exc()
+    
 # ── START SERVER ──────────────────────────────────────────────────────────────
 import os
 import subprocess
@@ -2086,14 +2097,14 @@ import sys
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    subprocess.run(
+    result = subprocess.run(
         [
             sys.executable, "-m", "uvicorn",
             "src.main:app",
             "--host", "0.0.0.0",
             "--port", str(port),
             "--workers", "1",
-        ],
-        check=True,
+        ]
+        # NO check=True — let it fail gracefully so we see the error
     )
-       
+    sys.exit(result.returncode)
