@@ -2007,82 +2007,78 @@ async def config():
 @app.get("/")
 async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
-
-@app.get("/api/v1/agent/download/windows")
+''')
+       @router.get("/agent/download/windows")
 async def download_windows_agent():
-    bat = (
-        "@echo off\r\n"
-        "setlocal enabledelayedexpansion\r\n"
-        "title Dacexy Desktop Agent Installer\r\n"
-        "color 0A\r\n"
-        "echo.\r\n"
-        "echo  ================================\r\n"
-        "echo   DACEXY Desktop Agent v3.0\r\n"
-        "echo  ================================\r\n"
-        "echo.\r\n"
-        "echo Checking Python...\r\n"
-        "python --version >nul 2>&1\r\n"
-        "if errorlevel 1 (\r\n"
-        "    echo Python not found. Downloading and installing Python automatically...\r\n"
-        "    echo This will take 1-2 minutes. Please wait...\r\n"
-        "    powershell -Command \"Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing\"\r\n"
-        "    echo Installing Python silently...\r\n"
-        "    \"%TEMP%\\python_installer.exe\" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0\r\n"
-        "    echo Waiting for install to complete...\r\n"
-        "    timeout /t 10 /nobreak >nul\r\n"
-        "    del \"%TEMP%\\python_installer.exe\"\r\n"
-        "    echo Refreshing PATH...\r\n"
-        "    set \"PATH=%PATH%;C:\\Program Files\\Python311;C:\\Program Files\\Python311\\Scripts\"\r\n"
-        "    python --version >nul 2>&1\r\n"
-        "    if errorlevel 1 (\r\n"
-        "        set \"PATH=%PATH%;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\"\r\n"
-        "    )\r\n"
-        ")\r\n"
-        "echo OK: Python ready\r\n"
-        "echo.\r\n"
-        "echo Creating agent folder...\r\n"
-        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"\r\n"
-        "echo.\r\n"
-        "echo Installing required packages (please wait)...\r\n"
-        "python -m pip install --upgrade pip --quiet --no-warn-script-location\r\n"
-        "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet --no-warn-script-location\r\n"
-        "if errorlevel 1 (\r\n"
-        "    echo Retrying package install...\r\n"
-        "    python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil\r\n"
-        ")\r\n"
-        "echo OK: Packages installed\r\n"
-        "echo.\r\n"
-        "echo Downloading Dacexy Agent...\r\n"
-        "powershell -Command \"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing\"\r\n"
-        "if errorlevel 1 (\r\n"
-        "    echo ERROR: Could not download agent. Check internet and try again.\r\n"
-        "    pause\r\n"
-        "    exit /b 1\r\n"
-        ")\r\n"
-        "echo OK: Agent downloaded\r\n"
-        "echo.\r\n"
-        "echo Creating desktop shortcut...\r\n"
-        "set SCRIPT=\"%TEMP%\\dacexy_sc.vbs\"\r\n"
-        "echo Set oWS = WScript.CreateObject(\"WScript.Shell\") > %SCRIPT%\r\n"
-        "echo Set oLink = oWS.CreateShortcut(\"%USERPROFILE%\\Desktop\\Dacexy Agent.lnk\") >> %SCRIPT%\r\n"
-        "echo oLink.TargetPath = \"cmd.exe\" >> %SCRIPT%\r\n"
-        "echo oLink.Arguments = \"/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" >> %SCRIPT%\r\n"
-        "echo oLink.WorkingDirectory = \"%USERPROFILE%\\DacexyAgent\" >> %SCRIPT%\r\n"
-        "echo oLink.Save >> %SCRIPT%\r\n"
-        "cscript /nologo %SCRIPT%\r\n"
-        "del %SCRIPT%\r\n"
-        "echo.\r\n"
-        "echo  ================================\r\n"
-        "echo   Installation Complete!\r\n"
-        "echo   Launching Dacexy Agent now...\r\n"
-        "echo  ================================\r\n"
-        "echo.\r\n"
-        "cd \"%USERPROFILE%\\DacexyAgent\"\r\n"
-        "python dacexy_agent.py\r\n"
-        "pause\r\n"
-    )
+    from fastapi.responses import Response
+    lines = [
+        "@echo off",
+        "setlocal enabledelayedexpansion",
+        "title Dacexy Desktop Agent Installer",
+        "color 0A",
+        "echo.",
+        "echo  ================================",
+        "echo   DACEXY Desktop Agent v3.0",
+        "echo  ================================",
+        "echo.",
+        "echo Checking Python...",
+        "python --version >nul 2>&1",
+        "if errorlevel 1 (",
+        "    echo Python not found. Auto-installing Python 3.11...",
+        "    echo Please wait 2-3 minutes...",
+        "    powershell -Command \"Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing\"",
+        "    \"%TEMP%\\python_installer.exe\" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
+        "    timeout /t 15 /nobreak >nul",
+        "    del \"%TEMP%\\python_installer.exe\"",
+        "    set \"PATH=%PATH%;C:\\Program Files\\Python311;C:\\Program Files\\Python311\\Scripts\"",
+        "    set \"PATH=%PATH%;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311\"",
+        "    set \"PATH=%PATH%;C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\"",
+        ")",
+        "echo OK: Python ready",
+        "echo.",
+        "echo Creating agent folder...",
+        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"",
+        "echo.",
+        "echo Installing packages (please wait 2-3 minutes)...",
+        "python -m pip install --upgrade pip --quiet --no-warn-script-location",
+        "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet --no-warn-script-location",
+        "if errorlevel 1 (",
+        "    echo Retrying...",
+        "    python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil",
+        ")",
+        "echo OK: Packages installed",
+        "echo.",
+        "echo Downloading Dacexy Agent script...",
+        "powershell -Command \"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing\"",
+        "if errorlevel 1 (",
+        "    echo ERROR: Download failed. Check internet.",
+        "    pause",
+        "    exit /b 1",
+        ")",
+        "echo OK: Agent downloaded",
+        "echo.",
+        "echo Creating desktop shortcut...",
+        "set SCRIPT=\"%TEMP%\\dacexy_sc.vbs\"",
+        "echo Set oWS = WScript.CreateObject(\"WScript.Shell\") > %SCRIPT%",
+        "echo Set oLink = oWS.CreateShortcut(\"%USERPROFILE%\\Desktop\\Dacexy Agent.lnk\") >> %SCRIPT%",
+        "echo oLink.TargetPath = \"cmd.exe\" >> %SCRIPT%",
+        "echo oLink.Arguments = \"/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" >> %SCRIPT%",
+        "echo oLink.WorkingDirectory = \"%USERPROFILE%\\DacexyAgent\" >> %SCRIPT%",
+        "echo oLink.Save >> %SCRIPT%",
+        "cscript /nologo %SCRIPT%",
+        "del %SCRIPT%",
+        "echo.",
+        "echo  ================================",
+        "echo   Done! Launching agent now...",
+        "echo  ================================",
+        "echo.",
+        "cd \"%USERPROFILE%\\DacexyAgent\"",
+        "python dacexy_agent.py",
+        "pause",
+    ]
+    bat = "\r\n".join(lines) + "\r\n"
     return Response(
         content=bat.encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
-    )
+    ) 
