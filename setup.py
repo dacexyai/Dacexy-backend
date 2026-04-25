@@ -2071,6 +2071,18 @@ for f in pathlib.Path("src").rglob("*.py"):
         print(f"BROKEN FILE: {f}  |  Line: {e.lineno}  |  Error: {e.msg}")
         print(f"Bad text: {e.text}")
 
+# Test import before launching
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from src.main import app
+    print("✅ Import OK - starting server")
+except Exception as e:
+    import traceback
+    print("❌ IMPORT FAILED:")
+    traceback.print_exc()
+    sys.exit(1)
+
 # ── Start server ─────────────────────────────────────────────────────────────
 port = int(os.environ.get("PORT", 8000))
 result = subprocess.run([
