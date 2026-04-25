@@ -1430,8 +1430,8 @@ async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_use
     system_prompt = "You are an autonomous AI agent for Dacexy. Break down tasks into steps and execute them systematically."
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Task: " + body.task + ("\nContext: " + body.context if body.context else "")}
-    ]
+        {"role": "user", "content": "Task: " + body.task + (" " + "Context: " + body.context if body.context else "")}
+          ]
     task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": body.task})
     db.add(task_record)
     await db.flush()
