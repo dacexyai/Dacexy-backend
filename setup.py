@@ -2083,6 +2083,13 @@ try:
     import importlib
     import sys as _sys
     _sys.path.insert(0, "/opt/render/project/src")
+    import ast, pathlib
+for f in pathlib.Path("src").rglob("*.py"):
+    try:
+        ast.parse(f.read_text())
+    except SyntaxError as e:
+        print(f"BROKEN FILE: {f}  |  Line: {e.lineno}  |  Error: {e.msg}")
+        print(f"Bad text: {e.text}")
     from src.main import app
     print("✅ src.main imported successfully")
 except Exception as _e:
