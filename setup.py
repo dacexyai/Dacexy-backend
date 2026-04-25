@@ -1938,7 +1938,6 @@ async def generate_video(body: VideoRequest, user: User = Depends(_get_current_u
         raise HTTPException(500, f"Video generation failed: {str(e)}")
 ''')
 
-
 w("src/main.py", '''
 from __future__ import annotations
 import logging
@@ -2011,82 +2010,63 @@ async def root():
 
 @app.get("/api/v1/agent/download/windows")
 async def download_windows_agent():
-    content = r\'\'\'@echo off
-setlocal enabledelayedexpansion
-title Dacexy Desktop Agent Installer
-color 0A
-
-echo.
-echo  ================================
-echo   DACEXY Desktop Agent v3.0
-echo  ================================
-echo.
-
-echo [1/5] Checking Python...
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python not found!
-    echo Download from https://python.org/downloads
-    echo Check "Add Python to PATH" during install.
-    start https://python.org/downloads
-    pause
-    exit /b 1
-)
-python --version
-
-echo.
-echo [2/5] Creating agent folder...
-if not exist "%USERPROFILE%\DacexyAgent" mkdir "%USERPROFILE%\DacexyAgent"
-
-echo.
-echo [3/5] Installing packages (2-3 mins first time)...
-python -m pip install --upgrade pip --quiet
-python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet
-echo OK: Packages done
-
-echo.
-echo [4/5] Downloading agent script...
-powershell -Command "Invoke-WebRequest -Uri \'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py\' -OutFile \'%USERPROFILE%\DacexyAgent\dacexy_agent.py\' -UseBasicParsing"
-echo OK: Agent downloaded
-
-echo.
-echo [5/5] Creating desktop shortcut...
-set SCRIPT="%TEMP%\dacexy_sc.vbs"
-echo Set oWS = WScript.CreateObject("WScript.Shell") > %SCRIPT%
-echo Set oLink = oWS.CreateShortcut("%USERPROFILE%\Desktop\Dacexy Agent.lnk") >> %SCRIPT%
-echo oLink.TargetPath = "cmd.exe" >> %SCRIPT%
-echo oLink.Arguments = "/k python %USERPROFILE%\DacexyAgent\dacexy_agent.py" >> %SCRIPT%
-echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> %SCRIPT%
-echo oLink.Save >> %SCRIPT%
-cscript /nologo %SCRIPT%
-del %SCRIPT%
-
-echo.
-echo  ================================
-echo   Done! Launching agent now...
-echo  ================================
-echo.
-pause
-cd "%USERPROFILE%\DacexyAgent"
-python dacexy_agent.py
-pause
-\'\'\'
+    bat = (
+        "@echo off\r\n"
+        "setlocal enabledelayedexpansion\r\n"
+        "title Dacexy Desktop Agent Installer\r\n"
+        "color 0A\r\n"
+        "echo.\r\n"
+        "echo  ================================\r\n"
+        "echo   DACEXY Desktop Agent v3.0\r\n"
+        "echo  ================================\r\n"
+        "echo.\r\n"
+        "echo [1/5] Checking Python...\r\n"
+        "python --version >nul 2>&1\r\n"
+        "if errorlevel 1 (\r\n"
+        "    echo ERROR: Python not found!\r\n"
+        "    echo Download from https://python.org/downloads\r\n"
+        "    echo Check Add Python to PATH during install.\r\n"
+        "    start https://python.org/downloads\r\n"
+        "    pause\r\n"
+        "    exit /b 1\r\n"
+        ")\r\n"
+        "python --version\r\n"
+        "echo.\r\n"
+        "echo [2/5] Creating agent folder...\r\n"
+        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"\r\n"
+        "echo.\r\n"
+        "echo [3/5] Installing packages (2-3 mins first time)...\r\n"
+        "python -m pip install --upgrade pip --quiet\r\n"
+        "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet\r\n"
+        "echo OK: Packages done\r\n"
+        "echo.\r\n"
+        "echo [4/5] Downloading agent script...\r\n"
+        "powershell -Command \"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing\"\r\n"
+        "echo OK: Agent downloaded\r\n"
+        "echo.\r\n"
+        "echo [5/5] Creating desktop shortcut...\r\n"
+        "set SCRIPT=\"%TEMP%\\dacexy_sc.vbs\"\r\n"
+        "echo Set oWS = WScript.CreateObject(\"WScript.Shell\") > %SCRIPT%\r\n"
+        "echo Set oLink = oWS.CreateShortcut(\"%USERPROFILE%\\Desktop\\Dacexy Agent.lnk\") >> %SCRIPT%\r\n"
+        "echo oLink.TargetPath = \"cmd.exe\" >> %SCRIPT%\r\n"
+        "echo oLink.Arguments = \"/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" >> %SCRIPT%\r\n"
+        "echo oLink.WorkingDirectory = \"%USERPROFILE%\\DacexyAgent\" >> %SCRIPT%\r\n"
+        "echo oLink.Save >> %SCRIPT%\r\n"
+        "cscript /nologo %SCRIPT%\r\n"
+        "del %SCRIPT%\r\n"
+        "echo.\r\n"
+        "echo  ================================\r\n"
+        "echo   Done! Launching agent now...\r\n"
+        "echo  ================================\r\n"
+        "echo.\r\n"
+        "pause\r\n"
+        "cd \"%USERPROFILE%\\DacexyAgent\"\r\n"
+        "python dacexy_agent.py\r\n"
+        "pause\r\n"
+    )
     return Response(
-        content=content,
+        content=bat.encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
     )
 ''')
-
-print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
-import os, sys, subprocess
-port = os.environ.get('PORT', '8000')
-print('Starting uvicorn on port:', port, flush=True)
-proc = subprocess.Popen(
-    [sys.executable, '-m', 'uvicorn', 'src.main:app', '--host', '0.0.0.0', '--port', port, '--log-level', 'info'],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-)
-for line in proc.stdout:
-    print(line, end='', flush=True)
-proc.wait()
-sys.exit(proc.returncode)
