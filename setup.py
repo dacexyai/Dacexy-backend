@@ -2006,6 +2006,74 @@ async def config():
 @app.get("/")
 async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
+    @app.get("/api/v1/agent/download/windows")
+async def download_windows_agent():
+    from fastapi.responses import Response
+    content = r'''@echo off
+setlocal enabledelayedexpansion
+title Dacexy Desktop Agent Installer
+color 0A
+
+echo.
+echo  ================================
+echo   DACEXY Desktop Agent v3.0
+echo  ================================
+echo.
+
+echo [1/5] Checking Python...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Python not found!
+    echo Download from https://python.org/downloads
+    echo Check "Add Python to PATH" during install.
+    start https://python.org/downloads
+    pause
+    exit /b 1
+)
+python --version
+
+echo.
+echo [2/5] Creating agent folder...
+if not exist "%USERPROFILE%\DacexyAgent" mkdir "%USERPROFILE%\DacexyAgent"
+
+echo.
+echo [3/5] Installing packages (2-3 mins first time)...
+python -m pip install --upgrade pip --quiet
+python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet
+echo OK: Packages done
+
+echo.
+echo [4/5] Downloading agent script...
+powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py' -OutFile '%USERPROFILE%\DacexyAgent\dacexy_agent.py' -UseBasicParsing"
+echo OK: Agent downloaded
+
+echo.
+echo [5/5] Creating desktop shortcut...
+set SCRIPT="%TEMP%\dacexy_sc.vbs"
+echo Set oWS = WScript.CreateObject("WScript.Shell") > %SCRIPT%
+echo Set oLink = oWS.CreateShortcut("%USERPROFILE%\Desktop\Dacexy Agent.lnk") >> %SCRIPT%
+echo oLink.TargetPath = "cmd.exe" >> %SCRIPT%
+echo oLink.Arguments = "/k python %USERPROFILE%\DacexyAgent\dacexy_agent.py" >> %SCRIPT%
+echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> %SCRIPT%
+echo oLink.Save >> %SCRIPT%
+cscript /nologo %SCRIPT%
+del %SCRIPT%
+
+echo.
+echo  ================================
+echo   Done! Launching agent now...
+echo  ================================
+echo.
+pause
+cd "%USERPROFILE%\DacexyAgent"
+python dacexy_agent.py
+pause
+'''
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
+    )
 """)
 
 print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
