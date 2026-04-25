@@ -1385,6 +1385,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
 
+
 w("src/interfaces/http/routes/agent.py", '''
 from __future__ import annotations
 import json
@@ -1428,10 +1429,11 @@ class DesktopCommandRequest(BaseModel):
 @router.post("/run")
 async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
     system_prompt = "You are an autonomous AI agent for Dacexy. Break down tasks into steps and execute them systematically."
+    context_part = (" Context: " + body.context) if body.context else ""
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Task: " + body.task + (" " + "Context: " + body.context if body.context else "")}
-          ]
+        {"role": "user", "content": "Task: " + body.task + context_part}
+    ]
     task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": body.task})
     db.add(task_record)
     await db.flush()
@@ -1529,6 +1531,7 @@ async def desktop_websocket(websocket: WebSocket):
 @router.get("/download/windows")
 async def download_windows_agent():
     crlf = chr(13) + chr(10)
+    q = chr(34)
     lines = [
         "@echo off",
         "title Dacexy Desktop Agent Installer",
@@ -1540,23 +1543,23 @@ async def download_windows_agent():
         "python --version >nul 2>&1",
         "if errorlevel 1 (",
         "    echo Python not found. Installing...",
-        "    powershell -Command \"Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -OutFile %TEMP%\\python_installer.exe -UseBasicParsing\"",
-        "    \"%TEMP%\\python_installer.exe\" /quiet InstallAllUsers=1 PrependPath=1",
+        "    powershell -Command " + q + "Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe -OutFile %TEMP%\\python_installer.exe -UseBasicParsing" + q,
+        "    %TEMP%\\python_installer.exe /quiet InstallAllUsers=1 PrependPath=1",
         "    timeout /t 15 /nobreak >nul",
-        "    del \"%TEMP%\\python_installer.exe\"",
+        "    del %TEMP%\\python_installer.exe",
         ")",
         "echo OK: Python ready",
         "echo [2/5] Creating agent folder...",
-        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"",
+        "if not exist %USERPROFILE%\\DacexyAgent mkdir %USERPROFILE%\\DacexyAgent",
         "echo [3/5] Installing packages...",
         "python -m pip install --upgrade pip --quiet",
         "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet",
         "echo OK: Packages installed",
         "echo [4/5] Downloading agent script...",
-        "powershell -Command \"Invoke-WebRequest -Uri https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py -OutFile %USERPROFILE%\\DacexyAgent\\dacexy_agent.py -UseBasicParsing\"",
+        "powershell -Command " + q + "Invoke-WebRequest -Uri https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py -OutFile %USERPROFILE%\\DacexyAgent\\dacexy_agent.py -UseBasicParsing" + q,
         "echo OK: Agent downloaded",
         "echo [5/5] Launching agent...",
-        "cd \"%USERPROFILE%\\DacexyAgent\"",
+        "cd %USERPROFILE%\\DacexyAgent",
         "python dacexy_agent.py",
         "pause",
     ]
@@ -1566,13 +1569,7 @@ async def download_windows_agent():
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
     )
-    return Response(
-        content=bat.encode("utf-8"),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
-    )
 ''')
-
 w("src/interfaces/http/routes/websites.py", """
 import httpx
 import re
