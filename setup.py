@@ -1539,7 +1539,7 @@ async def download_windows_agent():
 "net session >nul 2>&1",
 "if errorlevel 1 (",
 "    echo Requesting administrator access...",
-"    powershell -Command \"Start-Process '%~f0' -Verb RunAs\"",
+"    powershell -Command start-process -filepath %~f0 -verb runas",
 "    exit /b",
 ")",
 "title Dacexy Desktop Agent Installer",
