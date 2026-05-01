@@ -1118,6 +1118,57 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
 @router.post("/logout")
 async def logout(user: User = Depends(_get_current_user)):
     return {"message": "Logged out"}
+
+    @router.get("/google/login")
+async def google_login():
+    from fastapi.responses import RedirectResponse
+    import urllib.parse
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.PLATFORM_URL + "/api/v1/auth/google/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline"
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    return RedirectResponse(url)
+
+@router.get("/google/callback")
+async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
+    import httpx, re, secrets as sec
+    async with httpx.AsyncClient() as client:
+        token_res = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "redirect_uri": settings.PLATFORM_URL + "/api/v1/auth/google/callback",
+            "grant_type": "authorization_code"
+        })
+        tokens = token_res.json()
+        user_res = await client.get("https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": "Bearer " + tokens["access_token"]})
+        info = user_res.json()
+    email = info.get("email", "")
+    full_name = info.get("name", email.split("@")[0])
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if not user:
+        org_name = full_name.split()[0] + "s Workspace"
+        slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") + "-" + sec.token_hex(4)
+        org = Organization(name=org_name, slug=slug)
+        db.add(org)
+        await db.flush()
+        user = User(org_id=org.id, email=email, full_name=full_name,
+            hashed_password=hash_password(sec.token_urlsafe(32)),
+            role="owner", is_verified=True)
+        db.add(user)
+        await db.flush()
+    access = create_access_token(user.id, {"org_id": user.org_id, "role": user.role})
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(settings.APP_BASE_URL + "/login?token=" + access)
+    GOOGLE_CLIENT_ID: str = ""
+GOOGLE_CLIENT_SECRET: str = ""
+
 """)
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
