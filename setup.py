@@ -1119,7 +1119,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
 async def logout(user: User = Depends(_get_current_user)):
     return {"message": "Logged out"}
 
-    @router.get("/google/login")
+@router.get("/google/login")
 async def google_login():
     from fastapi.responses import RedirectResponse
     import urllib.parse
@@ -1166,9 +1166,6 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     access = create_access_token(user.id, {"org_id": user.org_id, "role": user.role})
     from fastapi.responses import RedirectResponse
     return RedirectResponse(settings.APP_BASE_URL + "/login?token=" + access)
-    GOOGLE_CLIENT_ID: str = ""
-GOOGLE_CLIENT_SECRET: str = ""
-
 """)
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
