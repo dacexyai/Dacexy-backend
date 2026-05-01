@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     VERCEL_TOKEN: str = ""
     VERCEL_TEAM_ID: str = ""
     WAVESPEED_API_KEY: str = ""
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_DEFAULT_RPM: int = 60
     RATE_LIMIT_AUTH_RPM: int = 10
