@@ -193,6 +193,9 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     access = create_access_token(user.id, {"org_id": user.org_id, "role": user.role})
     from fastapi.responses import RedirectResponse
     return RedirectResponse(settings.APP_BASE_URL + "/auth/callback?token=" + access)
+    GOOGLE_CLIENT_ID: str = ""
+GOOGLE_CLIENT_SECRET: str = ""
+
 """)
 
 w("src/shared/exceptions/__init__.py", """
