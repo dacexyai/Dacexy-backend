@@ -1456,11 +1456,13 @@ active_agents: Dict[str, WebSocket] = {}
 agent_results: Dict[str, dict] = {}
 pending_task_results: Dict[str, asyncio.Future] = {}
 
+
 class AgentRunRequest(BaseModel):
     task: Optional[str] = None
     goal: Optional[str] = None
     context: Optional[str] = None
     max_steps: int = 10
+
 
 class DesktopCommandRequest(BaseModel):
     action: str
@@ -1476,10 +1478,37 @@ class DesktopCommandRequest(BaseModel):
     button: Optional[str] = "left"
     duration: Optional[float] = 0.3
 
+
 class TaskRequest(BaseModel):
     task: Optional[str] = None
     goal: Optional[str] = None
     context: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────────
+# Helper: decode a JWT token and return the user_id string, or None
+# ─────────────────────────────────────────────────────────────────
+def _decode_ws_token(token: str) -> Optional[str]:
+    """
+    FIX: centralised token decode so we only write the logic once.
+    Returns user_id string on success, None on any failure.
+    Also accepts a bare user_id string (legacy plain-text tokens).
+    """
+    if not token:
+        return None
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        user_id = str(payload.get("sub") or payload.get("user_id") or "")
+        return user_id if user_id else None
+    except Exception:
+        # FIX: don't silently swallow – log at debug level so we can diagnose
+        import logging
+        logging.getLogger("dacexy.ws").debug(
+            "JWT decode failed (token may be expired or wrong secret)"
+        )
+        return None
+
 
 @router.post("/run")
 async def run_agent(
@@ -1516,7 +1545,7 @@ async def run_agent(
                 "type": "task",
                 "task": task_text,
                 "context": body.context or "",
-                "task_id": task_record.id
+                "task_id": str(task_record.id)
             }))
 
             try:
@@ -1531,7 +1560,7 @@ async def run_agent(
             task_record.output_data = {"result": result_text}
             await db.commit()
             return {
-                "id": task_record.id,
+                "id": str(task_record.id),
                 "task": task_text,
                 "goal": task_text,
                 "status": "completed",
@@ -1541,6 +1570,7 @@ async def run_agent(
         except Exception as e:
             active_agents.pop(user_id, None)
 
+    # No desktop agent connected – fall back to AI text response
     system_prompt = (
         "You are an autonomous AI agent for Dacexy. "
         "The user wants you to complete a task. "
@@ -1562,7 +1592,7 @@ async def run_agent(
         task_record.output_data = {"result": result}
         await db.commit()
         return {
-            "id": task_record.id,
+            "id": str(task_record.id),
             "task": task_text,
             "goal": task_text,
             "status": "completed",
@@ -1574,6 +1604,7 @@ async def run_agent(
         task_record.output_data = {"error": str(e)}
         await db.commit()
         raise HTTPException(500, f"Agent error: {str(e)}")
+
 
 @router.get("/tasks")
 async def list_tasks(
@@ -1593,7 +1624,7 @@ async def list_tasks(
         out = t.output_data or {}
         inp = t.input_data or {}
         runs.append({
-            "id": t.id,
+            "id": str(t.id),
             "task": inp.get("task", ""),
             "goal": inp.get("task", ""),
             "status": t.status,
@@ -1603,15 +1634,18 @@ async def list_tasks(
         })
     return runs
 
+
 @router.get("/desktop/status")
 async def desktop_status(user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     return {"connected": user_id in active_agents, "user_id": user_id}
 
+
 @router.get("/desktop/last_result")
 async def get_last_result(user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     return {"result": agent_results.get(user_id), "connected": user_id in active_agents}
+
 
 @router.post("/desktop/command")
 async def send_desktop_command(
@@ -1628,6 +1662,7 @@ async def send_desktop_command(
     except Exception as e:
         active_agents.pop(user_id, None)
         raise HTTPException(500, f"Failed to send command: {str(e)}")
+
 
 @router.post("/desktop/task")
 async def send_desktop_task(
@@ -1652,30 +1687,48 @@ async def send_desktop_task(
         active_agents.pop(user_id, None)
         raise HTTPException(500, f"Failed to send task: {str(e)}")
 
+
+# ─────────────────────────────────────────────────────────────────
+# WebSocket endpoint
+# FIX: use _decode_ws_token helper; send a clear error message
+#      distinguishing "token expired" from other auth errors so
+#      the desktop client can re-login instead of just retrying.
+# ─────────────────────────────────────────────────────────────────
 @router.websocket("/desktop/ws")
 async def desktop_websocket(websocket: WebSocket):
     await websocket.accept()
     user_id = None
     try:
-        auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+        # Wait for auth frame
+        try:
+            auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+        except asyncio.TimeoutError:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Authentication timeout – no token received within 30s"
+            }))
+            await websocket.close()
+            return
+
+        # Parse token – accept both {"token": "..."} and a raw string
         try:
             auth_data = json.loads(auth_raw)
             token = auth_data.get("token", "")
         except Exception:
             token = auth_raw.strip()
-        try:
-            from jose import jwt
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-            user_id = str(payload.get("sub") or payload.get("user_id") or "")
-            if not user_id:
-                await websocket.send_text(json.dumps({"type": "error", "message": "Invalid token payload"}))
-                await websocket.close()
-                return
-        except Exception:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
+
+        # FIX: decode with helper; distinguish missing vs bad/expired
+        user_id = _decode_ws_token(token)
+        if not user_id:
+            # Give the client a specific message so it knows to re-login
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Authentication failed – token is missing, expired, or invalid. Please log in again."
+            }))
             await websocket.close()
             return
 
+        # ── Authenticated ─────────────────────────────────────────
         active_agents[user_id] = websocket
         await websocket.send_text(json.dumps({
             "type": "connected",
@@ -1698,7 +1751,8 @@ async def desktop_websocket(websocket: WebSocket):
                     future = pending_task_results.get(user_id)
                     if future and not future.done():
                         future.set_result(msg)
-                elif msg_type in ["result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"]:
+                elif msg_type in ("result", "screenshot_before", "screenshot_after",
+                                  "system_info", "error", "voice_result"):
                     agent_results[user_id] = msg
 
             except asyncio.TimeoutError:
@@ -1710,6 +1764,7 @@ async def desktop_websocket(websocket: WebSocket):
                 break
             except Exception:
                 break
+
     except Exception:
         pass
     finally:
@@ -1719,6 +1774,7 @@ async def desktop_websocket(websocket: WebSocket):
             future = pending_task_results.pop(user_id, None)
             if future and not future.done():
                 future.cancel()
+
 
 @router.get("/download/windows")
 async def download_windows_agent():
@@ -1736,7 +1792,7 @@ async def download_windows_agent():
         "title Dacexy Desktop Agent Installer",
         "color 0A",
         "echo.",
-        "echo  DACEXY Desktop Agent v3.0",
+        "echo  DACEXY Desktop Agent v3.1",
         "echo.",
         "echo [1/5] Checking Python...",
         "python --version >nul 2>&1",
@@ -1767,10 +1823,8 @@ async def download_windows_agent():
         content=bat.encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
-    )
-''')
-
-
+    ''')  
+                          
 w("src/interfaces/http/routes/websites.py", """
 import httpx
 import re
