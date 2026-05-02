@@ -1496,7 +1496,7 @@ def _decode_ws_token(token: str) -> Optional[str]:
     except Exception:
         import logging
         logging.getLogger("dacexy.ws").debug(
-            "JWT decode failed – token may be expired or signed with wrong secret"
+            "JWT decode failed - token may be expired or signed with wrong secret"
         )
         return None
 
@@ -1563,7 +1563,6 @@ async def run_agent(
         except Exception:
             active_agents.pop(user_id, None)
 
-    # Fallback – no desktop agent connected
     system_prompt = (
         "You are an autonomous AI agent for Dacexy. "
         "The user wants you to complete a task. "
@@ -1693,7 +1692,7 @@ async def desktop_websocket(websocket: WebSocket):
         except asyncio.TimeoutError:
             await websocket.send_text(json.dumps({
                 "type": "error",
-                "message": "Authentication timeout – send token within 30s",
+                "message": "Authentication timeout - send token within 30s",
             }))
             await websocket.close()
             return
@@ -1709,7 +1708,7 @@ async def desktop_websocket(websocket: WebSocket):
             await websocket.send_text(json.dumps({
                 "type": "error",
                 "message": (
-                    "Authentication failed – token is missing, expired, or invalid. "
+                    "Authentication failed - token is missing, expired, or invalid. "
                     "Please log in again."
                 ),
             }))
@@ -1767,8 +1766,8 @@ async def desktop_websocket(websocket: WebSocket):
 
 @router.get("/download/windows")
 async def download_windows_agent():
-    nl = "\r\n"
-    q = '"'
+    crlf = chr(13) + chr(10)
+    q = chr(34)
 
     py_url = (
         "https://raw.githubusercontent.com/dacexyai/Dacexy-backend"
@@ -1820,14 +1819,14 @@ async def download_windows_agent():
         "pause",
     ]
 
-    bat_content = nl.join(lines) + nl
+    bat_content = crlf.join(lines) + crlf
     bat_bytes = bat_content.encode("utf-8")
 
     return Response(
         content=bat_bytes,
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"},
-    ''')
+ ''')                                    
                           
 w("src/interfaces/http/routes/websites.py", """
 import httpx
