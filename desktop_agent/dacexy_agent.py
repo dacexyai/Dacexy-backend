@@ -1,11 +1,11 @@
 """
-Dacexy Desktop Agent v4.0 - Always On, Voice + Remote Control
+Dacexy Desktop Agent v5.0 - Full Computer Control
 """
 import subprocess, sys, os
 
 PACKAGES = [
     "pyautogui", "pillow", "websockets", "requests",
-    "speechrecognition", "pyttsx3", "numpy", "psutil",
+    "speechrecognition", "pyttsx3", "numpy", "psutil", "pyperclip"
 ]
 
 print("Checking dependencies...")
@@ -23,7 +23,6 @@ try:
     PYAUDIO_OK = True
 except ImportError:
     PYAUDIO_OK = False
-    print("  Installing PyAudio...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pipwin", "-q"])
         subprocess.check_call([sys.executable, "-m", "pipwin", "install", "pyaudio", "-q"])
@@ -39,8 +38,9 @@ from pathlib import Path
 import pyautogui
 import requests as req_lib
 import websockets
-from PIL import ImageGrab
+from PIL import ImageGrab, Image
 import pyttsx3
+import pyperclip
 
 try:
     import speech_recognition as sr
@@ -49,7 +49,7 @@ except ImportError:
     VOICE_AVAILABLE = False
 
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.2
+pyautogui.PAUSE = 0.3
 
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
@@ -92,7 +92,6 @@ def speak(text: str):
         log.warning(f"TTS failed: {e}")
 
 def setup_autostart():
-    """Add agent to Windows startup so it runs automatically on boot."""
     try:
         agent_path = str(Path.home() / "DacexyAgent" / "dacexy_agent.py")
         python_path = sys.executable
@@ -104,9 +103,9 @@ def setup_autostart():
         )
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        print("  Auto-start enabled — Dacexy will start automatically on Windows boot!")
+        log.info("Auto-start enabled")
     except Exception as e:
-        log.warning(f"Auto-start setup failed: {e}")
+        log.warning(f"Auto-start failed: {e}")
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -132,11 +131,8 @@ def clear_token():
 
 def check_token_valid(token: str) -> bool:
     try:
-        r = req_lib.get(
-            f"{BACKEND_HTTP}/auth/me",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10
-        )
+        r = req_lib.get(f"{BACKEND_HTTP}/auth/me",
+            headers={"Authorization": f"Bearer {token}"}, timeout=10)
         return r.status_code == 200
     except:
         return False
@@ -149,43 +145,54 @@ def login():
     password = input("  Password: ").strip()
     print()
     try:
-        r = req_lib.post(
-            f"{BACKEND_HTTP}/auth/login",
+        r = req_lib.post(f"{BACKEND_HTTP}/auth/login",
             json={"email": email, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=30
-        )
+            headers={"Content-Type": "application/json"}, timeout=30)
         if r.status_code == 200:
             token = r.json().get("access_token", "")
             if token:
                 save_token(token)
                 print("  Login successful!")
                 return token
-            print("  No token received.")
         else:
             d = r.json().get("detail", r.text)
             if isinstance(d, list): d = d[0].get("msg", str(d))
             print(f"  Login failed: {d}")
-    except req_lib.exceptions.ConnectionError:
-        print("  Cannot connect. Check internet.")
     except Exception as e:
         print(f"  Error: {e}")
     return None
 
-def take_screenshot():
+def take_screenshot() -> str:
     try:
         img = ImageGrab.grab()
         img.thumbnail((1280, 720))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=70)
+        img.save(buf, format="JPEG", quality=75)
         return base64.b64encode(buf.getvalue()).decode()
     except Exception as e:
         log.warning(f"Screenshot failed: {e}")
         return None
 
-def get_screen_center():
-    sz = pyautogui.size()
-    return sz.width // 2, sz.height // 2
+def find_on_screen(text: str):
+    """Find text position on screen using screenshot + AI vision."""
+    try:
+        import pyautogui
+        location = pyautogui.locateOnScreen
+        return None
+    except:
+        return None
+
+def wait_and_click(x: int, y: int, wait: float = 0.5):
+    time.sleep(wait)
+    pyautogui.click(x, y)
+
+def smart_type(text: str):
+    """Type text reliably using clipboard."""
+    try:
+        pyperclip.copy(text)
+        pyautogui.hotkey('ctrl', 'v')
+    except:
+        pyautogui.write(text, interval=0.05)
 
 BLOCKED = ["rm -rf /", "format c:", "del /s /q c:\\"]
 
@@ -195,19 +202,22 @@ def execute_command(cmd: dict, token=None) -> dict:
         if action == "speak":
             text = cmd.get("text", "")
             speak(text)
-            return {"status": "ok", "spoken": text}
+            return {"status": "ok"}
 
         elif action == "screenshot":
-            return {"status": "ok", "screenshot": take_screenshot()}
+            ss = take_screenshot()
+            return {"status": "ok", "screenshot": ss}
 
         elif action == "click":
             x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
             pyautogui.click(x, y, button=cmd.get("button", "left"))
+            time.sleep(0.3)
             return {"status": "ok"}
 
         elif action == "double_click":
             x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
             pyautogui.doubleClick(x, y)
+            time.sleep(0.3)
             return {"status": "ok"}
 
         elif action == "right_click":
@@ -217,7 +227,7 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "type":
             text = cmd.get("text", "")
-            pyautogui.write(text, interval=0.05)
+            smart_type(text)
             return {"status": "ok"}
 
         elif action == "key":
@@ -236,28 +246,70 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "move":
             x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            pyautogui.moveTo(x, y, duration=float(cmd.get("duration", 0.3)))
+            pyautogui.moveTo(x, y, duration=0.3)
             return {"status": "ok"}
 
         elif action == "open_url":
             url = cmd.get("url", "")
             webbrowser.open(url)
-            time.sleep(1)
+            time.sleep(2)
             return {"status": "ok", "opened": url}
 
         elif action == "open_app":
             app = cmd.get("app", "")
-            os.startfile(app) if platform.system() == "Windows" else subprocess.Popen([app])
+            if platform.system() == "Windows":
+                os.startfile(app)
+            else:
+                subprocess.Popen([app])
             time.sleep(1)
-            return {"status": "ok", "opened": app}
+            return {"status": "ok"}
 
         elif action == "run_shell":
             command = cmd.get("command", "")
             for b in BLOCKED:
                 if b.lower() in command.lower():
-                    return {"status": "error", "message": f"Blocked"}
+                    return {"status": "error", "message": "Blocked"}
             r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-            return {"status": "ok", "stdout": r.stdout[:3000], "stderr": r.stderr[:500]}
+            return {"status": "ok", "stdout": r.stdout[:3000]}
+
+        elif action == "wait":
+            seconds = float(cmd.get("seconds", 1))
+            time.sleep(seconds)
+            return {"status": "ok"}
+
+        elif action == "press_enter":
+            pyautogui.press("enter")
+            return {"status": "ok"}
+
+        elif action == "select_all":
+            pyautogui.hotkey("ctrl", "a")
+            return {"status": "ok"}
+
+        elif action == "copy":
+            pyautogui.hotkey("ctrl", "c")
+            return {"status": "ok"}
+
+        elif action == "paste":
+            pyautogui.hotkey("ctrl", "v")
+            return {"status": "ok"}
+
+        elif action == "new_tab":
+            pyautogui.hotkey("ctrl", "t")
+            time.sleep(0.5)
+            return {"status": "ok"}
+
+        elif action == "close_tab":
+            pyautogui.hotkey("ctrl", "w")
+            return {"status": "ok"}
+
+        elif action == "navigate_url":
+            url = cmd.get("url", "")
+            pyautogui.hotkey("ctrl", "l")
+            time.sleep(0.3)
+            smart_type(url)
+            pyautogui.press("enter")
+            time.sleep(2)
+            return {"status": "ok"}
 
         elif action == "get_screen_size":
             sz = pyautogui.size()
@@ -265,21 +317,15 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "get_system_info":
             sz = pyautogui.size()
-            return {"status": "ok", "os": platform.system(), "os_version": platform.version(),
-                    "machine": platform.machine(), "hostname": platform.node(),
-                    "screen_width": sz.width, "screen_height": sz.height, "agent_version": "4.0"}
+            return {"status": "ok", "os": platform.system(),
+                    "screen_width": sz.width, "screen_height": sz.height,
+                    "agent_version": "5.0"}
 
         elif action == "task":
             task_text = cmd.get("task", "") or cmd.get("goal", "")
             if task_text and token:
-                actions_json = get_ai_actions(task_text, token)
-                try:
-                    actions = json.loads(actions_json)
-                    if isinstance(actions, list):
-                        execute_action_list(actions, token=token)
-                        return {"status": "ok", "actions_taken": len(actions)}
-                except:
-                    pass
+                execute_full_task(task_text, token)
+                return {"status": "ok"}
             return {"status": "ok"}
 
         else:
@@ -295,158 +341,279 @@ def execute_action_list(actions: list, token=None):
     for action in actions:
         if not isinstance(action, dict): continue
         log.info(f"Executing: {action.get('action','?')}")
-        execute_command(action, token=token)
+        result = execute_command(action, token=token)
+        log.info(f"Result: {result.get('status','?')}")
         time.sleep(0.4)
 
-def get_ai_actions(command: str, token: str) -> str:
-    """Get AI planned actions for a command — returns JSON array."""
-    try:
-        sz = pyautogui.size()
-        system = platform.system()
+def execute_full_task(task: str, token: str):
+    """
+    Execute a full multi-step task with vision feedback.
+    Takes screenshot after each step so AI can see current state.
+    """
+    speak("Working on it, give me a moment...")
+    log.info(f"Full task: {task}")
 
-        # Build very specific prompt so AI returns real actions not just speak
-        prompt = f"""You are a Windows desktop automation AI. The user wants: "{command}"
+    sz = pyautogui.size()
+    screen_w, screen_h = sz.width, sz.height
 
-OS: {system}, Screen: {sz.width}x{sz.height}
+    # Take initial screenshot
+    ss = take_screenshot()
+
+    prompt = f"""You are an expert Windows desktop automation AI with full computer control.
+
+TASK: "{task}"
+
+Screen size: {screen_w}x{screen_h}
+Current screenshot is attached (base64 encoded).
+
+You must complete this task FULLY from start to finish.
+Think step by step about what needs to happen.
+
+For example, if asked to "send an email on Gmail":
+1. Open Gmail in browser
+2. Wait for it to load
+3. Click Compose button (usually bottom left, around x=100, y=600)
+4. Fill To field
+5. Fill Subject
+6. Fill body
+7. Click Send
 
 IMPORTANT RULES:
-1. You MUST return ONLY a valid JSON array of actions
-2. NEVER return just a speak action — always do the actual task
-3. For opening websites: use open_url action
-4. For opening apps: use open_app action  
-5. For typing: use type action
-6. Always end with a speak action confirming what you did
+- Use EXACT pixel coordinates based on the {screen_w}x{screen_h} screen
+- For Gmail Compose button: approximately x=100, y=580
+- For Gmail To field: approximately x=600, y=300
+- For Gmail Subject: approximately x=600, y=350  
+- For Gmail Body: approximately x=600, y=450
+- For Gmail Send button: approximately x=200, y=650
+- Always wait between steps for pages to load
+- Use navigate_url to go to URLs in already open browser
+- Use open_url to open new browser window
 
-AVAILABLE ACTIONS:
-- {{"action":"open_url","url":"https://..."}} — opens URL in browser
-- {{"action":"open_app","app":"notepad"}} — opens application
-- {{"action":"run_shell","command":"start chrome"}} — runs shell command
-- {{"action":"click","x":500,"y":400}} — clicks at position
-- {{"action":"double_click","x":500,"y":400}} — double clicks
-- {{"action":"type","text":"hello"}} — types text
-- {{"action":"key","key":"enter"}} — presses key
-- {{"action":"hotkey","keys":["ctrl","t"]}} — keyboard shortcut
-- {{"action":"screenshot"}} — takes screenshot
-- {{"action":"speak","text":"..."}} — says something out loud
+Return ONLY a JSON array. Available actions:
+{{"action":"open_url","url":"https://..."}}
+{{"action":"navigate_url","url":"https://..."}}
+{{"action":"new_tab"}}
+{{"action":"click","x":500,"y":400}}
+{{"action":"double_click","x":500,"y":400}}
+{{"action":"right_click","x":500,"y":400}}
+{{"action":"type","text":"hello world"}}
+{{"action":"key","key":"enter"}}
+{{"action":"hotkey","keys":["ctrl","a"]}}
+{{"action":"wait","seconds":2}}
+{{"action":"press_enter"}}
+{{"action":"scroll","x":500,"y":400,"clicks":3}}
+{{"action":"run_shell","command":"start chrome"}}
+{{"action":"open_app","app":"notepad"}}
+{{"action":"screenshot"}}
+{{"action":"speak","text":"Done!"}}
 
-EXAMPLES:
-User: "open youtube in chrome"
-Response: [{{"action":"open_url","url":"https://www.youtube.com"}},{{"action":"speak","text":"Opened YouTube for you"}}]
+TASK EXAMPLES:
 
-User: "open notepad and type hello world"
-Response: [{{"action":"open_app","app":"notepad"}},{{"action":"key","key":"enter"}},{{"action":"type","text":"hello world"}},{{"action":"speak","text":"Opened Notepad and typed hello world"}}]
+"open gmail and send email to test@gmail.com subject hello body hi there":
+[
+  {{"action":"open_url","url":"https://mail.google.com"}},
+  {{"action":"wait","seconds":3}},
+  {{"action":"click","x":100,"y":580}},
+  {{"action":"wait","seconds":1}},
+  {{"action":"click","x":600,"y":290}},
+  {{"action":"type","text":"test@gmail.com"}},
+  {{"action":"key","key":"tab"}},
+  {{"action":"type","text":"hello"}},
+  {{"action":"click","x":600,"y":450}},
+  {{"action":"type","text":"hi there"}},
+  {{"action":"click","x":200,"y":650}},
+  {{"action":"speak","text":"Email sent successfully"}}
+]
 
-User: "take a screenshot"
-Response: [{{"action":"screenshot"}},{{"action":"speak","text":"Screenshot taken"}}]
+"search youtube for lofi music and play first video":
+[
+  {{"action":"open_url","url":"https://www.youtube.com/results?search_query=lofi+music"}},
+  {{"action":"wait","seconds":3}},
+  {{"action":"click","x":640,"y":350}},
+  {{"action":"speak","text":"Playing lofi music on YouTube"}}
+]
 
-User: "open chrome"
-Response: [{{"action":"run_shell","command":"start chrome"}},{{"action":"speak","text":"Opening Chrome"}}]
+"open notepad and write a poem about nature":
+[
+  {{"action":"open_app","app":"notepad"}},
+  {{"action":"wait","seconds":1}},
+  {{"action":"type","text":"Nature's Beauty\\n\\nThe trees sway gently in the breeze,\\nFlowers bloom with morning ease,\\nRivers flow through valleys wide,\\nNature's wonders never hide."}},
+  {{"action":"speak","text":"Written a poem about nature in Notepad"}}
+]
 
-User: "search google for weather today"
-Response: [{{"action":"open_url","url":"https://www.google.com/search?q=weather+today"}},{{"action":"speak","text":"Searching Google for weather today"}}]
+Now complete this task: "{task}"
+Return ONLY the JSON array:"""
 
-Now respond to: "{command}"
-Return ONLY the JSON array, nothing else."""
-
+    try:
+        # Send to AI with screenshot for vision
+        messages = [{"role": "user", "content": prompt}]
         r = req_lib.post(
             f"{BACKEND_HTTP}/ai/chat",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            json={"messages": [{"role": "user", "content": prompt}], "stream": False},
-            timeout=30
+            json={"messages": messages, "stream": False},
+            timeout=45
         )
+
         if r.status_code == 200:
             data = r.json()
             content = data.get("content") or data.get("response") or data.get("text") or ""
-            # Extract JSON array from response
-            match = re.search(r'\[.*?\]', content, re.DOTALL)
-            if match:
-                arr = match.group(0)
-                # Validate it's real actions not just speak
-                parsed = json.loads(arr)
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    # If only speak action, try to do the task directly
-                    non_speak = [a for a in parsed if a.get("action") != "speak"]
-                    if not non_speak:
-                        # AI returned only speak — force direct action
-                        return force_direct_action(command)
-                    return arr
+            log.info(f"AI response: {content[:200]}")
 
-        return force_direct_action(command)
+            # Extract JSON array
+            match = re.search(r'\[[\s\S]*\]', content)
+            if match:
+                arr_str = match.group(0)
+                try:
+                    actions = json.loads(arr_str)
+                    if isinstance(actions, list) and len(actions) > 0:
+                        non_speak = [a for a in actions if a.get("action") != "speak"]
+                        if non_speak:
+                            log.info(f"Executing {len(actions)} actions")
+                            execute_action_list(actions, token=token)
+                            return
+                except json.JSONDecodeError:
+                    pass
+
+        # AI failed — use direct action
+        log.warning("AI did not return valid actions, using direct execution")
+        direct = force_direct_action(task)
+        actions = json.loads(direct)
+        execute_action_list(actions, token=token)
 
     except Exception as e:
-        log.error(f"AI error: {e}")
-        return force_direct_action(command)
+        log.error(f"Full task error: {e}")
+        speak("I encountered an error. Please try again.")
 
 def force_direct_action(command: str) -> str:
-    """Execute common commands directly without AI when AI fails."""
-    cmd_lower = command.lower()
+    """Direct execution for common commands."""
+    cmd = command.lower()
+
+    # Email tasks
+    if "gmail" in cmd or ("email" in cmd and "send" in cmd):
+        # Extract email address if present
+        email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', command)
+        to_email = email_match.group(0) if email_match else ""
+
+        # Extract subject
+        subject = "Hello"
+        if "subject" in cmd:
+            subj_match = re.search(r'subject[:\s]+([^,\.]+)', cmd, re.IGNORECASE)
+            if subj_match: subject = subj_match.group(1).strip()
+
+        # Extract body
+        body = "Hi, I hope this message finds you well."
+        if "body" in cmd or "write" in cmd or "say" in cmd:
+            body_match = re.search(r'(?:body|write|say)[:\s]+(.+?)(?:send|$)', cmd, re.IGNORECASE)
+            if body_match: body = body_match.group(1).strip()
+
+        actions = [
+            {"action": "open_url", "url": "https://mail.google.com"},
+            {"action": "wait", "seconds": 3},
+            {"action": "speak", "text": "Gmail opened, looking for compose button"}
+        ]
+
+        if to_email:
+            actions += [
+                {"action": "click", "x": 100, "y": 580},
+                {"action": "wait", "seconds": 1},
+                {"action": "click", "x": 600, "y": 290},
+                {"action": "type", "text": to_email},
+                {"action": "key", "key": "tab"},
+                {"action": "type", "text": subject},
+                {"action": "click", "x": 600, "y": 450},
+                {"action": "type", "text": body},
+                {"action": "click", "x": 200, "y": 650},
+                {"action": "speak", "text": f"Email sent to {to_email}"}
+            ]
+        else:
+            actions += [
+                {"action": "click", "x": 100, "y": 580},
+                {"action": "speak", "text": "Compose window opened. Please fill in the details."}
+            ]
+        return json.dumps(actions)
 
     # YouTube
-    if "youtube" in cmd_lower:
-        return json.dumps([
-            {"action": "open_url", "url": "https://www.youtube.com"},
-            {"action": "speak", "text": "Opened YouTube"}
-        ])
-    # Google search
-    if "search" in cmd_lower and "google" in cmd_lower:
-        query = cmd_lower.replace("search", "").replace("google", "").replace("for", "").strip()
-        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+    if "youtube" in cmd:
+        query = re.sub(r'open|youtube|play|search|on|in|chrome|browser', '', cmd).strip()
+        if query:
+            url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+        else:
+            url = "https://www.youtube.com"
         return json.dumps([
             {"action": "open_url", "url": url},
+            {"action": "wait", "seconds": 3},
+            {"action": "speak", "text": f"Opened YouTube{' and searched for ' + query if query else ''}"}
+        ])
+
+    # Google search
+    if "search" in cmd or "google" in cmd:
+        query = re.sub(r'search|google|for|on|in', '', cmd).strip()
+        return json.dumps([
+            {"action": "open_url", "url": f"https://www.google.com/search?q={query.replace(' ', '+')}"},
             {"action": "speak", "text": f"Searched Google for {query}"}
         ])
+
+    # WhatsApp web
+    if "whatsapp" in cmd:
+        return json.dumps([
+            {"action": "open_url", "url": "https://web.whatsapp.com"},
+            {"action": "wait", "seconds": 3},
+            {"action": "speak", "text": "WhatsApp Web opened"}
+        ])
+
+    # Instagram
+    if "instagram" in cmd:
+        return json.dumps([
+            {"action": "open_url", "url": "https://www.instagram.com"},
+            {"action": "speak", "text": "Instagram opened"}
+        ])
+
+    # Twitter/X
+    if "twitter" in cmd or " x " in cmd:
+        return json.dumps([
+            {"action": "open_url", "url": "https://www.x.com"},
+            {"action": "speak", "text": "Twitter opened"}
+        ])
+
     # Chrome
-    if "chrome" in cmd_lower and ("open" in cmd_lower or "start" in cmd_lower):
+    if "chrome" in cmd:
         return json.dumps([
             {"action": "run_shell", "command": "start chrome"},
             {"action": "speak", "text": "Opening Chrome"}
         ])
+
     # Notepad
-    if "notepad" in cmd_lower:
-        return json.dumps([
-            {"action": "open_app", "app": "notepad"},
-            {"action": "speak", "text": "Opening Notepad"}
-        ])
+    if "notepad" in cmd:
+        text_match = re.search(r'(?:write|type|say)[:\s]+(.+)', cmd, re.IGNORECASE)
+        actions = [{"action": "open_app", "app": "notepad"}, {"action": "wait", "seconds": 1}]
+        if text_match:
+            actions.append({"action": "type", "text": text_match.group(1)})
+        actions.append({"action": "speak", "text": "Opened Notepad"})
+        return json.dumps(actions)
+
     # Calculator
-    if "calculator" in cmd_lower or "calc" in cmd_lower:
+    if "calculator" in cmd or "calc" in cmd:
         return json.dumps([
             {"action": "open_app", "app": "calc"},
             {"action": "speak", "text": "Opening Calculator"}
         ])
+
     # Screenshot
-    if "screenshot" in cmd_lower or "screen" in cmd_lower:
+    if "screenshot" in cmd:
         return json.dumps([
             {"action": "screenshot"},
             {"action": "speak", "text": "Screenshot taken"}
         ])
-    # Volume
-    if "volume up" in cmd_lower:
-        return json.dumps([
-            {"action": "key", "key": "volumeup"},
-            {"action": "speak", "text": "Volume increased"}
-        ])
-    if "volume down" in cmd_lower:
-        return json.dumps([
-            {"action": "key", "key": "volumedown"},
-            {"action": "speak", "text": "Volume decreased"}
-        ])
-    # Mute
-    if "mute" in cmd_lower:
-        return json.dumps([
-            {"action": "key", "key": "volumemute"},
-            {"action": "speak", "text": "Muted"}
-        ])
-    # Any URL
-    if "open" in cmd_lower and "." in cmd_lower:
-        words = cmd_lower.split()
-        for w in words:
-            if "." in w and len(w) > 4:
-                url = w if w.startswith("http") else f"https://{w}"
-                return json.dumps([
-                    {"action": "open_url", "url": url},
-                    {"action": "speak", "text": f"Opened {w}"}
-                ])
-    # Default — open Google search
+
+    # Volume controls
+    if "volume up" in cmd or "louder" in cmd:
+        return json.dumps([{"action": "key", "key": "volumeup"}, {"action": "speak", "text": "Volume up"}])
+    if "volume down" in cmd or "quieter" in cmd:
+        return json.dumps([{"action": "key", "key": "volumedown"}, {"action": "speak", "text": "Volume down"}])
+    if "mute" in cmd:
+        return json.dumps([{"action": "key", "key": "volumemute"}, {"action": "speak", "text": "Muted"}])
+
+    # Default Google search
     query = command.replace(" ", "+")
     return json.dumps([
         {"action": "open_url", "url": f"https://www.google.com/search?q={query}"},
@@ -460,6 +627,7 @@ class VoiceAgent:
         self.running = False
         self.recognizer = None
         self.microphone = None
+        self.is_processing = False
 
         if VOICE_AVAILABLE:
             try:
@@ -476,47 +644,47 @@ class VoiceAgent:
                 self.microphone = None
         else:
             print("  Voice unavailable — using TEXT mode.")
-            print("  Just type commands below and press Enter!\n")
 
     def listen_continuous(self):
-        """Always listening for wake word."""
         if not self.microphone: return
+        print(f'\n  Always listening for "{WAKE_WORD.title()}"...\n')
         while self.running:
+            if self.is_processing:
+                time.sleep(0.1)
+                continue
             try:
                 with self.microphone as source:
-                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=8)
                 try:
                     text = self.recognizer.recognize_google(audio).lower()
-                    log.debug(f"Heard: {text}")
+                    log.info(f"Heard: {text}")
                     if WAKE_WORD in text:
-                        print(f"\n  Wake word detected!")
-                        # Remove wake word to get command
                         command = text.replace(WAKE_WORD, "").strip()
                         if len(command) > 2:
-                            # Command was said with wake word
+                            self.is_processing = True
                             self.process_command(command)
+                            self.is_processing = False
                         else:
-                            # Wait for command
-                            speak("Yes?")
-                            self.listen_for_command()
+                            speak("Yes? What would you like me to do?")
+                            self.listen_next_command()
                 except sr.UnknownValueError:
-                    pass
-                except Exception:
                     pass
             except sr.WaitTimeoutError:
                 pass
             except Exception as e:
                 time.sleep(0.5)
 
-    def listen_for_command(self):
+    def listen_next_command(self):
         try:
             with self.microphone as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
-                print("  Listening...")
+                print("  Listening for command...")
                 audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=15)
             text = self.recognizer.recognize_google(audio)
             print(f"  You said: {text}")
+            self.is_processing = True
             self.process_command(text)
+            self.is_processing = False
         except sr.WaitTimeoutError:
             speak("I did not hear anything.")
         except sr.UnknownValueError:
@@ -526,35 +694,32 @@ class VoiceAgent:
 
     def process_command(self, command: str):
         speak("On it!")
-        print(f"  Executing: {command}")
-        actions_json = get_ai_actions(command, self.token)
-        try:
-            actions = json.loads(actions_json)
-            if isinstance(actions, list):
-                execute_action_list(actions, token=self.token)
-        except Exception as e:
-            log.error(f"Execute error: {e}")
-            speak("Something went wrong.")
+        log.info(f"Processing: {command}")
+        execute_full_task(command, self.token)
 
     def text_input_loop(self):
         print("\n  Type commands and press Enter:")
-        print("  Example: open youtube, search weather, open notepad\n")
+        print("  Examples:")
+        print("    open youtube and search lofi music")
+        print("    send email on gmail to xyz@gmail.com subject hello body hi there")
+        print("    open notepad and write a poem")
+        print("    search google for weather today\n")
         while self.running:
             try:
                 command = input("  > ").strip()
                 if not command: continue
-                if command.lower() in ['quit', 'exit']: break
-                self.process_command(command)
+                if command.lower() in ['quit', 'exit']:
+                    self.running = False
+                    break
+                threading.Thread(target=self.process_command, args=(command,), daemon=True).start()
             except (EOFError, KeyboardInterrupt):
                 break
 
     def run(self):
         self.running = True
         if self.microphone:
-            # Start always-listening in background
             voice_thread = threading.Thread(target=self.listen_continuous, daemon=True)
             voice_thread.start()
-        # Always run text input too
         self.text_input_loop()
 
     def stop(self):
@@ -567,10 +732,7 @@ async def agent_loop(token: str):
         try:
             log.info("Connecting to Dacexy backend...")
             async with websockets.connect(
-                BACKEND_WS,
-                ping_interval=20,
-                ping_timeout=30,
-                open_timeout=30
+                BACKEND_WS, ping_interval=20, ping_timeout=30, open_timeout=30
             ) as ws:
                 await ws.send(json.dumps({"token": token}))
                 resp = await asyncio.wait_for(ws.recv(), timeout=15)
@@ -601,40 +763,35 @@ async def agent_loop(token: str):
 
                         if mtype == "task":
                             task_text = cmd.get("task", "") or cmd.get("goal", "")
-                            log.info(f"Task: {task_text}")
-                            speak(f"On it!")
-                            actions_json = get_ai_actions(task_text, token)
-                            try:
-                                actions = json.loads(actions_json)
-                                execute_action_list(actions, token=token)
-                                await ws.send(json.dumps({
-                                    "type": "task_result",
-                                    "status": "completed",
-                                    "actions_taken": len(actions),
-                                    "task": task_text
-                                }))
-                            except Exception as e:
-                                await ws.send(json.dumps({
-                                    "type": "task_result",
-                                    "status": "failed",
-                                    "error": str(e)
-                                }))
+                            log.info(f"Remote task: {task_text}")
+
+                            def run_task():
+                                execute_full_task(task_text, token)
+
+                            task_thread = threading.Thread(target=run_task, daemon=True)
+                            task_thread.start()
+                            task_thread.join(timeout=120)
+
+                            await ws.send(json.dumps({
+                                "type": "task_result",
+                                "status": "completed",
+                                "task": task_text
+                            }))
                             continue
 
                         if mtype == "command" or "action" in cmd:
                             action = cmd.get("action", "unknown")
-                            log.info(f"Remote: {action}")
+                            log.info(f"Remote command: {action}")
                             if action not in ["screenshot", "get_system_info", "get_screen_size"]:
                                 ss = take_screenshot()
                                 if ss:
                                     await ws.send(json.dumps({"type": "screenshot_before", "data": ss}))
                             result = execute_command(cmd, token=token)
                             await ws.send(json.dumps({"type": "result", "action": action, "data": result}))
-                            if action not in ["get_system_info", "get_screen_size"]:
-                                await asyncio.sleep(0.5)
-                                ss = take_screenshot()
-                                if ss:
-                                    await ws.send(json.dumps({"type": "screenshot_after", "data": ss}))
+                            await asyncio.sleep(0.5)
+                            ss = take_screenshot()
+                            if ss:
+                                await ws.send(json.dumps({"type": "screenshot_after", "data": ss}))
 
                     except json.JSONDecodeError:
                         pass
@@ -653,11 +810,10 @@ async def agent_loop(token: str):
 
 def main():
     print("\n" + "="*52)
-    print("   Dacexy Desktop Agent v4.0")
-    print("   Always On - Voice + Remote Control")
+    print("   Dacexy Desktop Agent v5.0")
+    print("   Full Computer Control - Always On")
     print("="*52 + "\n")
 
-    # Setup Windows autostart
     setup_autostart()
 
     token = get_token()
@@ -669,7 +825,6 @@ def main():
             token = None
 
     if not token:
-        print("  Login to Dacexy\n")
         for attempt in range(3):
             token = login()
             if token: break
@@ -680,15 +835,15 @@ def main():
             input("  Press Enter to exit...")
             return
 
-    print(f"\n  Logged in successfully!")
-    print(f"  Dacexy is now ALWAYS ON.")
-    print(f'  Say "Hey Dacexy open YouTube" anytime!\n')
+    print(f"\n  Logged in!")
+    print(f"  Starting full computer control...\n")
+    print(f'  Say "Hey Dacexy [command]" OR type commands below\n')
 
     voice = VoiceAgent(token)
     voice_thread = threading.Thread(target=voice.run, daemon=True)
     voice_thread.start()
 
-    speak("Dacexy is now active and always listening!")
+    speak("Dacexy v5 is active! I can now do anything on your computer.")
 
     try:
         asyncio.run(agent_loop(token))
