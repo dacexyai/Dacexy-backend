@@ -1,5 +1,6 @@
 """
-Dacexy Desktop Agent v3.0
+Dacexy Desktop Agent v3.1
+Fixed: token expiry handling, auth retry, robust reconnect
 """
 import subprocess, sys, os
 
@@ -16,8 +17,9 @@ PACKAGES = [
 
 print("Checking dependencies...")
 for pkg in PACKAGES:
-    import_name = pkg.replace("-","_").split("[")[0]
-    if pkg == "speechrecognition": import_name = "speech_recognition"
+    import_name = pkg.replace("-", "_").split("[")[0]
+    if pkg == "speechrecognition":
+        import_name = "speech_recognition"
     try:
         __import__(import_name)
     except ImportError:
@@ -29,7 +31,7 @@ import threading, time, webbrowser, re
 from pathlib import Path
 
 import pyautogui
-import requests
+import requests as req_lib
 import websockets
 from PIL import ImageGrab
 import pyttsx3
@@ -85,8 +87,10 @@ def speak(text: str):
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
-        try: return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except: pass
+        try:
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except:
+            pass
     return {}
 
 def save_config(cfg: dict):
@@ -105,35 +109,54 @@ def clear_token():
     cfg.pop("access_token", None)
     save_config(cfg)
 
-def login():
-    print("\n" + "="*52)
+def verify_token_http(token: str) -> bool:
+    """Quick HTTP check to see if the token is still valid before trying WebSocket."""
+    try:
+        r = req_lib.get(
+            f"{BACKEND_HTTP}/agent/desktop/status",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15
+        )
+        return r.status_code == 200
+    except Exception as e:
+        log.warning(f"Token verify HTTP call failed: {e}")
+        # Network error – can't tell, assume token might still be ok
+        return True
+
+def login() -> str | None:
+    print("\n" + "=" * 52)
     print("   Dacexy Desktop Agent - Login")
-    print("="*52)
+    print("=" * 52)
     email    = input("  Email   : ").strip()
     password = input("  Password: ").strip()
     print()
     try:
-        r = requests.post(
+        r = req_lib.post(
             f"{BACKEND_HTTP}/auth/login",
             json={"email": email, "password": password},
             headers={"Content-Type": "application/json"},
             timeout=30
         )
         if r.status_code == 200:
-            token = r.json().get("access_token", "")
+            data = r.json()
+            token = data.get("access_token", "")
             if token:
                 save_token(token)
                 print("  Login successful!")
                 return token
-            print("  No token received.")
+            print("  No token received from server.")
         else:
-            d = r.json().get("detail", r.text)
-            if isinstance(d, list): d = d[0].get("msg", str(d))
-            print(f"  Login failed: {d}")
-    except requests.exceptions.ConnectionError:
-        print("  Cannot connect. Check internet.")
+            try:
+                d = r.json().get("detail", r.text)
+            except Exception:
+                d = r.text
+            if isinstance(d, list):
+                d = d[0].get("msg", str(d))
+            print(f"  Login failed ({r.status_code}): {d}")
+    except req_lib.exceptions.ConnectionError:
+        print("  Cannot connect to server. Check your internet.")
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"  Error during login: {e}")
     return None
 
 def take_screenshot():
@@ -186,7 +209,8 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "hotkey":
             keys = cmd.get("keys", [])
-            if keys: pyautogui.hotkey(*keys)
+            if keys:
+                pyautogui.hotkey(*keys)
             return {"status": "ok"}
 
         elif action == "scroll":
@@ -206,9 +230,12 @@ def execute_command(cmd: dict, token=None) -> dict:
         elif action == "open_app":
             app = cmd.get("app", "")
             s = platform.system()
-            if s == "Windows": os.startfile(app)
-            elif s == "Darwin": subprocess.Popen(["open", "-a", app])
-            else: subprocess.Popen([app])
+            if s == "Windows":
+                os.startfile(app)
+            elif s == "Darwin":
+                subprocess.Popen(["open", "-a", app])
+            else:
+                subprocess.Popen([app])
             return {"status": "ok"}
 
         elif action == "run_shell":
@@ -225,28 +252,36 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "get_system_info":
             sz = pyautogui.size()
-            return {"status": "ok", "os": platform.system(), "os_version": platform.version(),
-                    "machine": platform.machine(), "hostname": platform.node(),
-                    "screen_width": sz.width, "screen_height": sz.height, "agent_version": "3.0"}
+            return {
+                "status": "ok",
+                "os": platform.system(),
+                "os_version": platform.version(),
+                "machine": platform.machine(),
+                "hostname": platform.node(),
+                "screen_width": sz.width,
+                "screen_height": sz.height,
+                "agent_version": "3.1"
+            }
 
         else:
             return {"status": "error", "message": f"Unknown action: {action}"}
 
     except pyautogui.FailSafeException:
-        return {"status": "error", "message": "Failsafe triggered"}
+        return {"status": "error", "message": "Failsafe triggered (mouse moved to corner)"}
     except Exception as e:
         log.error(f"Command error [{action}]: {e}")
         return {"status": "error", "message": str(e)}
 
 def execute_action_list(actions: list, token=None):
     for action in actions:
-        if not isinstance(action, dict): continue
-        log.info(f"Executing: {action.get('action','?')}")
+        if not isinstance(action, dict):
+            continue
+        log.info(f"Executing: {action.get('action', '?')}")
         execute_command(action, token=token)
         time.sleep(0.3)
 
 def process_ai_command(command: str, token: str) -> list:
-    """Send a natural language command to the backend and get back a list of actions to execute."""
+    """Send a natural language command to the backend AI and get back a list of actions."""
     try:
         sz = pyautogui.size()
         prompt = (
@@ -267,7 +302,6 @@ def process_ai_command(command: str, token: str) -> list:
             'Example for "open google": [{"action":"open_url","url":"https://google.com"},{"action":"speak","text":"Opened Google for you"}]'
         )
 
-        # Try the agent/ai endpoint first, fall back to chat
         endpoints = [
             (f"{BACKEND_HTTP}/agent/ai", {"prompt": prompt}),
             (f"{BACKEND_HTTP}/ai/chat", {"messages": [{"role": "user", "content": prompt}], "stream": False}),
@@ -275,7 +309,7 @@ def process_ai_command(command: str, token: str) -> list:
 
         for url, payload in endpoints:
             try:
-                r = requests.post(
+                r = req_lib.post(
                     url,
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
                     json=payload,
@@ -283,7 +317,6 @@ def process_ai_command(command: str, token: str) -> list:
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    # Handle different response shapes
                     content = (
                         data.get("content") or
                         data.get("response") or
@@ -293,12 +326,10 @@ def process_ai_command(command: str, token: str) -> list:
                         ""
                     )
                     if isinstance(content, list):
-                        # content is already a list of message blocks
                         content = " ".join(
                             block.get("text", "") for block in content
                             if isinstance(block, dict) and block.get("type") == "text"
                         )
-                    # Extract JSON array from response
                     match = re.search(r'\[[\s\S]*\]', str(content))
                     if match:
                         actions = json.loads(match.group(0))
@@ -308,7 +339,6 @@ def process_ai_command(command: str, token: str) -> list:
                 log.warning(f"Endpoint {url} failed: {e}")
                 continue
 
-        # If AI didn't return valid actions, do a best-effort direct action
         return _fallback_action(command)
 
     except Exception as e:
@@ -316,7 +346,6 @@ def process_ai_command(command: str, token: str) -> list:
         return [{"action": "speak", "text": "Sorry, could not connect to Dacexy AI."}]
 
 def _fallback_action(command: str) -> list:
-    """Simple rule-based fallback when AI is unreachable."""
     cmd_lower = command.lower()
     if "open" in cmd_lower and ("chrome" in cmd_lower or "browser" in cmd_lower):
         return [{"action": "open_app", "app": "chrome"}, {"action": "speak", "text": "Opening Chrome"}]
@@ -348,11 +377,12 @@ class VoiceAgent:
                 self.recognizer.adjust_for_ambient_noise(source, duration=2)
             print("  Microphone ready!")
         except Exception as e:
-            print(f"  Microphone error: {e}")
+            print(f"  Microphone error (voice disabled): {e}")
             self.microphone = None
 
     def listen_for_wake_word(self) -> bool:
-        if not self.microphone or not self.recognizer: return False
+        if not self.microphone or not self.recognizer:
+            return False
         try:
             with self.microphone as source:
                 audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=4)
@@ -382,7 +412,7 @@ class VoiceAgent:
             return None
 
     def process_command(self, command: str):
-        speak(f"Working on it")
+        speak("Working on it")
         actions = process_ai_command(command, self.token)
         try:
             if isinstance(actions, list) and len(actions) > 0:
@@ -402,11 +432,11 @@ class VoiceAgent:
         while self.running:
             try:
                 if self.listen_for_wake_word():
-                    print(f'\n  Wake word detected!')
+                    print("\n  Wake word detected!")
                     command = self.listen_for_command()
                     if command:
                         self.process_command(command)
-                    print(f'\n  Listening again...')
+                    print("\n  Listening again...")
             except KeyboardInterrupt:
                 break
             except Exception as e:
@@ -416,9 +446,48 @@ class VoiceAgent:
     def stop(self):
         self.running = False
 
-async def agent_loop(token: str):
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FIX: The main auth loop now:
+#   1. Verifies token via HTTP before trying WebSocket (catches expiry early)
+#   2. On "Authentication failed" from WS, clears token and prompts re-login
+#      instead of exiting (infinite loop -> user just re-enters credentials)
+#   3. Separates "bad token" (stop & re-login) from "network error" (retry)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def agent_loop(token_holder: list, voice_holder: list):
+    """
+    token_holder[0] holds the current token so we can refresh it mid-run.
+    voice_holder[0] holds the VoiceAgent so we can update its token too.
+    """
     retry_delay = 5
+
     while True:
+        token = token_holder[0]
+
+        # ── Pre-flight: check token via HTTP first ──────────────────────────
+        print("\n  Checking token validity...")
+        if not verify_token_http(token):
+            print("\n  Token rejected by server (expired or invalid).")
+            clear_token()
+            new_token = None
+            for attempt in range(3):
+                new_token = login()
+                if new_token:
+                    break
+                remaining = 2 - attempt
+                if remaining > 0:
+                    print(f"  {remaining} attempt(s) remaining.\n")
+            if not new_token:
+                print("\n  Could not log in. Exiting.")
+                return
+            token_holder[0] = new_token
+            if voice_holder[0]:
+                voice_holder[0].token = new_token
+            token = new_token
+            retry_delay = 5
+
+        # ── WebSocket connection ────────────────────────────────────────────
         try:
             log.info("Connecting to Dacexy backend...")
             async with websockets.connect(
@@ -428,14 +497,46 @@ async def agent_loop(token: str):
                 open_timeout=30
             ) as ws:
                 await ws.send(json.dumps({"token": token}))
-                resp = await asyncio.wait_for(ws.recv(), timeout=15)
+
+                try:
+                    resp = await asyncio.wait_for(ws.recv(), timeout=15)
+                except asyncio.TimeoutError:
+                    log.warning("Server did not respond to auth in time, retrying...")
+                    await asyncio.sleep(retry_delay)
+                    continue
+
                 data = json.loads(resp)
 
                 if data.get("type") == "error":
-                    print(f"\n  Auth failed: {data.get('message')}")
-                    clear_token()
-                    return
+                    msg = data.get("message", "")
+                    print(f"\n  Auth failed: {msg}")
 
+                    # ── FIX: bad token -> re-login, don't just exit ─────────
+                    if "authentication" in msg.lower() or "invalid token" in msg.lower() or "token" in msg.lower():
+                        clear_token()
+                        print("  Your session has expired. Please log in again.\n")
+                        new_token = None
+                        for attempt in range(3):
+                            new_token = login()
+                            if new_token:
+                                break
+                            remaining = 2 - attempt
+                            if remaining > 0:
+                                print(f"  {remaining} attempt(s) remaining.\n")
+                        if not new_token:
+                            print("\n  Could not log in. Exiting.")
+                            return
+                        token_holder[0] = new_token
+                        if voice_holder[0]:
+                            voice_holder[0].token = new_token
+                        retry_delay = 5
+                        continue   # retry the loop with new token
+                    else:
+                        # Non-auth error from server, just retry
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                # ── Authenticated ───────────────────────────────────────────
                 log.info("Remote control connected!")
                 speak("Dacexy remote control connected!")
                 retry_delay = 5
@@ -452,12 +553,15 @@ async def agent_loop(token: str):
                             await ws.send(json.dumps({"type": "pong"}))
                             continue
 
-                        # Handle natural language task from the web UI
-                        if mtype == "task" or mtype == "voice_command":
-                            command = cmd.get("command", "") or cmd.get("task", "") or cmd.get("goal", "")
+                        if mtype in ("task", "voice_command"):
+                            command = (
+                                cmd.get("command", "") or
+                                cmd.get("task", "") or
+                                cmd.get("goal", "")
+                            )
                             if command:
                                 log.info(f"AI task received: {command}")
-                                speak(f"Working on it")
+                                speak("Working on it")
                                 actions = process_ai_command(command, token)
                                 execute_action_list(actions, token=token)
                                 await ws.send(json.dumps({
@@ -468,7 +572,6 @@ async def agent_loop(token: str):
                                 }))
                             continue
 
-                        # Handle direct low-level command
                         if mtype == "command" or "action" in cmd:
                             action = cmd.get("action", "unknown")
                             log.info(f"Remote command: {action}")
@@ -492,17 +595,23 @@ async def agent_loop(token: str):
                     except Exception as e:
                         log.error(f"Loop error: {e}")
 
+        except websockets.exceptions.ConnectionClosedError as e:
+            log.warning(f"Connection closed: {e}")
+        except OSError as e:
+            log.error(f"Network error: {e}")
         except Exception as e:
             log.error(f"Connection error: {e}")
-            log.info(f"Reconnecting in {retry_delay}s...")
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+
+        log.info(f"Reconnecting in {retry_delay}s...")
+        await asyncio.sleep(retry_delay)
+        retry_delay = min(retry_delay * 2, 60)
+
 
 def main():
-    print("\n" + "="*52)
-    print("   Dacexy Desktop Agent v3.0")
+    print("\n" + "=" * 52)
+    print("   Dacexy Desktop Agent v3.1")
     print("   Voice + AI Remote Control")
-    print("="*52 + "\n")
+    print("=" * 52 + "\n")
 
     token = get_token()
 
@@ -512,26 +621,33 @@ def main():
             token = login()
             if token:
                 break
-            print(f"  Login failed. {2 - attempt} attempts remaining.\n")
+            remaining = 2 - attempt
+            if remaining > 0:
+                print(f"  Login failed. {remaining} attempt(s) remaining.\n")
         if not token:
-            print("  Press Enter to exit...")
+            print("  Could not log in. Press Enter to exit...")
             input()
             return
 
     print(f"\n  Logged in successfully!")
     print(f"  Starting voice control + remote connection...\n")
 
+    # Use lists so agent_loop can mutate them (token refresh, voice token update)
+    token_holder = [token]
     voice = VoiceAgent(token)
+    voice_holder = [voice]
+
     voice_thread = threading.Thread(target=voice.run, daemon=True)
     voice_thread.start()
 
     speak("Dacexy agent is now active and ready!")
 
     try:
-        asyncio.run(agent_loop(token))
+        asyncio.run(agent_loop(token_holder, voice_holder))
     except KeyboardInterrupt:
         print("\n  Shutting down...")
         voice.stop()
+
 
 if __name__ == "__main__":
     main()
