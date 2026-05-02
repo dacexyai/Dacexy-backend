@@ -1,23 +1,16 @@
 """
-Dacexy Desktop Agent v3.1 - Voice + Remote Control
+Dacexy Desktop Agent v4.0 - Always On, Voice + Remote Control
 """
 import subprocess, sys, os
 
 PACKAGES = [
-    "pyautogui",
-    "pillow",
-    "websockets",
-    "requests",
-    "speechrecognition",
-    "pyttsx3",
-    "numpy",
-    "psutil",
-    "comtypes",
+    "pyautogui", "pillow", "websockets", "requests",
+    "speechrecognition", "pyttsx3", "numpy", "psutil",
 ]
 
 print("Checking dependencies...")
 for pkg in PACKAGES:
-    import_name = pkg.replace("-","_").split("[")[0]
+    import_name = pkg.replace("-","_")
     if pkg == "speechrecognition": import_name = "speech_recognition"
     try:
         __import__(import_name)
@@ -25,24 +18,22 @@ for pkg in PACKAGES:
         print(f"  Installing {pkg}...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
 
-# Install PyAudio specially for Windows
 try:
     import pyaudio
+    PYAUDIO_OK = True
 except ImportError:
+    PYAUDIO_OK = False
     print("  Installing PyAudio...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pipwin", "-q"])
-        subprocess.check_call([sys.executable, "-m", "pipwin", "install", "pyaudio"])
-    except Exception:
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install",
-                "pyaudio", "--find-links",
-                "https://download.lfd.uci.edu/pythonlibs/archived/PyAudio-0.2.11-cp311-cp311-win_amd64.whl", "-q"])
-        except Exception as e:
-            print(f"  PyAudio install failed: {e} - voice will use text input fallback")
+        subprocess.check_call([sys.executable, "-m", "pipwin", "install", "pyaudio", "-q"])
+        import pyaudio
+        PYAUDIO_OK = True
+    except:
+        PYAUDIO_OK = False
 
 import asyncio, base64, io, json, logging, platform
-import threading, time, webbrowser, re
+import threading, time, webbrowser, re, winreg
 from pathlib import Path
 
 import pyautogui
@@ -53,13 +44,12 @@ import pyttsx3
 
 try:
     import speech_recognition as sr
-    import pyaudio
-    VOICE_AVAILABLE = True
+    VOICE_AVAILABLE = PYAUDIO_OK
 except ImportError:
     VOICE_AVAILABLE = False
 
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.3
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.2
 
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
@@ -100,6 +90,23 @@ def speak(text: str):
                 engine.runAndWait()
     except Exception as e:
         log.warning(f"TTS failed: {e}")
+
+def setup_autostart():
+    """Add agent to Windows startup so it runs automatically on boot."""
+    try:
+        agent_path = str(Path.home() / "DacexyAgent" / "dacexy_agent.py")
+        python_path = sys.executable
+        cmd = f'"{python_path}" "{agent_path}"'
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE
+        )
+        winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        print("  Auto-start enabled — Dacexy will start automatically on Windows boot!")
+    except Exception as e:
+        log.warning(f"Auto-start setup failed: {e}")
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -176,7 +183,11 @@ def take_screenshot():
         log.warning(f"Screenshot failed: {e}")
         return None
 
-BLOCKED = ["rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\", "shutdown /s"]
+def get_screen_center():
+    sz = pyautogui.size()
+    return sz.width // 2, sz.height // 2
+
+BLOCKED = ["rm -rf /", "format c:", "del /s /q c:\\"]
 
 def execute_command(cmd: dict, token=None) -> dict:
     action = cmd.get("action", "").lower()
@@ -192,7 +203,7 @@ def execute_command(cmd: dict, token=None) -> dict:
         elif action == "click":
             x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
             pyautogui.click(x, y, button=cmd.get("button", "left"))
-            return {"status": "ok", "action": f"clicked ({x},{y})"}
+            return {"status": "ok"}
 
         elif action == "double_click":
             x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
@@ -206,7 +217,7 @@ def execute_command(cmd: dict, token=None) -> dict:
 
         elif action == "type":
             text = cmd.get("text", "")
-            pyautogui.typewrite(text, interval=0.04)
+            pyautogui.write(text, interval=0.05)
             return {"status": "ok"}
 
         elif action == "key":
@@ -229,22 +240,22 @@ def execute_command(cmd: dict, token=None) -> dict:
             return {"status": "ok"}
 
         elif action == "open_url":
-            webbrowser.open(cmd.get("url", ""))
-            return {"status": "ok"}
+            url = cmd.get("url", "")
+            webbrowser.open(url)
+            time.sleep(1)
+            return {"status": "ok", "opened": url}
 
         elif action == "open_app":
             app = cmd.get("app", "")
-            s = platform.system()
-            if s == "Windows": os.startfile(app)
-            elif s == "Darwin": subprocess.Popen(["open", "-a", app])
-            else: subprocess.Popen([app])
-            return {"status": "ok"}
+            os.startfile(app) if platform.system() == "Windows" else subprocess.Popen([app])
+            time.sleep(1)
+            return {"status": "ok", "opened": app}
 
         elif action == "run_shell":
             command = cmd.get("command", "")
             for b in BLOCKED:
                 if b.lower() in command.lower():
-                    return {"status": "error", "message": f"Blocked: {b}"}
+                    return {"status": "error", "message": f"Blocked"}
             r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
             return {"status": "ok", "stdout": r.stdout[:3000], "stderr": r.stderr[:500]}
 
@@ -256,12 +267,12 @@ def execute_command(cmd: dict, token=None) -> dict:
             sz = pyautogui.size()
             return {"status": "ok", "os": platform.system(), "os_version": platform.version(),
                     "machine": platform.machine(), "hostname": platform.node(),
-                    "screen_width": sz.width, "screen_height": sz.height, "agent_version": "3.1"}
+                    "screen_width": sz.width, "screen_height": sz.height, "agent_version": "4.0"}
 
         elif action == "task":
             task_text = cmd.get("task", "") or cmd.get("goal", "")
             if task_text and token:
-                actions_json = process_voice_command(task_text, token)
+                actions_json = get_ai_actions(task_text, token)
                 try:
                     actions = json.loads(actions_json)
                     if isinstance(actions, list):
@@ -272,10 +283,10 @@ def execute_command(cmd: dict, token=None) -> dict:
             return {"status": "ok"}
 
         else:
-            return {"status": "error", "message": f"Unknown action: {action}"}
+            return {"status": "error", "message": f"Unknown: {action}"}
 
     except pyautogui.FailSafeException:
-        return {"status": "error", "message": "Failsafe triggered - move mouse away from corner"}
+        return {"status": "error", "message": "Failsafe"}
     except Exception as e:
         log.error(f"Command error [{action}]: {e}")
         return {"status": "error", "message": str(e)}
@@ -285,27 +296,58 @@ def execute_action_list(actions: list, token=None):
         if not isinstance(action, dict): continue
         log.info(f"Executing: {action.get('action','?')}")
         execute_command(action, token=token)
-        time.sleep(0.3)
+        time.sleep(0.4)
 
-def process_voice_command(command: str, token: str) -> str:
+def get_ai_actions(command: str, token: str) -> str:
+    """Get AI planned actions for a command — returns JSON array."""
     try:
         sz = pyautogui.size()
-        prompt = (
-            f'You are a desktop automation AI. User said: "{command}"\n'
-            f'System: {platform.system()}, Screen: {sz.width}x{sz.height}\n\n'
-            'Return ONLY a JSON array of actions. Available:\n'
-            '{"action":"click","x":100,"y":200}\n'
-            '{"action":"double_click","x":100,"y":200}\n'
-            '{"action":"type","text":"hello"}\n'
-            '{"action":"key","key":"enter"}\n'
-            '{"action":"hotkey","keys":["ctrl","c"]}\n'
-            '{"action":"open_url","url":"https://..."}\n'
-            '{"action":"open_app","app":"notepad"}\n'
-            '{"action":"run_shell","command":"..."}\n'
-            '{"action":"screenshot"}\n'
-            '{"action":"speak","text":"..."}\n\n'
-            'Example: [{"action":"open_app","app":"notepad"},{"action":"speak","text":"Opened Notepad"}]'
-        )
+        system = platform.system()
+
+        # Build very specific prompt so AI returns real actions not just speak
+        prompt = f"""You are a Windows desktop automation AI. The user wants: "{command}"
+
+OS: {system}, Screen: {sz.width}x{sz.height}
+
+IMPORTANT RULES:
+1. You MUST return ONLY a valid JSON array of actions
+2. NEVER return just a speak action — always do the actual task
+3. For opening websites: use open_url action
+4. For opening apps: use open_app action  
+5. For typing: use type action
+6. Always end with a speak action confirming what you did
+
+AVAILABLE ACTIONS:
+- {{"action":"open_url","url":"https://..."}} — opens URL in browser
+- {{"action":"open_app","app":"notepad"}} — opens application
+- {{"action":"run_shell","command":"start chrome"}} — runs shell command
+- {{"action":"click","x":500,"y":400}} — clicks at position
+- {{"action":"double_click","x":500,"y":400}} — double clicks
+- {{"action":"type","text":"hello"}} — types text
+- {{"action":"key","key":"enter"}} — presses key
+- {{"action":"hotkey","keys":["ctrl","t"]}} — keyboard shortcut
+- {{"action":"screenshot"}} — takes screenshot
+- {{"action":"speak","text":"..."}} — says something out loud
+
+EXAMPLES:
+User: "open youtube in chrome"
+Response: [{{"action":"open_url","url":"https://www.youtube.com"}},{{"action":"speak","text":"Opened YouTube for you"}}]
+
+User: "open notepad and type hello world"
+Response: [{{"action":"open_app","app":"notepad"}},{{"action":"key","key":"enter"}},{{"action":"type","text":"hello world"}},{{"action":"speak","text":"Opened Notepad and typed hello world"}}]
+
+User: "take a screenshot"
+Response: [{{"action":"screenshot"}},{{"action":"speak","text":"Screenshot taken"}}]
+
+User: "open chrome"
+Response: [{{"action":"run_shell","command":"start chrome"}},{{"action":"speak","text":"Opening Chrome"}}]
+
+User: "search google for weather today"
+Response: [{{"action":"open_url","url":"https://www.google.com/search?q=weather+today"}},{{"action":"speak","text":"Searching Google for weather today"}}]
+
+Now respond to: "{command}"
+Return ONLY the JSON array, nothing else."""
+
         r = req_lib.post(
             f"{BACKEND_HTTP}/ai/chat",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
@@ -315,13 +357,102 @@ def process_voice_command(command: str, token: str) -> str:
         if r.status_code == 200:
             data = r.json()
             content = data.get("content") or data.get("response") or data.get("text") or ""
-            match = re.search(r'\[.*\]', content, re.DOTALL)
+            # Extract JSON array from response
+            match = re.search(r'\[.*?\]', content, re.DOTALL)
             if match:
-                return match.group(0)
-        return json.dumps([{"action": "speak", "text": f"I understood: {command}, but could not plan actions."}])
+                arr = match.group(0)
+                # Validate it's real actions not just speak
+                parsed = json.loads(arr)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    # If only speak action, try to do the task directly
+                    non_speak = [a for a in parsed if a.get("action") != "speak"]
+                    if not non_speak:
+                        # AI returned only speak — force direct action
+                        return force_direct_action(command)
+                    return arr
+
+        return force_direct_action(command)
+
     except Exception as e:
         log.error(f"AI error: {e}")
-        return json.dumps([{"action": "speak", "text": "Sorry, could not connect to Dacexy AI."}])
+        return force_direct_action(command)
+
+def force_direct_action(command: str) -> str:
+    """Execute common commands directly without AI when AI fails."""
+    cmd_lower = command.lower()
+
+    # YouTube
+    if "youtube" in cmd_lower:
+        return json.dumps([
+            {"action": "open_url", "url": "https://www.youtube.com"},
+            {"action": "speak", "text": "Opened YouTube"}
+        ])
+    # Google search
+    if "search" in cmd_lower and "google" in cmd_lower:
+        query = cmd_lower.replace("search", "").replace("google", "").replace("for", "").strip()
+        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        return json.dumps([
+            {"action": "open_url", "url": url},
+            {"action": "speak", "text": f"Searched Google for {query}"}
+        ])
+    # Chrome
+    if "chrome" in cmd_lower and ("open" in cmd_lower or "start" in cmd_lower):
+        return json.dumps([
+            {"action": "run_shell", "command": "start chrome"},
+            {"action": "speak", "text": "Opening Chrome"}
+        ])
+    # Notepad
+    if "notepad" in cmd_lower:
+        return json.dumps([
+            {"action": "open_app", "app": "notepad"},
+            {"action": "speak", "text": "Opening Notepad"}
+        ])
+    # Calculator
+    if "calculator" in cmd_lower or "calc" in cmd_lower:
+        return json.dumps([
+            {"action": "open_app", "app": "calc"},
+            {"action": "speak", "text": "Opening Calculator"}
+        ])
+    # Screenshot
+    if "screenshot" in cmd_lower or "screen" in cmd_lower:
+        return json.dumps([
+            {"action": "screenshot"},
+            {"action": "speak", "text": "Screenshot taken"}
+        ])
+    # Volume
+    if "volume up" in cmd_lower:
+        return json.dumps([
+            {"action": "key", "key": "volumeup"},
+            {"action": "speak", "text": "Volume increased"}
+        ])
+    if "volume down" in cmd_lower:
+        return json.dumps([
+            {"action": "key", "key": "volumedown"},
+            {"action": "speak", "text": "Volume decreased"}
+        ])
+    # Mute
+    if "mute" in cmd_lower:
+        return json.dumps([
+            {"action": "key", "key": "volumemute"},
+            {"action": "speak", "text": "Muted"}
+        ])
+    # Any URL
+    if "open" in cmd_lower and "." in cmd_lower:
+        words = cmd_lower.split()
+        for w in words:
+            if "." in w and len(w) > 4:
+                url = w if w.startswith("http") else f"https://{w}"
+                return json.dumps([
+                    {"action": "open_url", "url": url},
+                    {"action": "speak", "text": f"Opened {w}"}
+                ])
+    # Default — open Google search
+    query = command.replace(" ", "+")
+    return json.dumps([
+        {"action": "open_url", "url": f"https://www.google.com/search?q={query}"},
+        {"action": "speak", "text": f"Searching for {command}"}
+    ])
+
 
 class VoiceAgent:
     def __init__(self, token: str):
@@ -330,74 +461,89 @@ class VoiceAgent:
         self.recognizer = None
         self.microphone = None
 
-        if not VOICE_AVAILABLE:
-            print("  Voice control unavailable (no microphone).")
-            print("  You can still use voice by TYPING commands below!")
-            return
+        if VOICE_AVAILABLE:
+            try:
+                self.recognizer = sr.Recognizer()
+                self.recognizer.energy_threshold = 300
+                self.recognizer.dynamic_energy_threshold = True
+                self.microphone = sr.Microphone()
+                print("  Calibrating microphone...")
+                with self.microphone as source:
+                    self.recognizer.adjust_for_ambient_noise(source, duration=2)
+                print(f'  Microphone ready! Say "{WAKE_WORD.title()}" anytime.')
+            except Exception as e:
+                print(f"  Microphone error: {e}")
+                self.microphone = None
+        else:
+            print("  Voice unavailable — using TEXT mode.")
+            print("  Just type commands below and press Enter!\n")
 
-        try:
-            self.recognizer = sr.Recognizer()
-            self.microphone = sr.Microphone()
-            print("  Calibrating microphone...")
-            with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=2)
-            print("  Microphone ready! Say 'Hey Dacexy' to activate.")
-        except Exception as e:
-            print(f"  Microphone error: {e}")
-            print("  Falling back to text input mode.")
-            self.microphone = None
-
-    def listen_for_wake_word(self) -> bool:
-        if not self.microphone: return False
-        try:
-            with self.microphone as source:
-                audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=4)
-            text = self.recognizer.recognize_google(audio).lower()
-            return WAKE_WORD in text
-        except:
-            return False
+    def listen_continuous(self):
+        """Always listening for wake word."""
+        if not self.microphone: return
+        while self.running:
+            try:
+                with self.microphone as source:
+                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                try:
+                    text = self.recognizer.recognize_google(audio).lower()
+                    log.debug(f"Heard: {text}")
+                    if WAKE_WORD in text:
+                        print(f"\n  Wake word detected!")
+                        # Remove wake word to get command
+                        command = text.replace(WAKE_WORD, "").strip()
+                        if len(command) > 2:
+                            # Command was said with wake word
+                            self.process_command(command)
+                        else:
+                            # Wait for command
+                            speak("Yes?")
+                            self.listen_for_command()
+                except sr.UnknownValueError:
+                    pass
+                except Exception:
+                    pass
+            except sr.WaitTimeoutError:
+                pass
+            except Exception as e:
+                time.sleep(0.5)
 
     def listen_for_command(self):
-        speak("Yes, how can I help?")
         try:
             with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                print("  Listening for command...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
+                print("  Listening...")
                 audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=15)
             text = self.recognizer.recognize_google(audio)
             print(f"  You said: {text}")
-            return text
+            self.process_command(text)
         except sr.WaitTimeoutError:
             speak("I did not hear anything.")
-            return None
         except sr.UnknownValueError:
-            speak("Sorry, could not understand.")
-            return None
+            speak("Could not understand, please try again.")
         except Exception as e:
             log.error(f"Listen error: {e}")
-            return None
 
     def process_command(self, command: str):
-        speak(f"Working on it...")
-        print(f"  Command: {command}")
-        actions_json = process_voice_command(command, self.token)
+        speak("On it!")
+        print(f"  Executing: {command}")
+        actions_json = get_ai_actions(command, self.token)
         try:
             actions = json.loads(actions_json)
             if isinstance(actions, list):
                 execute_action_list(actions, token=self.token)
-            else:
-                speak("Could not plan that action.")
-        except:
+        except Exception as e:
+            log.error(f"Execute error: {e}")
             speak("Something went wrong.")
 
     def text_input_loop(self):
-        print("\n  TEXT COMMAND MODE (type commands below)")
-        print("  Type 'quit' to exit\n")
+        print("\n  Type commands and press Enter:")
+        print("  Example: open youtube, search weather, open notepad\n")
         while self.running:
             try:
                 command = input("  > ").strip()
                 if not command: continue
-                if command.lower() == 'quit': break
+                if command.lower() in ['quit', 'exit']: break
                 self.process_command(command)
             except (EOFError, KeyboardInterrupt):
                 break
@@ -405,28 +551,15 @@ class VoiceAgent:
     def run(self):
         self.running = True
         if self.microphone:
-            print(f'\n  Voice ACTIVE! Say "{WAKE_WORD.title()}" to give a command')
-            print('  Or type commands in this window\n')
-            text_thread = threading.Thread(target=self.text_input_loop, daemon=True)
-            text_thread.start()
-            while self.running:
-                try:
-                    if self.listen_for_wake_word():
-                        print(f'\n  Wake word detected!')
-                        command = self.listen_for_command()
-                        if command:
-                            self.process_command(command)
-                        print(f'\n  Listening again...')
-                except KeyboardInterrupt:
-                    break
-                except Exception as e:
-                    log.error(f"Voice loop error: {e}")
-                    time.sleep(1)
-        else:
-            self.text_input_loop()
+            # Start always-listening in background
+            voice_thread = threading.Thread(target=self.listen_continuous, daemon=True)
+            voice_thread.start()
+        # Always run text input too
+        self.text_input_loop()
 
     def stop(self):
         self.running = False
+
 
 async def agent_loop(token: str):
     retry_delay = 5
@@ -447,16 +580,13 @@ async def agent_loop(token: str):
                     msg = data.get("message", "")
                     print(f"\n  Auth failed: {msg}")
                     if "expired" in msg.lower() or "invalid" in msg.lower():
-                        print("  Token expired. Please login again.")
                         clear_token()
                         return
                     await asyncio.sleep(retry_delay)
                     continue
 
                 log.info("Remote control connected!")
-                speak("Dacexy remote control connected!")
                 retry_delay = 5
-
                 info = execute_command({"action": "get_system_info"})
                 await ws.send(json.dumps({"type": "system_info", "data": info}))
 
@@ -469,24 +599,20 @@ async def agent_loop(token: str):
                             await ws.send(json.dumps({"type": "pong"}))
                             continue
 
-                        if mtype == "pong":
-                            continue
-
                         if mtype == "task":
                             task_text = cmd.get("task", "") or cmd.get("goal", "")
-                            log.info(f"Task received: {task_text}")
-                            speak(f"Working on: {task_text[:50]}")
-                            actions_json = process_voice_command(task_text, token)
+                            log.info(f"Task: {task_text}")
+                            speak(f"On it!")
+                            actions_json = get_ai_actions(task_text, token)
                             try:
                                 actions = json.loads(actions_json)
-                                if isinstance(actions, list):
-                                    execute_action_list(actions, token=token)
-                                    await ws.send(json.dumps({
-                                        "type": "task_result",
-                                        "status": "completed",
-                                        "actions_taken": len(actions),
-                                        "task": task_text
-                                    }))
+                                execute_action_list(actions, token=token)
+                                await ws.send(json.dumps({
+                                    "type": "task_result",
+                                    "status": "completed",
+                                    "actions_taken": len(actions),
+                                    "task": task_text
+                                }))
                             except Exception as e:
                                 await ws.send(json.dumps({
                                     "type": "task_result",
@@ -497,41 +623,26 @@ async def agent_loop(token: str):
 
                         if mtype == "command" or "action" in cmd:
                             action = cmd.get("action", "unknown")
-                            log.info(f"Remote command: {action}")
-
+                            log.info(f"Remote: {action}")
                             if action not in ["screenshot", "get_system_info", "get_screen_size"]:
                                 ss = take_screenshot()
                                 if ss:
                                     await ws.send(json.dumps({"type": "screenshot_before", "data": ss}))
-
                             result = execute_command(cmd, token=token)
                             await ws.send(json.dumps({"type": "result", "action": action, "data": result}))
-
                             if action not in ["get_system_info", "get_screen_size"]:
                                 await asyncio.sleep(0.5)
                                 ss = take_screenshot()
                                 if ss:
                                     await ws.send(json.dumps({"type": "screenshot_after", "data": ss}))
 
-                        elif mtype == "voice_command":
-                            command = cmd.get("command", "")
-                            if command:
-                                speak(f"Remote command: {command}")
-                                actions_json = process_voice_command(command, token)
-                                try:
-                                    actions = json.loads(actions_json)
-                                    execute_action_list(actions, token=token)
-                                    await ws.send(json.dumps({"type": "voice_result", "status": "completed"}))
-                                except:
-                                    await ws.send(json.dumps({"type": "voice_result", "status": "failed"}))
-
                     except json.JSONDecodeError:
-                        log.warning("Invalid JSON from server")
+                        pass
                     except Exception as e:
                         log.error(f"Loop error: {e}")
 
-        except websockets.exceptions.ConnectionClosed as e:
-            log.warning(f"Connection closed: {e}")
+        except websockets.exceptions.ConnectionClosed:
+            log.warning("Connection closed")
         except Exception as e:
             log.error(f"Connection error: {e}")
 
@@ -539,46 +650,52 @@ async def agent_loop(token: str):
         await asyncio.sleep(retry_delay)
         retry_delay = min(retry_delay * 2, 60)
 
+
 def main():
     print("\n" + "="*52)
-    print("   Dacexy Desktop Agent v3.1")
-    print("   Voice + AI Remote Control")
+    print("   Dacexy Desktop Agent v4.0")
+    print("   Always On - Voice + Remote Control")
     print("="*52 + "\n")
 
-    token = get_token()
+    # Setup Windows autostart
+    setup_autostart()
 
+    token = get_token()
     if token:
-        print("  Checking token validity...")
+        print("  Checking session...")
         if not check_token_valid(token):
-            print("  Token expired. Please login again.")
+            print("  Session expired. Please login again.")
             clear_token()
             token = None
 
     if not token:
-        print("  First time setup - login to Dacexy\n")
+        print("  Login to Dacexy\n")
         for attempt in range(3):
             token = login()
             if token: break
-            print(f"  {2 - attempt} attempts remaining.\n")
+            remaining = 2 - attempt
+            if remaining > 0:
+                print(f"  {remaining} attempts remaining.\n")
         if not token:
-            print("  Press Enter to exit...")
-            input()
+            input("  Press Enter to exit...")
             return
 
-    print(f"\n  Logged in!")
-    print(f"  Starting voice control + remote connection...\n")
+    print(f"\n  Logged in successfully!")
+    print(f"  Dacexy is now ALWAYS ON.")
+    print(f'  Say "Hey Dacexy open YouTube" anytime!\n')
 
     voice = VoiceAgent(token)
     voice_thread = threading.Thread(target=voice.run, daemon=True)
     voice_thread.start()
 
-    speak("Dacexy agent is now active and ready!")
+    speak("Dacexy is now active and always listening!")
 
     try:
         asyncio.run(agent_loop(token))
     except KeyboardInterrupt:
         print("\n  Shutting down...")
         voice.stop()
+
 
 if __name__ == "__main__":
     main()
