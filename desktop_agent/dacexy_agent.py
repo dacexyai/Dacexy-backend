@@ -135,25 +135,25 @@ def login() -> str | None:
     try:
         r = requests.post(
             f"{BACKEND_HTTP}/auth/login",
-            data={"username": email, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            json={"email": email, "password": password},
+            headers={"Content-Type": "application/json"},
             timeout=30
         )
         if r.status_code == 200:
             token = r.json().get("access_token", "")
             if token:
                 save_token(token)
-                print("  ✅  Login successful!")
+                print("  Login successful!")
                 return token
-            print("  ❌  No token received.")
+            print("  No token received.")
         else:
             d = r.json().get("detail", r.text)
             if isinstance(d, list): d = d[0].get("msg", str(d))
-            print(f"  ❌  Login failed: {d}")
+            print(f"  Login failed: {d}")
     except requests.exceptions.ConnectionError:
-        print("  ❌  Cannot connect. Check internet.")
+        print("  Cannot connect. Check internet.")
     except Exception as e:
-        print(f"  ❌  Error: {e}")
+        print(f"  Error: {e}")
     return None
 
 # ─── Screenshot ───────────────────────────────────────────────────────────────
