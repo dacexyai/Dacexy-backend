@@ -1435,17 +1435,14 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     org = await db.get(Organization, user.org_id)
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
-
-
-w("src/interfaces/http/routes/agent.py", '''
-            from __future__ import annotations
+w("src/interfaces/http/routes/agent.py", '''from __future__ import annotations
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, AiTask
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
@@ -1497,7 +1494,6 @@ async def run_agent(
 
     user_id = str(user.id)
 
-    # Save task record
     task_record = AiTask(
         org_id=user.org_id,
         user_id=user.id,
@@ -1509,12 +1505,11 @@ async def run_agent(
     await db.flush()
     await db.commit()
 
-    # If desktop agent is connected, send the task to it and wait for result
     if user_id in active_agents:
         ws = active_agents[user_id]
         try:
             loop = asyncio.get_event_loop()
-            future: asyncio.Future = loop.create_future()
+            future = loop.create_future()
             pending_task_results[user_id] = future
 
             await ws.send_text(json.dumps({
@@ -1545,14 +1540,11 @@ async def run_agent(
             }
         except Exception as e:
             active_agents.pop(user_id, None)
-            # Fall through to AI-only mode
 
-    # No desktop agent connected — use AI to describe what it would do
     system_prompt = (
         "You are an autonomous AI agent for Dacexy. "
         "The user wants you to complete a task. "
-        "Since no desktop agent is connected, describe clearly what you did or would do step by step. "
-        "Be concise and actionable."
+        "Since no desktop agent is connected, describe clearly what you did or would do step by step."
     )
     context_part = (f" Context: {body.context}") if body.context else ""
     messages = [
@@ -1642,7 +1634,6 @@ async def send_desktop_task(
     body: TaskRequest,
     user: User = Depends(_get_current_user)
 ):
-    """Send a natural language task to the connected desktop agent."""
     user_id = str(user.id)
     if user_id not in active_agents:
         raise HTTPException(400, "Desktop agent not connected.")
@@ -1700,17 +1691,13 @@ async def desktop_websocket(websocket: WebSocket):
 
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
-
                 elif msg_type == "pong":
                     pass
-
                 elif msg_type == "task_result":
                     agent_results[user_id] = msg
-                    # Resolve pending future if one is waiting
                     future = pending_task_results.get(user_id)
                     if future and not future.done():
                         future.set_result(msg)
-
                 elif msg_type in ["result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"]:
                     agent_results[user_id] = msg
 
@@ -1780,7 +1767,10 @@ async def download_windows_agent():
         content=bat.encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
-    ''')
+    )
+''')
+
+
 w("src/interfaces/http/routes/websites.py", """
 import httpx
 import re
