@@ -1435,7 +1435,8 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     org = await db.get(Organization, user.org_id)
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
-w("src/interfaces/http/routes/agent.py", ''' from __future__ import annotations
+w("src/interfaces/http/routes/agent.py", '''
+from __future__ import annotations
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
