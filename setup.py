@@ -1435,7 +1435,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     org = await db.get(Organization, user.org_id)
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
-w("src/interfaces/http/routes/agent.py", '''from __future__ import annotations
+w("src/interfaces/http/routes/agent.py", ''' from __future__ import annotations
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -1495,102 +1495,51 @@ def _decode_ws_token(token: str) -> Optional[str]:
         return user_id if user_id else None
     except Exception:
         import logging
-        logging.getLogger("dacexy.ws").debug(
-            "JWT decode failed - token may be expired or signed with wrong secret"
-        )
+        logging.getLogger("dacexy.ws").debug("JWT decode failed - token expired or wrong secret")
         return None
 
 
 @router.post("/run")
-async def run_agent(
-    body: AgentRunRequest,
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db),
-    ai: DeepSeekProvider = Depends(get_deepseek),
-):
+async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
     task_text = body.task or body.goal or ""
     if not task_text:
         raise HTTPException(400, "task or goal is required")
-
     user_id = str(user.id)
-
-    task_record = AiTask(
-        org_id=user.org_id,
-        user_id=user.id,
-        task_type="agent_run",
-        status="running",
-        input_data={"task": task_text, "context": body.context},
-    )
+    task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": task_text, "context": body.context})
     db.add(task_record)
     await db.flush()
     await db.commit()
-
     if user_id in active_agents:
         ws = active_agents[user_id]
         try:
             loop = asyncio.get_event_loop()
             future = loop.create_future()
             pending_task_results[user_id] = future
-
-            await ws.send_text(json.dumps({
-                "type": "task",
-                "task": task_text,
-                "context": body.context or "",
-                "task_id": str(task_record.id),
-            }))
-
+            await ws.send_text(json.dumps({"type": "task", "task": task_text, "context": body.context or "", "task_id": str(task_record.id)}))
             try:
                 result_data = await asyncio.wait_for(future, timeout=120)
-                result_text = "Completed {} actions on your desktop.".format(
-                    result_data.get("actions_taken", 0)
-                )
+                result_text = "Completed {} actions on your desktop.".format(result_data.get("actions_taken", 0))
             except asyncio.TimeoutError:
                 result_text = "Task sent to desktop agent but timed out waiting for confirmation."
             finally:
                 pending_task_results.pop(user_id, None)
-
             task_record.status = "completed"
             task_record.output_data = {"result": result_text}
             await db.commit()
-            return {
-                "id": str(task_record.id),
-                "task": task_text,
-                "goal": task_text,
-                "status": "completed",
-                "result": result_text,
-                "created_at": str(task_record.created_at),
-            }
+            return {"id": str(task_record.id), "task": task_text, "goal": task_text, "status": "completed", "result": result_text, "created_at": str(task_record.created_at)}
         except Exception:
             active_agents.pop(user_id, None)
-
-    system_prompt = (
-        "You are an autonomous AI agent for Dacexy. "
-        "The user wants you to complete a task. "
-        "Since no desktop agent is connected, describe clearly what you did or would do step by step."
-    )
+    system_prompt = "You are an autonomous AI agent for Dacexy. The user wants you to complete a task. Since no desktop agent is connected, describe clearly what you did or would do step by step."
     context_part = " Context: {}".format(body.context) if body.context else ""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Task: {}{}".format(task_text, context_part)},
-    ]
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": "Task: {}{}".format(task_text, context_part)}]
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
         if isinstance(result, list):
-            result = " ".join(
-                block.get("text", "") for block in result
-                if isinstance(block, dict) and block.get("type") == "text"
-            )
+            result = " ".join(block.get("text", "") for block in result if isinstance(block, dict) and block.get("type") == "text")
         task_record.status = "completed"
         task_record.output_data = {"result": result}
         await db.commit()
-        return {
-            "id": str(task_record.id),
-            "task": task_text,
-            "goal": task_text,
-            "status": "completed",
-            "result": result,
-            "created_at": str(task_record.created_at),
-        }
+        return {"id": str(task_record.id), "task": task_text, "goal": task_text, "status": "completed", "result": result, "created_at": str(task_record.created_at)}
     except Exception as e:
         task_record.status = "failed"
         task_record.output_data = {"error": str(e)}
@@ -1599,31 +1548,15 @@ async def run_agent(
 
 
 @router.get("/tasks")
-async def list_tasks(
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
+async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
-    result = await db.execute(
-        select(AiTask)
-        .where(AiTask.org_id == user.org_id)
-        .order_by(AiTask.created_at.desc())
-        .limit(50)
-    )
+    result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(50))
     tasks = result.scalars().all()
     runs = []
     for t in tasks:
         out = t.output_data or {}
         inp = t.input_data or {}
-        runs.append({
-            "id": str(t.id),
-            "task": inp.get("task", ""),
-            "goal": inp.get("task", ""),
-            "status": t.status,
-            "result": out.get("result"),
-            "error": out.get("error"),
-            "created_at": str(t.created_at),
-        })
+        runs.append({"id": str(t.id), "task": inp.get("task", ""), "goal": inp.get("task", ""), "status": t.status, "result": out.get("result"), "error": out.get("error"), "created_at": str(t.created_at)})
     return runs
 
 
@@ -1640,15 +1573,10 @@ async def get_last_result(user: User = Depends(_get_current_user)):
 
 
 @router.post("/desktop/command")
-async def send_desktop_command(
-    body: DesktopCommandRequest,
-    user: User = Depends(_get_current_user),
-):
+async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
-        raise HTTPException(
-            400, "Desktop agent not connected. Run the agent on your computer first."
-        )
+        raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
     ws = active_agents[user_id]
     try:
         await ws.send_text(json.dumps(body.dict()))
@@ -1659,10 +1587,7 @@ async def send_desktop_command(
 
 
 @router.post("/desktop/task")
-async def send_desktop_task(
-    body: TaskRequest,
-    user: User = Depends(_get_current_user),
-):
+async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
         raise HTTPException(400, "Desktop agent not connected.")
@@ -1671,11 +1596,7 @@ async def send_desktop_task(
     if not task_text:
         raise HTTPException(400, "task or goal required")
     try:
-        await ws.send_text(json.dumps({
-            "type": "task",
-            "task": task_text,
-            "context": body.context or "",
-        }))
+        await ws.send_text(json.dumps({"type": "task", "task": task_text, "context": body.context or ""}))
         return {"status": "sent", "task": task_text}
     except Exception as e:
         active_agents.pop(user_id, None)
@@ -1690,44 +1611,26 @@ async def desktop_websocket(websocket: WebSocket):
         try:
             auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
         except asyncio.TimeoutError:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Authentication timeout - send token within 30s",
-            }))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout - send token within 30s"}))
             await websocket.close()
             return
-
         try:
             auth_data = json.loads(auth_raw)
             token = auth_data.get("token", "")
         except Exception:
             token = auth_raw.strip()
-
         user_id = _decode_ws_token(token)
         if not user_id:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": (
-                    "Authentication failed - token is missing, expired, or invalid. "
-                    "Please log in again."
-                ),
-            }))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed - token is missing, expired, or invalid. Please log in again."}))
             await websocket.close()
             return
-
         active_agents[user_id] = websocket
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "message": "Desktop agent connected",
-            "user_id": user_id,
-        }))
-
+        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
                 msg = json.loads(data)
                 msg_type = msg.get("type", "")
-
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
                 elif msg_type == "pong":
@@ -1737,12 +1640,8 @@ async def desktop_websocket(websocket: WebSocket):
                     future = pending_task_results.get(user_id)
                     if future and not future.done():
                         future.set_result(msg)
-                elif msg_type in (
-                    "result", "screenshot_before", "screenshot_after",
-                    "system_info", "error", "voice_result",
-                ):
+                elif msg_type in ("result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"):
                     agent_results[user_id] = msg
-
             except asyncio.TimeoutError:
                 try:
                     await websocket.send_text(json.dumps({"type": "ping"}))
@@ -1752,7 +1651,6 @@ async def desktop_websocket(websocket: WebSocket):
                 break
             except Exception:
                 break
-
     except Exception:
         pass
     finally:
@@ -1768,15 +1666,8 @@ async def desktop_websocket(websocket: WebSocket):
 async def download_windows_agent():
     crlf = chr(13) + chr(10)
     q = chr(34)
-
-    py_url = (
-        "https://raw.githubusercontent.com/dacexyai/Dacexy-backend"
-        "/main/desktop_agent/dacexy_agent.py"
-    )
-    py_installer_url = (
-        "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
-    )
-
+    py_url = "https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py"
+    py_inst = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
     lines = [
         "@echo off",
         "setlocal enabledelayedexpansion",
@@ -1795,7 +1686,7 @@ async def download_windows_agent():
         "python --version >nul 2>&1",
         "if errorlevel 1 (",
         "    echo Python not found. Installing...",
-        "    powershell -Command " + q + "Invoke-WebRequest -Uri " + py_installer_url + " -OutFile %TEMP%\\python_installer.exe -UseBasicParsing" + q,
+        "    powershell -Command " + q + "Invoke-WebRequest -Uri " + py_inst + " -OutFile %TEMP%\\python_installer.exe -UseBasicParsing" + q,
         "    %TEMP%\\python_installer.exe /quiet InstallAllUsers=1 PrependPath=1",
         "    timeout /t 15 /nobreak >nul",
         "    del %TEMP%\\python_installer.exe",
@@ -1812,21 +1703,18 @@ async def download_windows_agent():
         "powershell -Command " + q + "Invoke-WebRequest -Uri " + py_url + " -OutFile %USERPROFILE%\\DacexyAgent\\dacexy_agent.py -UseBasicParsing" + q,
         "echo OK: Agent downloaded",
         "if exist %USERPROFILE%\\.dacexy_agent.json del %USERPROFILE%\\.dacexy_agent.json",
-        "echo OK: Old session cleared",
+        "echo OK: Old session cleared - you will be asked to log in",
         "echo [5/5] Launching agent...",
         "cd %USERPROFILE%\\DacexyAgent",
         "python dacexy_agent.py",
         "pause",
     ]
-
-    bat_content = crlf.join(lines) + crlf
-    bat_bytes = bat_content.encode("utf-8")
-
-    return Response(
-        content=bat_bytes,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"},
- ''')                                    
+    bat_bytes = crlf.join(lines).encode("utf-8")
+    resp = Response(content=bat_bytes, media_type="application/octet-stream")
+    resp.headers["Content-Disposition"] = "attachment; filename=install_dacexy_agent.bat"
+    return resp
+''')
+  
                           
 w("src/interfaces/http/routes/websites.py", """
 import httpx
