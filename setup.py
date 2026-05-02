@@ -1438,14 +1438,14 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 
 
 w("src/interfaces/http/routes/agent.py", '''
-from __future__ import annotations
+            from __future__ import annotations
 import json
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, AiTask
 from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
@@ -1457,9 +1457,11 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 active_agents: Dict[str, WebSocket] = {}
 agent_results: Dict[str, dict] = {}
+pending_task_results: Dict[str, asyncio.Future] = {}
 
 class AgentRunRequest(BaseModel):
-    task: str
+    task: Optional[str] = None
+    goal: Optional[str] = None
     context: Optional[str] = None
     max_steps: int = 10
 
@@ -1477,34 +1479,137 @@ class DesktopCommandRequest(BaseModel):
     button: Optional[str] = "left"
     duration: Optional[float] = 0.3
 
+class TaskRequest(BaseModel):
+    task: Optional[str] = None
+    goal: Optional[str] = None
+    context: Optional[str] = None
+
 @router.post("/run")
-async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
-    system_prompt = "You are an autonomous AI agent for Dacexy. Break down tasks into steps and execute them systematically."
-    context_part = (" Context: " + body.context) if body.context else ""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Task: " + body.task + context_part}
-    ]
-    task_record = AiTask(org_id=user.org_id, user_id=user.id, task_type="agent_run", status="running", input_data={"task": body.task})
+async def run_agent(
+    body: AgentRunRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db),
+    ai: DeepSeekProvider = Depends(get_deepseek)
+):
+    task_text = body.task or body.goal or ""
+    if not task_text:
+        raise HTTPException(400, "task or goal is required")
+
+    user_id = str(user.id)
+
+    # Save task record
+    task_record = AiTask(
+        org_id=user.org_id,
+        user_id=user.id,
+        task_type="agent_run",
+        status="running",
+        input_data={"task": task_text, "context": body.context}
+    )
     db.add(task_record)
     await db.flush()
+    await db.commit()
+
+    # If desktop agent is connected, send the task to it and wait for result
+    if user_id in active_agents:
+        ws = active_agents[user_id]
+        try:
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future = loop.create_future()
+            pending_task_results[user_id] = future
+
+            await ws.send_text(json.dumps({
+                "type": "task",
+                "task": task_text,
+                "context": body.context or "",
+                "task_id": task_record.id
+            }))
+
+            try:
+                result_data = await asyncio.wait_for(future, timeout=120)
+                result_text = f"Completed {result_data.get('actions_taken', 0)} actions on your desktop."
+            except asyncio.TimeoutError:
+                result_text = "Task sent to desktop agent but timed out waiting for confirmation."
+            finally:
+                pending_task_results.pop(user_id, None)
+
+            task_record.status = "completed"
+            task_record.output_data = {"result": result_text}
+            await db.commit()
+            return {
+                "id": task_record.id,
+                "task": task_text,
+                "goal": task_text,
+                "status": "completed",
+                "result": result_text,
+                "created_at": str(task_record.created_at)
+            }
+        except Exception as e:
+            active_agents.pop(user_id, None)
+            # Fall through to AI-only mode
+
+    # No desktop agent connected — use AI to describe what it would do
+    system_prompt = (
+        "You are an autonomous AI agent for Dacexy. "
+        "The user wants you to complete a task. "
+        "Since no desktop agent is connected, describe clearly what you did or would do step by step. "
+        "Be concise and actionable."
+    )
+    context_part = (f" Context: {body.context}") if body.context else ""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Task: {task_text}{context_part}"}
+    ]
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
+        if isinstance(result, list):
+            result = " ".join(
+                block.get("text", "") for block in result
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
         task_record.status = "completed"
         task_record.output_data = {"result": result}
         await db.commit()
-        return {"task_id": task_record.id, "status": "completed", "result": result}
+        return {
+            "id": task_record.id,
+            "task": task_text,
+            "goal": task_text,
+            "status": "completed",
+            "result": result,
+            "created_at": str(task_record.created_at)
+        }
     except Exception as e:
         task_record.status = "failed"
+        task_record.output_data = {"error": str(e)}
         await db.commit()
-        raise HTTPException(500, "Agent error: " + str(e))
+        raise HTTPException(500, f"Agent error: {str(e)}")
 
 @router.get("/tasks")
-async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_tasks(
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     from sqlalchemy import select
-    result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(20))
+    result = await db.execute(
+        select(AiTask)
+        .where(AiTask.org_id == user.org_id)
+        .order_by(AiTask.created_at.desc())
+        .limit(50)
+    )
     tasks = result.scalars().all()
-    return {"tasks": [{"id": t.id, "task_type": t.task_type, "status": t.status, "created_at": str(t.created_at)} for t in tasks]}
+    runs = []
+    for t in tasks:
+        out = t.output_data or {}
+        inp = t.input_data or {}
+        runs.append({
+            "id": t.id,
+            "task": inp.get("task", ""),
+            "goal": inp.get("task", ""),
+            "status": t.status,
+            "result": out.get("result"),
+            "error": out.get("error"),
+            "created_at": str(t.created_at)
+        })
+    return runs
 
 @router.get("/desktop/status")
 async def desktop_status(user: User = Depends(_get_current_user)):
@@ -1517,7 +1622,10 @@ async def get_last_result(user: User = Depends(_get_current_user)):
     return {"result": agent_results.get(user_id), "connected": user_id in active_agents}
 
 @router.post("/desktop/command")
-async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
+async def send_desktop_command(
+    body: DesktopCommandRequest,
+    user: User = Depends(_get_current_user)
+):
     user_id = str(user.id)
     if user_id not in active_agents:
         raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
@@ -1527,7 +1635,31 @@ async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends
         return {"status": "sent", "action": body.action}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, "Failed to send command: " + str(e))
+        raise HTTPException(500, f"Failed to send command: {str(e)}")
+
+@router.post("/desktop/task")
+async def send_desktop_task(
+    body: TaskRequest,
+    user: User = Depends(_get_current_user)
+):
+    """Send a natural language task to the connected desktop agent."""
+    user_id = str(user.id)
+    if user_id not in active_agents:
+        raise HTTPException(400, "Desktop agent not connected.")
+    ws = active_agents[user_id]
+    task_text = body.task or body.goal or ""
+    if not task_text:
+        raise HTTPException(400, "task or goal required")
+    try:
+        await ws.send_text(json.dumps({
+            "type": "task",
+            "task": task_text,
+            "context": body.context or ""
+        }))
+        return {"status": "sent", "task": task_text}
+    except Exception as e:
+        active_agents.pop(user_id, None)
+        raise HTTPException(500, f"Failed to send task: {str(e)}")
 
 @router.websocket("/desktop/ws")
 async def desktop_websocket(websocket: WebSocket):
@@ -1548,21 +1680,40 @@ async def desktop_websocket(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "error", "message": "Invalid token payload"}))
                 await websocket.close()
                 return
-        except Exception as e:
+        except Exception:
             await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
             await websocket.close()
             return
+
         active_agents[user_id] = websocket
-        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "message": "Desktop agent connected",
+            "user_id": user_id
+        }))
+
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
                 msg = json.loads(data)
                 msg_type = msg.get("type", "")
+
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
+
+                elif msg_type == "pong":
+                    pass
+
+                elif msg_type == "task_result":
+                    agent_results[user_id] = msg
+                    # Resolve pending future if one is waiting
+                    future = pending_task_results.get(user_id)
+                    if future and not future.done():
+                        future.set_result(msg)
+
                 elif msg_type in ["result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"]:
                     agent_results[user_id] = msg
+
             except asyncio.TimeoutError:
                 try:
                     await websocket.send_text(json.dumps({"type": "ping"}))
@@ -1578,6 +1729,9 @@ async def desktop_websocket(websocket: WebSocket):
         if user_id:
             active_agents.pop(user_id, None)
             agent_results.pop(user_id, None)
+            future = pending_task_results.pop(user_id, None)
+            if future and not future.done():
+                future.cancel()
 
 @router.get("/download/windows")
 async def download_windows_agent():
@@ -1585,16 +1739,15 @@ async def download_windows_agent():
     q = chr(34)
     lines = [
         "@echo off",
-"setlocal enabledelayedexpansion",
-":: Request admin privileges",
-"net session >nul 2>&1",
-"if errorlevel 1 (",
-"    echo Requesting administrator access...",
-"    powershell -Command start-process -filepath %~f0 -verb runas",
-"    exit /b",
-")",
-"title Dacexy Desktop Agent Installer",
-"color 0A",
+        "setlocal enabledelayedexpansion",
+        "net session >nul 2>&1",
+        "if errorlevel 1 (",
+        "    echo Requesting administrator access...",
+        "    powershell -Command start-process -filepath %~f0 -verb runas",
+        "    exit /b",
+        ")",
+        "title Dacexy Desktop Agent Installer",
+        "color 0A",
         "echo.",
         "echo  DACEXY Desktop Agent v3.0",
         "echo.",
@@ -1627,8 +1780,7 @@ async def download_windows_agent():
         content=bat.encode("utf-8"),
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=install_dacexy_agent.bat"}
-    )
-''')
+    ''')
 w("src/interfaces/http/routes/websites.py", """
 import httpx
 import re
