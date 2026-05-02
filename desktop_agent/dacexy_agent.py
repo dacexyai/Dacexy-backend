@@ -33,7 +33,12 @@ import requests
 import websockets
 from PIL import ImageGrab
 import pyttsx3
-import speech_recognition as sr
+
+try:
+    import speech_recognition as sr
+    SR_AVAILABLE = True
+except ImportError:
+    SR_AVAILABLE = False
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.3
@@ -240,13 +245,14 @@ def execute_action_list(actions: list, token=None):
         execute_command(action, token=token)
         time.sleep(0.3)
 
-def process_voice_command(command: str, token: str) -> str:
+def process_ai_command(command: str, token: str) -> list:
+    """Send a natural language command to the backend and get back a list of actions to execute."""
     try:
         sz = pyautogui.size()
         prompt = (
-            f'You are a desktop automation AI. User said: "{command}"\n'
+            f'You are a desktop automation AI. The user wants to: "{command}"\n'
             f'System: {platform.system()}, Screen: {sz.width}x{sz.height}\n\n'
-            'Return ONLY a JSON array of actions. Available actions:\n'
+            'Return ONLY a valid JSON array of actions, no explanation, no markdown. Available actions:\n'
             '{"action":"click","x":100,"y":200}\n'
             '{"action":"double_click","x":100,"y":200}\n'
             '{"action":"type","text":"hello"}\n'
@@ -255,32 +261,86 @@ def process_voice_command(command: str, token: str) -> str:
             '{"action":"open_url","url":"https://..."}\n'
             '{"action":"open_app","app":"notepad"}\n'
             '{"action":"run_shell","command":"..."}\n'
+            '{"action":"scroll","x":500,"y":400,"clicks":3}\n'
             '{"action":"screenshot"}\n'
             '{"action":"speak","text":"..."}\n\n'
-            'Example: [{"action":"open_url","url":"https://google.com"},{"action":"speak","text":"Opened Google"}]'
+            'Example for "open google": [{"action":"open_url","url":"https://google.com"},{"action":"speak","text":"Opened Google for you"}]'
         )
-        r = requests.post(
-            f"{BACKEND_HTTP}/ai/chat",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            json={"messages": [{"role": "user", "content": prompt}], "stream": False},
-            timeout=30
-        )
-        if r.status_code == 200:
-            data = r.json()
-            content = data.get("content") or data.get("response") or data.get("text") or ""
-            match = re.search(r'\[.*\]', content, re.DOTALL)
-            if match:
-                return match.group(0)
-        return json.dumps([{"action": "speak", "text": f"I understood: {command}, but could not plan the actions."}])
+
+        # Try the agent/ai endpoint first, fall back to chat
+        endpoints = [
+            (f"{BACKEND_HTTP}/agent/ai", {"prompt": prompt}),
+            (f"{BACKEND_HTTP}/ai/chat", {"messages": [{"role": "user", "content": prompt}], "stream": False}),
+        ]
+
+        for url, payload in endpoints:
+            try:
+                r = requests.post(
+                    url,
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                    json=payload,
+                    timeout=45
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    # Handle different response shapes
+                    content = (
+                        data.get("content") or
+                        data.get("response") or
+                        data.get("result") or
+                        data.get("text") or
+                        (data.get("choices", [{}])[0].get("message", {}).get("content", "") if data.get("choices") else "") or
+                        ""
+                    )
+                    if isinstance(content, list):
+                        # content is already a list of message blocks
+                        content = " ".join(
+                            block.get("text", "") for block in content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        )
+                    # Extract JSON array from response
+                    match = re.search(r'\[[\s\S]*\]', str(content))
+                    if match:
+                        actions = json.loads(match.group(0))
+                        if isinstance(actions, list) and len(actions) > 0:
+                            return actions
+            except Exception as e:
+                log.warning(f"Endpoint {url} failed: {e}")
+                continue
+
+        # If AI didn't return valid actions, do a best-effort direct action
+        return _fallback_action(command)
+
     except Exception as e:
-        log.error(f"AI error: {e}")
-        return json.dumps([{"action": "speak", "text": "Sorry, could not connect to Dacexy AI."}])
+        log.error(f"AI command error: {e}")
+        return [{"action": "speak", "text": "Sorry, could not connect to Dacexy AI."}]
+
+def _fallback_action(command: str) -> list:
+    """Simple rule-based fallback when AI is unreachable."""
+    cmd_lower = command.lower()
+    if "open" in cmd_lower and ("chrome" in cmd_lower or "browser" in cmd_lower):
+        return [{"action": "open_app", "app": "chrome"}, {"action": "speak", "text": "Opening Chrome"}]
+    if "open" in cmd_lower and "notepad" in cmd_lower:
+        return [{"action": "open_app", "app": "notepad"}, {"action": "speak", "text": "Opening Notepad"}]
+    if any(x in cmd_lower for x in ["google", "search"]):
+        query = cmd_lower.replace("search", "").replace("google", "").strip()
+        url = f"https://www.google.com/search?q={query.replace(' ', '+')}" if query else "https://google.com"
+        return [{"action": "open_url", "url": url}, {"action": "speak", "text": f"Searching for {query}"}]
+    if "screenshot" in cmd_lower:
+        return [{"action": "screenshot"}, {"action": "speak", "text": "Taking a screenshot"}]
+    return [{"action": "speak", "text": f"I heard: {command}. Please try again or be more specific."}]
+
 
 class VoiceAgent:
     def __init__(self, token: str):
         self.token = token
-        self.recognizer = sr.Recognizer()
         self.running = False
+        if not SR_AVAILABLE:
+            print("  Voice: speech_recognition not available, voice disabled.")
+            self.microphone = None
+            self.recognizer = None
+            return
+        self.recognizer = sr.Recognizer()
         try:
             self.microphone = sr.Microphone()
             print("  Calibrating microphone...")
@@ -292,7 +352,7 @@ class VoiceAgent:
             self.microphone = None
 
     def listen_for_wake_word(self) -> bool:
-        if not self.microphone: return False
+        if not self.microphone or not self.recognizer: return False
         try:
             with self.microphone as source:
                 audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=4)
@@ -322,19 +382,22 @@ class VoiceAgent:
             return None
 
     def process_command(self, command: str):
-        speak(f"Working on: {command[:50]}")
-        actions_json = process_voice_command(command, self.token)
+        speak(f"Working on it")
+        actions = process_ai_command(command, self.token)
         try:
-            actions = json.loads(actions_json)
-            if isinstance(actions, list):
+            if isinstance(actions, list) and len(actions) > 0:
                 execute_action_list(actions, token=self.token)
             else:
                 speak("Could not plan that action.")
-        except:
+        except Exception as e:
+            log.error(f"Execute error: {e}")
             speak("Something went wrong.")
 
     def run(self):
         self.running = True
+        if not self.microphone:
+            print("  Voice control unavailable (no microphone).")
+            return
         print(f'\n  Voice control ACTIVE! Say "{WAKE_WORD.title()}" to give a command\n')
         while self.running:
             try:
@@ -358,7 +421,12 @@ async def agent_loop(token: str):
     while True:
         try:
             log.info("Connecting to Dacexy backend...")
-            async with websockets.connect(BACKEND_WS, ping_interval=20, ping_timeout=30) as ws:
+            async with websockets.connect(
+                BACKEND_WS,
+                ping_interval=20,
+                ping_timeout=30,
+                open_timeout=30
+            ) as ws:
                 await ws.send(json.dumps({"token": token}))
                 resp = await asyncio.wait_for(ws.recv(), timeout=15)
                 data = json.loads(resp)
@@ -369,6 +437,7 @@ async def agent_loop(token: str):
                     return
 
                 log.info("Remote control connected!")
+                speak("Dacexy remote control connected!")
                 retry_delay = 5
 
                 info = execute_command({"action": "get_system_info"})
@@ -383,6 +452,23 @@ async def agent_loop(token: str):
                             await ws.send(json.dumps({"type": "pong"}))
                             continue
 
+                        # Handle natural language task from the web UI
+                        if mtype == "task" or mtype == "voice_command":
+                            command = cmd.get("command", "") or cmd.get("task", "") or cmd.get("goal", "")
+                            if command:
+                                log.info(f"AI task received: {command}")
+                                speak(f"Working on it")
+                                actions = process_ai_command(command, token)
+                                execute_action_list(actions, token=token)
+                                await ws.send(json.dumps({
+                                    "type": "task_result",
+                                    "status": "completed",
+                                    "actions_taken": len(actions),
+                                    "actions": actions
+                                }))
+                            continue
+
+                        # Handle direct low-level command
                         if mtype == "command" or "action" in cmd:
                             action = cmd.get("action", "unknown")
                             log.info(f"Remote command: {action}")
@@ -400,18 +486,6 @@ async def agent_loop(token: str):
                                 ss = take_screenshot()
                                 if ss:
                                     await ws.send(json.dumps({"type": "screenshot_after", "data": ss}))
-
-                        elif mtype == "voice_command":
-                            command = cmd.get("command", "")
-                            if command:
-                                speak(f"Remote command: {command}")
-                                actions_json = process_voice_command(command, token)
-                                try:
-                                    actions = json.loads(actions_json)
-                                    execute_action_list(actions, token=token)
-                                    await ws.send(json.dumps({"type": "voice_result", "status": "completed"}))
-                                except:
-                                    await ws.send(json.dumps({"type": "voice_result", "status": "failed"}))
 
                     except json.JSONDecodeError:
                         log.warning("Invalid JSON from server")
