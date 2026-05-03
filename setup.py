@@ -2231,13 +2231,21 @@ except Exception:
     sys.exit(1)
 
 # Step 2: Start uvicorn
-print("=== Starting uvicorn ===", flush=True)
-port = int(os.environ.get("PORT", 8000))
-proc = subprocess.run(
-    [sys.executable, "-m", "uvicorn", "src.main:app",
-     "--host", "0.0.0.0", "--port", str(port), "--workers", "1"],
-    stderr=subprocess.STDOUT  # merge stderr into stdout so Render captures it
+print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
+import os, sys, subprocess
+
+port = os.environ.get('PORT', '10000')
+print(f'Starting uvicorn on port: {port}', flush=True)
+proc = subprocess.Popen(
+    [sys.executable, '-m', 'uvicorn', 'src.main:app',
+     '--host', '0.0.0.0',
+     '--port', port,
+     '--log-level', 'info'],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
 )
+for line in proc.stdout:
+    print(line, end='', flush=True)
+proc.wait()
 sys.exit(proc.returncode)
 
 # ── Start server ─────────────────────────────────────────────────────────────
