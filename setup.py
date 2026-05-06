@@ -1120,15 +1120,19 @@ async def logout(user: User = Depends(_get_current_user)):
     return {"message": "Logged out"}
 
 @router.get("/google/login")
+@router.get("/google/login")
 async def google_login():
     from fastapi.responses import RedirectResponse
     import urllib.parse
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(500, "Google login not configured. Add GOOGLE_CLIENT_ID to environment variables.")
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": settings.PLATFORM_URL + "/api/v1/auth/google/callback",
+        "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
-        "access_type": "offline"
+        "access_type": "offline",
+        "prompt": "select_account"
     }
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
     return RedirectResponse(url)
@@ -1138,30 +1142,37 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     import httpx, re, secrets as sec
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            token_res = await client.post("https://oauth2.googleapis.com/token", data={
-                "code": code,
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": settings.PLATFORM_URL + "/api/v1/auth/google/callback",
-                "grant_type": "authorization_code"
-            })
+            token_res = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.GOOGLE_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
+                    "grant_type": "authorization_code"
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
             token_data = token_res.json()
             if "error" in token_data:
-                raise HTTPException(400, "Google auth failed: " + token_data.get("error_description", token_data["error"]))
+                raise HTTPException(400, "Google auth failed: " + str(token_data.get("error_description", token_data.get("error"))))
             access_token = token_data.get("access_token", "")
             if not access_token:
-                raise HTTPException(400, "No access token from Google")
+                raise HTTPException(400, "No access token received from Google")
             user_res = await client.get(
                 "https://www.googleapis.com/oauth2/v2/userinfo",
                 headers={"Authorization": "Bearer " + access_token}
             )
             info = user_res.json()
+
         email = info.get("email", "")
-        full_name = info.get("name", email.split("@")[0])
+        full_name = info.get("name", email.split("@")[0] if email else "User")
         if not email:
-            raise HTTPException(400, "No email from Google")
+            raise HTTPException(400, "Could not get email from Google")
+
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
+
         if not user:
             org_name = full_name.split()[0] + "s Workspace"
             slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") + "-" + sec.token_hex(4)
@@ -1169,16 +1180,22 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
             db.add(org)
             await db.flush()
             user = User(
-                org_id=org.id, email=email, full_name=full_name,
+                org_id=org.id,
+                email=email,
+                full_name=full_name,
                 hashed_password=hash_password(sec.token_urlsafe(32)),
-                role="owner", is_verified=True
+                role="owner",
+                is_verified=True,
+                metadata_={"google": True}
             )
             db.add(user)
             await db.flush()
+
         await db.commit()
-        jwt_token = create_access_token(user.id, {"org_id": user.org_id, "role": user.role})
+        jwt_token = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(settings.APP_BASE_URL + "/login?token=" + jwt_token)
+        return RedirectResponse("https://dacexy.vercel.app/login?token=" + jwt_token)
+
     except HTTPException:
         raise
     except Exception as e:
