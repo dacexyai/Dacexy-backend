@@ -69,14 +69,14 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True
     EMAIL_FROM: str = "noreply@dacexy.ai"
     EMAIL_FROM_NAME: str = "Dacexy"
-    APP_BASE_URL: str = "https://app.dacexy.ai"
-    PLATFORM_URL: str = "https://api.dacexy.ai"
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
     VERCEL_TOKEN: str = ""
     VERCEL_TEAM_ID: str = ""
     WAVESPEED_API_KEY: str = ""
+    PLATFORM_URL: str = "https://dacexy-backend-v7ku.onrender.com"
+    APP_BASE_URL: str = "https://dacexy.vercel.app"
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     RATE_LIMIT_ENABLED: bool = True
