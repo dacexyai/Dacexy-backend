@@ -1123,10 +1123,12 @@ async def logout(user: User = Depends(_get_current_user)):
 async def google_login():
     from fastapi.responses import RedirectResponse
     import urllib.parse
-    if not settings.GOOGLE_CLIENT_ID:
-        raise HTTPException(500, "GOOGLE_CLIENT_ID not set in environment variables")
+    client_id = settings.GOOGLE_CLIENT_ID
+    if not client_id:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("https://dacexy.vercel.app/login?error=Google+login+not+configured")
     params = {
-        "client_id": settings.GOOGLE_CLIENT_ID,
+        "client_id": client_id,
         "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
@@ -1139,10 +1141,12 @@ async def google_login():
 async def google_callback(code: str = None, error: str = None, db: AsyncSession = Depends(get_db)):
     from fastapi.responses import RedirectResponse
     import httpx, re, secrets as sec
+    FRONTEND = "https://dacexy.vercel.app"
+    BACKEND_REDIRECT = "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback"
     if error:
-        return RedirectResponse("https://dacexy.vercel.app/login?error=" + error)
+        return RedirectResponse(FRONTEND + "/login?error=" + str(error))
     if not code:
-        return RedirectResponse("https://dacexy.vercel.app/login?error=no_code")
+        return RedirectResponse(FRONTEND + "/login?error=no_code")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             token_res = await client.post(
@@ -1151,26 +1155,27 @@ async def google_callback(code: str = None, error: str = None, db: AsyncSession 
                     "code": code,
                     "client_id": settings.GOOGLE_CLIENT_ID,
                     "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                    "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
+                    "redirect_uri": BACKEND_REDIRECT,
                     "grant_type": "authorization_code"
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
             token_data = token_res.json()
             if "error" in token_data:
-                return RedirectResponse("https://dacexy.vercel.app/login?error=" + str(token_data.get("error")))
-            google_access_token = token_data.get("access_token", "")
-            if not google_access_token:
-                return RedirectResponse("https://dacexy.vercel.app/login?error=no_access_token")
+                err_msg = str(token_data.get("error_description", token_data.get("error", "unknown")))
+                return RedirectResponse(FRONTEND + "/login?error=" + err_msg.replace(" ", "+"))
+            google_token = token_data.get("access_token", "")
+            if not google_token:
+                return RedirectResponse(FRONTEND + "/login?error=no_access_token")
             user_res = await client.get(
                 "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": "Bearer " + google_access_token}
+                headers={"Authorization": "Bearer " + google_token}
             )
             info = user_res.json()
         email = info.get("email", "")
         full_name = info.get("name", "")
         if not email:
-            return RedirectResponse("https://dacexy.vercel.app/login?error=no_email")
+            return RedirectResponse(FRONTEND + "/login?error=no_email_from_google")
         if not full_name:
             full_name = email.split("@")[0]
         result = await db.execute(select(User).where(User.email == email))
@@ -1182,18 +1187,22 @@ async def google_callback(code: str = None, error: str = None, db: AsyncSession 
             db.add(org)
             await db.flush()
             user = User(
-                org_id=org.id, email=email, full_name=full_name,
+                org_id=org.id,
+                email=email,
+                full_name=full_name,
                 hashed_password=hash_password(sec.token_urlsafe(32)),
-                role="owner", is_verified=True, metadata_={"google": True}
+                role="owner",
+                is_verified=True,
+                metadata_={"google": True}
             )
             db.add(user)
             await db.flush()
         await db.commit()
         jwt_token = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
-        return RedirectResponse("https://dacexy.vercel.app/login?token=" + jwt_token)
+        return RedirectResponse(FRONTEND + "/login?token=" + jwt_token)
     except Exception as e:
-        return RedirectResponse("https://dacexy.vercel.app/login?error=" + str(e)[:100])
-
+        err = str(e)[:80].replace(" ", "+")
+        return RedirectResponse(FRONTEND + "/login?error=" + err)
 """)
 
 w("src/interfaces/http/routes/ai_chat.py", '''
