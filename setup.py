@@ -1682,20 +1682,43 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db), em
     refresh = create_refresh_token()
     db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
     return TokenResponse(access_token=access, refresh_token=refresh)
-
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account disabled")
-    access = create_access_token(user.id, {"org_id": user.org_id, "role": user.role})
+        raise HTTPException(status_code=403, detail="Account is disabled")
+    access = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
     refresh = create_refresh_token()
     db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
+    await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh)
 
+@router.post("/register", response_model=TokenResponse)
+async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db), email_svc: EmailService = Depends(get_email)):
+    existing = await db.execute(select(User).where(User.email == body.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="This email is already registered. Please sign in instead.")
+    org_name = body.org_name or (body.full_name.split()[0] + "s Workspace")
+    org = Organization(name=org_name, slug=_make_slug(org_name))
+    db.add(org)
+    await db.flush()
+    verify_token = secrets.token_urlsafe(32)
+    user = User(org_id=org.id, email=body.email, full_name=body.full_name,
+        hashed_password=hash_password(body.password), role="owner",
+        is_verified=True, metadata_={"verify_token": verify_token})
+    db.add(user)
+    await db.flush()
+    try: email_svc.send_verification_email(body.email, verify_token)
+    except: pass
+    access = create_access_token(str(user.id), {"org_id": str(org.id), "role": "owner"})
+    refresh = create_refresh_token()
+    db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
+    await db.commit()
+    return TokenResponse(access_token=access, refresh_token=refresh)
+    
 @router.get("/me")
 async def me(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     org = await db.get(Organization, user.org_id)
