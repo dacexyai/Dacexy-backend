@@ -1609,24 +1609,121 @@ async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
         return build_template("Business")
 ''')
           
-
 w("src/interfaces/http/routes/auth.py", """
 import secrets
 import re
+import time
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from collections import defaultdict
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import httpx
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, Organization, RefreshToken
 from src.infrastructure.email.email_service import EmailService
 from src.interfaces.http.dependencies.container import get_email
 from src.shared.security.auth import hash_password, verify_password, create_access_token, create_refresh_token, decode_access_token
+from src.shared.config.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
+
+# ═══════════════════════════════════════════════════════════
+# ENTERPRISE RATE LIMITING
+# ═══════════════════════════════════════════════════════════
+
+_rate_store: dict = defaultdict(lambda: {"count": 0, "window_start": 0.0, "blocked_until": 0.0})
+
+RATE_LIMITS = {
+    "register":        {"rpm": 3,   "window": 60,   "block": 300},
+    "login":           {"rpm": 10,  "window": 60,   "block": 60},
+    "login_fail":      {"rpm": 5,   "window": 300,  "block": 900},
+    "google":          {"rpm": 10,  "window": 60,   "block": 60},
+    "verify":          {"rpm": 5,   "window": 60,   "block": 120},
+    "default":         {"rpm": 30,  "window": 60,   "block": 60},
+}
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
+def check_rate_limit(key: str, limit_type: str = "default") -> None:
+    cfg = RATE_LIMITS.get(limit_type, RATE_LIMITS["default"])
+    now = time.time()
+    store = _rate_store[key]
+
+    # Check if currently blocked
+    if store["blocked_until"] > now:
+        wait = int(store["blocked_until"] - now)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many attempts. Please wait {wait} seconds before trying again.",
+            headers={"Retry-After": str(wait), "X-RateLimit-Limit": str(cfg["rpm"])}
+        )
+
+    # Reset window if expired
+    if now - store["window_start"] > cfg["window"]:
+        store["count"] = 0
+        store["window_start"] = now
+
+    store["count"] += 1
+
+    if store["count"] > cfg["rpm"]:
+        store["blocked_until"] = now + cfg["block"]
+        store["count"] = 0
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Please wait {cfg['block']} seconds.",
+            headers={"Retry-After": str(cfg["block"])}
+        )
+
+# Track failed login attempts separately per email
+_login_failures: dict = defaultdict(lambda: {"count": 0, "first_fail": 0.0, "blocked_until": 0.0})
+
+def check_login_failures(email: str) -> None:
+    now = time.time()
+    record = _login_failures[email.lower()]
+    if record["blocked_until"] > now:
+        wait = int(record["blocked_until"] - now)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Account temporarily locked due to multiple failed attempts. Try again in {wait} seconds.",
+            headers={"Retry-After": str(wait)}
+        )
+    # Reset if window expired (5 minutes)
+    if now - record["first_fail"] > 300:
+        record["count"] = 0
+        record["first_fail"] = now
+
+def record_login_failure(email: str) -> None:
+    now = time.time()
+    record = _login_failures[email.lower()]
+    if record["count"] == 0:
+        record["first_fail"] = now
+    record["count"] += 1
+    # Progressive lockout
+    if record["count"] >= 10:
+        record["blocked_until"] = now + 3600   # 1 hour
+    elif record["count"] >= 5:
+        record["blocked_until"] = now + 900    # 15 minutes
+    elif record["count"] >= 3:
+        record["blocked_until"] = now + 60     # 1 minute
+
+def clear_login_failures(email: str) -> None:
+    _login_failures[email.lower()] = {"count": 0, "first_fail": 0.0, "blocked_until": 0.0}
+
+# ═══════════════════════════════════════════════════════════
+# MODELS
+# ═══════════════════════════════════════════════════════════
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -1643,110 +1740,197 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
 
-def _make_slug(name):
+def _make_slug(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug + "-" + secrets.token_hex(4)
 
-async def _get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer), db: AsyncSession = Depends(get_db)):
+def _validate_password(password: str) -> None:
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long.")
+    if len(password) > 128:
+        raise HTTPException(status_code=400, detail="Password is too long.")
+
+def _validate_name(name: str) -> None:
+    if len(name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Full name must be at least 2 characters.")
+    if len(name.strip()) > 100:
+        raise HTTPException(status_code=400, detail="Full name is too long.")
+
+# ═══════════════════════════════════════════════════════════
+# AUTH DEPENDENCY
+# ═══════════════════════════════════════════════════════════
+
+async def _get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+    db: AsyncSession = Depends(get_db)
+):
     if not creds:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = decode_access_token(creds.credentials)
         user_id = payload["sub"]
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail="User not found or account disabled")
     return user
 
+# ═══════════════════════════════════════════════════════════
+# REGISTER
+# ═══════════════════════════════════════════════════════════
+
 @router.post("/register", response_model=TokenResponse)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db), email_svc: EmailService = Depends(get_email)):
-    existing = await db.execute(select(User).where(User.email == body.email))
+async def register(
+    body: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    email_svc: EmailService = Depends(get_email)
+):
+    ip = get_client_ip(request)
+    check_rate_limit(f"register:{ip}", "register")
+
+    _validate_name(body.full_name)
+    _validate_password(body.password)
+
+    email_lower = body.email.lower().strip()
+
+    existing = await db.execute(select(User).where(User.email == email_lower))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already registered")
-    org_name = body.org_name or (body.full_name.split()[0] + "'s Workspace")
+        raise HTTPException(
+            status_code=409,
+            detail="This email is already registered. Please sign in instead."
+        )
+
+    org_name = body.org_name.strip() if body.org_name.strip() else (body.full_name.strip().split()[0] + "s Workspace")
     org = Organization(name=org_name, slug=_make_slug(org_name))
     db.add(org)
     await db.flush()
-    verify_token = secrets.token_urlsafe(32)
-    user = User(org_id=org.id, email=body.email, full_name=body.full_name, hashed_password=hash_password(body.password), role="owner", metadata_={"verify_token": verify_token})
+
+    user = User(
+        org_id=org.id,
+        email=email_lower,
+        full_name=body.full_name.strip(),
+        hashed_password=hash_password(body.password),
+        role="owner",
+        is_verified=True,
+        metadata_={}
+    )
     db.add(user)
     await db.flush()
+
     try:
-        email_svc.send_verification_email(body.email, verify_token)
+        email_svc.send_verification_email(email_lower, "welcome")
     except Exception:
         pass
-    access = create_access_token(user.id, {"org_id": org.id, "role": user.role})
+
+    access = create_access_token(str(user.id), {"org_id": str(org.id), "role": "owner"})
     refresh = create_refresh_token()
-    db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
-    return TokenResponse(access_token=access, refresh_token=refresh)
-@router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is disabled")
-    access = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
-    refresh = create_refresh_token()
-    db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
+    db.add(RefreshToken(
+        user_id=user.id,
+        token_hash=hash_password(refresh),
+        expires_at=datetime.utcnow() + timedelta(days=30)
+    ))
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh)
 
-@router.post("/register", response_model=TokenResponse)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db), email_svc: EmailService = Depends(get_email)):
-    existing = await db.execute(select(User).where(User.email == body.email))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="This email is already registered. Please sign in instead.")
-    org_name = body.org_name or (body.full_name.split()[0] + "s Workspace")
-    org = Organization(name=org_name, slug=_make_slug(org_name))
-    db.add(org)
-    await db.flush()
-    verify_token = secrets.token_urlsafe(32)
-    user = User(org_id=org.id, email=body.email, full_name=body.full_name,
-        hashed_password=hash_password(body.password), role="owner",
-        is_verified=True, metadata_={"verify_token": verify_token})
-    db.add(user)
-    await db.flush()
-    try: email_svc.send_verification_email(body.email, verify_token)
-    except: pass
-    access = create_access_token(str(user.id), {"org_id": str(org.id), "role": "owner"})
+# ═══════════════════════════════════════════════════════════
+# LOGIN
+# ═══════════════════════════════════════════════════════════
+
+@router.post("/login", response_model=TokenResponse)
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    ip = get_client_ip(request)
+    check_rate_limit(f"login:{ip}", "login")
+    check_login_failures(body.email)
+
+    result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
+    user = result.scalar_one_or_none()
+
+    if not user or not verify_password(body.password, user.hashed_password):
+        record_login_failure(body.email)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled. Contact support.")
+
+    clear_login_failures(body.email)
+
+    access = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
     refresh = create_refresh_token()
-    db.add(RefreshToken(user_id=user.id, token_hash=hash_password(refresh), expires_at=datetime.utcnow() + timedelta(days=30)))
+    db.add(RefreshToken(
+        user_id=user.id,
+        token_hash=hash_password(refresh),
+        expires_at=datetime.utcnow() + timedelta(days=30)
+    ))
     await db.commit()
     return TokenResponse(access_token=access, refresh_token=refresh)
-    
+
+# ═══════════════════════════════════════════════════════════
+# ME
+# ═══════════════════════════════════════════════════════════
+
 @router.get("/me")
 async def me(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     org = await db.get(Organization, user.org_id)
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role, "is_verified": user.is_verified, "org": {"id": org.id if org else None, "name": org.name if org else None, "plan_tier": org.plan_tier if org else "free"}}
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_verified": user.is_verified,
+        "org": {
+            "id": str(org.id) if org else None,
+            "name": org.name if org else None,
+            "plan_tier": org.plan_tier if org else "free"
+        }
+    }
+
+# ═══════════════════════════════════════════════════════════
+# VERIFY EMAIL
+# ═══════════════════════════════════════════════════════════
 
 @router.post("/verify-email")
-async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
+async def verify_email(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    ip = get_client_ip(request)
+    check_rate_limit(f"verify:{ip}", "verify")
     result = await db.execute(select(User))
     users = result.scalars().all()
     user = next((u for u in users if u.metadata_ and u.metadata_.get("verify_token") == token), None)
     if not user:
-        raise HTTPException(status_code=400, detail="Invalid token")
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
     user.is_verified = True
     user.metadata_ = {k: v for k, v in user.metadata_.items() if k != "verify_token"}
-    return {"message": "Email verified"}
+    await db.commit()
+    return {"message": "Email verified successfully"}
+
+# ═══════════════════════════════════════════════════════════
+# LOGOUT
+# ═══════════════════════════════════════════════════════════
 
 @router.post("/logout")
 async def logout(user: User = Depends(_get_current_user)):
-    return {"message": "Logged out"}
+    return {"message": "Logged out successfully"}
+
+# ═══════════════════════════════════════════════════════════
+# GOOGLE LOGIN
+# ═══════════════════════════════════════════════════════════
 
 @router.get("/google/login")
-async def google_login():
-    from fastapi.responses import RedirectResponse
+async def google_login(request: Request):
     import urllib.parse
+    ip = get_client_ip(request)
+    check_rate_limit(f"google:{ip}", "google")
+
     client_id = settings.GOOGLE_CLIENT_ID
     if not client_id:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse("https://dacexy.vercel.app/login?error=Google+login+not+configured")
+        return RedirectResponse("https://dacexy.vercel.app/login?error=Google+OAuth+not+configured+on+server")
+
     params = {
         "client_id": client_id,
         "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
@@ -1757,52 +1941,72 @@ async def google_login():
     }
     return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params))
 
+# ═══════════════════════════════════════════════════════════
+# GOOGLE CALLBACK
+# ═══════════════════════════════════════════════════════════
+
 @router.get("/google/callback")
-async def google_callback(code: str = None, error: str = None, db: AsyncSession = Depends(get_db)):
-    from fastapi.responses import RedirectResponse
-    import httpx, re, secrets as sec
+async def google_callback(
+    request: Request,
+    code: str = None,
+    error: str = None,
+    db: AsyncSession = Depends(get_db)
+):
     FRONTEND = "https://dacexy.vercel.app"
-    BACKEND_REDIRECT = "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback"
+    REDIRECT_URI = "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback"
+
     if error:
-        return RedirectResponse(FRONTEND + "/login?error=" + str(error))
+        return RedirectResponse(f"{FRONTEND}/login?error={error}")
     if not code:
-        return RedirectResponse(FRONTEND + "/login?error=no_code")
+        return RedirectResponse(f"{FRONTEND}/login?error=no_code_received")
+
     try:
         async with httpx.AsyncClient(timeout=30) as client:
+            # Exchange code for token
             token_res = await client.post(
                 "https://oauth2.googleapis.com/token",
                 data={
                     "code": code,
                     "client_id": settings.GOOGLE_CLIENT_ID,
                     "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                    "redirect_uri": BACKEND_REDIRECT,
+                    "redirect_uri": REDIRECT_URI,
                     "grant_type": "authorization_code"
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
             token_data = token_res.json()
+
             if "error" in token_data:
-                err_msg = str(token_data.get("error_description", token_data.get("error", "unknown")))
-                return RedirectResponse(FRONTEND + "/login?error=" + err_msg.replace(" ", "+"))
-            google_token = token_data.get("access_token", "")
-            if not google_token:
-                return RedirectResponse(FRONTEND + "/login?error=no_access_token")
+                err = str(token_data.get("error_description") or token_data.get("error") or "oauth_failed")
+                return RedirectResponse(f"{FRONTEND}/login?error={err.replace(' ', '+')}")
+
+            google_access_token = token_data.get("access_token", "")
+            if not google_access_token:
+                return RedirectResponse(f"{FRONTEND}/login?error=no_google_token")
+
+            # Get user info
             user_res = await client.get(
                 "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": "Bearer " + google_token}
+                headers={"Authorization": f"Bearer {google_access_token}"}
             )
             info = user_res.json()
-        email = info.get("email", "")
-        full_name = info.get("name", "")
+
+        email = (info.get("email") or "").lower().strip()
+        full_name = (info.get("name") or "").strip()
+
         if not email:
-            return RedirectResponse(FRONTEND + "/login?error=no_email_from_google")
+            return RedirectResponse(f"{FRONTEND}/login?error=no_email_from_google")
         if not full_name:
-            full_name = email.split("@")[0]
+            full_name = email.split("@")[0].title()
+
+        # Find or create user
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
+
         if not user:
-            org_name = full_name.split()[0] + "s Workspace"
-            slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") + "-" + sec.token_hex(4)
+            first_name = full_name.split()[0] if full_name.split() else "User"
+            org_name = first_name + "s Workspace"
+            slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") + "-" + secrets.token_hex(4)
             org = Organization(name=org_name, slug=slug)
             db.add(org)
             await db.flush()
@@ -1810,20 +2014,33 @@ async def google_callback(code: str = None, error: str = None, db: AsyncSession 
                 org_id=org.id,
                 email=email,
                 full_name=full_name,
-                hashed_password=hash_password(sec.token_urlsafe(32)),
+                hashed_password=hash_password(secrets.token_urlsafe(32)),
                 role="owner",
                 is_verified=True,
-                metadata_={"google": True}
+                metadata_={"provider": "google", "google_id": info.get("id", "")}
             )
             db.add(user)
             await db.flush()
+        else:
+            # Update name if changed
+            if full_name and user.full_name != full_name:
+                user.full_name = full_name
+
         await db.commit()
-        jwt_token = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
-        return RedirectResponse(FRONTEND + "/login?token=" + jwt_token)
+
+        jwt_token = create_access_token(
+            str(user.id),
+            {"org_id": str(user.org_id), "role": user.role}
+        )
+        return RedirectResponse(f"{FRONTEND}/login?token={jwt_token}")
+
+    except httpx.TimeoutException:
+        return RedirectResponse(f"{FRONTEND}/login?error=Google+server+timeout.+Please+try+again.")
     except Exception as e:
-        err = str(e)[:80].replace(" ", "+")
-        return RedirectResponse(FRONTEND + "/login?error=" + err)
+        log_msg = str(e)[:60].replace(" ", "+")
+        return RedirectResponse(f"{FRONTEND}/login?error={log_msg}")
 """)
+            
 
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
