@@ -1,198 +1,222 @@
 """
-Dacexy Desktop Agent v10.0 - World's Most Powerful AI Desktop Agent
-====================================================================
-Features:
-- Infinite IQ AI Brain with vision (sees your screen)
-- Multi-step autonomous task execution
-- Smart permission system for sensitive actions
-- Always-on voice control (Hey Dacexy)
-- Auto-reconnects, auto-starts on boot
-- 100+ actions: click, type, scroll, shell, browser, files, apps
-- Learns from context, remembers session state
-- Handles ANY task a human can do on a computer
+Dacexy Desktop Agent v11.0 - World's Most Powerful AI Desktop Agent
+Like Siri but for your entire computer. 24/7 always-on background agent.
 """
-
 import subprocess, sys, os, platform
 
 # ═══════════════════════════════════════════════════════════════════════
-# AUTO-INSTALL ALL DEPENDENCIES
+# AUTO-INSTALL
 # ═══════════════════════════════════════════════════════════════════════
-
-REQUIRED = [
+PACKAGES = [
     "pyautogui", "pillow", "websockets", "requests",
     "speechrecognition", "pyttsx3", "numpy", "psutil",
-    "pyperclip", "keyboard", "pygetwindow",
+    "pyperclip", "keyboard", "pygetwindow", "plyer",
 ]
 
-print("╔══════════════════════════════════════╗")
-print("║   Dacexy Agent v10.0 - Starting...   ║")
-print("╚══════════════════════════════════════╝\n")
-print("Checking dependencies...")
-
-for pkg in REQUIRED:
-    import_name = pkg.replace("-", "_")
-    if pkg == "speechrecognition": import_name = "speech_recognition"
-    if pkg == "pillow": import_name = "PIL"
-    if pkg == "pygetwindow": import_name = "pygetwindow"
-    try:
-        __import__(import_name)
+for pkg in PACKAGES:
+    imp = pkg.replace("-","_")
+    if pkg == "speechrecognition": imp = "speech_recognition"
+    if pkg == "pillow": imp = "PIL"
+    try: __import__(imp)
     except ImportError:
-        print(f"  Installing {pkg}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"],
+        print(f"Installing {pkg}...")
+        subprocess.check_call([sys.executable,"-m","pip","install",pkg,"-q"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-# PyAudio for voice
 try:
-    import pyaudio
-    PYAUDIO_OK = True
-except ImportError:
+    import pyaudio; PYAUDIO_OK = True
+except:
     PYAUDIO_OK = False
     try:
-        print("  Installing PyAudio...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pipwin", "-q"],
+        subprocess.check_call([sys.executable,"-m","pip","install","pipwin","-q"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.check_call([sys.executable, "-m", "pipwin", "install", "pyaudio", "-q"],
+        subprocess.check_call([sys.executable,"-m","pipwin","install","pyaudio","-q"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import pyaudio
-        PYAUDIO_OK = True
+        import pyaudio; PYAUDIO_OK = True
     except:
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install",
-                "PyAudio", "-q"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            import pyaudio
-            PYAUDIO_OK = True
-        except:
-            PYAUDIO_OK = False
-
-print("  All dependencies ready!\n")
+            subprocess.check_call([sys.executable,"-m","pip","install","PyAudio","-q"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import pyaudio; PYAUDIO_OK = True
+        except: PYAUDIO_OK = False
 
 # ═══════════════════════════════════════════════════════════════════════
 # IMPORTS
 # ═══════════════════════════════════════════════════════════════════════
-
 import asyncio, base64, io, json, logging, threading
-import time, webbrowser, re, datetime, winreg, shutil
-import ctypes, struct
+import time, webbrowser, re, datetime, winreg, ctypes
 from pathlib import Path
 from typing import Optional
+from collections import deque
 
 import pyautogui
 import requests as req_lib
 import websockets
 from PIL import ImageGrab, Image
-import pyttsx3
-import pyperclip
-import psutil
+import pyttsx3, pyperclip, psutil
 
 try:
     import speech_recognition as sr
     VOICE_AVAILABLE = PYAUDIO_OK
-except ImportError:
-    VOICE_AVAILABLE = False
+except: VOICE_AVAILABLE = False
 
 try:
     import pygetwindow as gw
-    WINDOW_CONTROL = True
-except ImportError:
-    WINDOW_CONTROL = False
+    WINDOW_OK = True
+except: WINDOW_OK = False
+
+try:
+    from plyer import notification
+    NOTIFY_OK = True
+except: NOTIFY_OK = False
 
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.1
+pyautogui.PAUSE = 0.08
 
 # ═══════════════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════
-
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 CONFIG_FILE  = Path.home() / ".dacexy_agent.json"
 LOG_FILE     = Path.home() / "dacexy_agent.log"
+MEMORY_FILE  = Path.home() / ".dacexy_memory.json"
 WAKE_WORD    = "hey dacexy"
-AGENT_VERSION = "10.0"
+VERSION      = "11.0"
 
-# Session memory — remembers context during session
-SESSION_MEMORY = {
-    "last_task": "",
-    "last_url": "",
-    "open_apps": [],
-    "clipboard_history": [],
-    "task_history": [],
-}
+# Agent brain memory — persists across sessions
+MEMORY = {"facts": [], "preferences": {}, "task_history": deque(maxlen=50), "context": {}}
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE, encoding="utf-8")
+        logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")
     ]
 )
 log = logging.getLogger("dacexy")
 
 # ═══════════════════════════════════════════════════════════════════════
-# TTS ENGINE
+# SYSTEM NOTIFICATION
 # ═══════════════════════════════════════════════════════════════════════
-
-_tts_engine = None
-_tts_lock = threading.Lock()
-
-def get_tts():
-    global _tts_engine
-    if _tts_engine is None:
-        try:
-            _tts_engine = pyttsx3.init()
-            _tts_engine.setProperty("rate", 170)
-            _tts_engine.setProperty("volume", 1.0)
-            voices = _tts_engine.getProperty("voices")
-            for v in voices:
-                if "zira" in v.name.lower() or "female" in v.name.lower():
-                    _tts_engine.setProperty("voice", v.id)
-                    break
-        except: pass
-    return _tts_engine
-
-def speak(text: str):
-    print(f"  🔊 {text}")
+def notify(title: str, message: str):
     try:
-        with _tts_lock:
-            e = get_tts()
-            if e:
-                e.say(text)
-                e.runAndWait()
+        if NOTIFY_OK:
+            notification.notify(title=title, message=message, app_name="Dacexy", timeout=4)
     except: pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# CONFIG MANAGEMENT
+# TTS - VOICE OUTPUT
 # ═══════════════════════════════════════════════════════════════════════
+_tts = None
+_tts_lock = threading.Lock()
+_speaking = False
 
+def init_tts():
+    global _tts
+    try:
+        _tts = pyttsx3.init()
+        _tts.setProperty("rate", 165)
+        _tts.setProperty("volume", 0.95)
+        voices = _tts.getProperty("voices") or []
+        for v in voices:
+            if any(x in (v.name or "").lower() for x in ["zira","hazel","female","woman","aria"]):
+                _tts.setProperty("voice", v.id); break
+    except: pass
+
+def speak(text: str, priority: bool = False):
+    global _speaking
+    if not text: return
+    print(f"  🔊 Dacexy: {text}")
+    notify("Dacexy", text[:80])
+    def _speak():
+        global _speaking
+        _speaking = True
+        try:
+            with _tts_lock:
+                if _tts:
+                    _tts.say(text)
+                    _tts.runAndWait()
+        except: pass
+        finally: _speaking = False
+    t = threading.Thread(target=_speak, daemon=True)
+    t.start()
+    if priority: t.join(timeout=10)
+
+# ═══════════════════════════════════════════════════════════════════════
+# MEMORY SYSTEM
+# ═══════════════════════════════════════════════════════════════════════
+def load_memory():
+    global MEMORY
+    try:
+        if MEMORY_FILE.exists():
+            data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+            MEMORY["facts"] = data.get("facts", [])
+            MEMORY["preferences"] = data.get("preferences", {})
+            MEMORY["context"] = data.get("context", {})
+            history = data.get("task_history", [])
+            MEMORY["task_history"] = deque(history[-50:], maxlen=50)
+    except: pass
+
+def save_memory():
+    try:
+        MEMORY_FILE.write_text(json.dumps({
+            "facts": MEMORY["facts"][-100:],
+            "preferences": MEMORY["preferences"],
+            "context": MEMORY["context"],
+            "task_history": list(MEMORY["task_history"])[-50:],
+        }, indent=2), encoding="utf-8")
+    except: pass
+
+def remember(fact: str):
+    if fact and fact not in MEMORY["facts"]:
+        MEMORY["facts"].append(fact)
+        save_memory()
+
+def get_memory_context() -> str:
+    ctx = []
+    if MEMORY["facts"]: ctx.append("Known facts: " + "; ".join(MEMORY["facts"][-10:]))
+    if MEMORY["preferences"]: ctx.append("Preferences: " + str(MEMORY["preferences"]))
+    recent = list(MEMORY["task_history"])[-5:]
+    if recent: ctx.append("Recent tasks: " + "; ".join(recent))
+    return "\n".join(ctx) if ctx else ""
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONFIG PERSISTENCE
+# ═══════════════════════════════════════════════════════════════════════
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         try: return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except: pass
     return {}
 
-def save_config(cfg: dict):
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-
+def save_config(cfg: dict): CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 def get_token(): return load_config().get("access_token")
-def save_token(t): cfg = load_config(); cfg["access_token"] = t; save_config(cfg)
-def clear_token(): cfg = load_config(); cfg.pop("access_token", None); save_config(cfg)
+def save_token(t): cfg=load_config(); cfg["access_token"]=t; save_config(cfg)
+def clear_token(): cfg=load_config(); cfg.pop("access_token",None); save_config(cfg)
 
 def check_token_valid(token: str) -> bool:
     try:
         r = req_lib.get(f"{BACKEND_HTTP}/auth/me",
-            headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            headers={"Authorization": f"Bearer {token}"}, timeout=8)
         return r.status_code == 200
     except: return False
 
-# ═══════════════════════════════════════════════════════════════════════
-# LOGIN
-# ═══════════════════════════════════════════════════════════════════════
+def setup_autostart():
+    try:
+        agent_path = str(Path.home() / "DacexyAgent" / "dacexy_agent.py")
+        cmd = f'"{sys.executable}" "{agent_path}"'
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+    except: pass
 
 def login():
-    print("\n╔══════════════════════════════════════╗")
-    print("║      Dacexy Agent - Login            ║")
-    print("╚══════════════════════════════════════╝")
+    print("\n╔══════════════════════════════════╗")
+    print("║   Dacexy Agent v11.0 — Login     ║")
+    print("╚══════════════════════════════════╝")
     email = input("  Email   : ").strip()
     password = input("  Password: ").strip()
     print()
@@ -204,1027 +228,710 @@ def login():
             token = r.json().get("access_token", "")
             if token:
                 save_token(token)
+                remember(f"User email: {email}")
                 print("  ✅ Login successful!")
                 return token
         else:
             d = r.json().get("detail", r.text)
             if isinstance(d, list): d = d[0].get("msg", str(d))
-            print(f"  ❌ Login failed: {d}")
-    except Exception as e:
-        print(f"  ❌ Error: {e}")
+            print(f"  ❌ {d}")
+    except Exception as e: print(f"  ❌ Error: {e}")
     return None
 
 # ═══════════════════════════════════════════════════════════════════════
-# AUTOSTART
+# VISION — SCREENSHOT WITH AI ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════
-
-def setup_autostart():
-    try:
-        agent_path = str(Path.home() / "DacexyAgent" / "dacexy_agent.py")
-        cmd = f'"{sys.executable}" "{agent_path}"'
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
-        winreg.CloseKey(key)
-        log.info("Auto-start configured")
-    except: pass
-
-# ═══════════════════════════════════════════════════════════════════════
-# SCREENSHOT WITH AI VISION
-# ═══════════════════════════════════════════════════════════════════════
-
-def take_screenshot(quality: int = 80) -> Optional[str]:
+def take_screenshot(quality: int = 75) -> Optional[str]:
     try:
         img = ImageGrab.grab()
-        img.thumbnail((1440, 900))
+        w, h = img.size
+        if w > 1440: img = img.resize((1440, int(h * 1440/w)), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality)
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
         return base64.b64encode(buf.getvalue()).decode()
     except Exception as e:
-        log.warning(f"Screenshot failed: {e}")
+        log.warning(f"Screenshot: {e}")
         return None
 
-def take_region_screenshot(x: int, y: int, w: int, h: int) -> Optional[str]:
+def get_screen_text_via_ai(token: str) -> str:
+    """Ask AI what's on screen using screenshot."""
+    ss = take_screenshot(quality=60)
+    if not ss: return "Could not capture screen"
     try:
-        img = ImageGrab.grab(bbox=(x, y, x+w, y+h))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return base64.b64encode(buf.getvalue()).decode()
-    except: return None
+        prompt = "Look at this screenshot and describe in 2-3 sentences what is currently visible on the screen. Be specific about app names, content, and any important information visible."
+        r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
+            headers={"Content-Type":"application/json","Authorization":f"Bearer {token}"},
+            json={"messages":[{"role":"user","content":prompt}],"stream":False},
+            timeout=20)
+        if r.status_code == 200:
+            return r.json().get("content") or r.json().get("response") or "Screen captured"
+    except: pass
+    return "Screen captured"
 
 # ═══════════════════════════════════════════════════════════════════════
-# PERMISSION SYSTEM - FULL SECURITY
+# PERMISSION SYSTEM — ENTERPRISE SECURITY
 # ═══════════════════════════════════════════════════════════════════════
-
 PERMISSION_RULES = {
     "delete_files": {
-        "keywords": ["delete", "remove", "erase", "wipe", "trash", "unlink"],
-        "context": ["file", "folder", "document", "photo", "image", "video", "data", "directory"],
-        "message": "🗑️ DELETE FILES",
-        "desc": "Dacexy wants to delete files from your computer. This cannot be undone."
+        "triggers": [["delete","remove","erase","wipe","trash"],["file","folder","document","photo","data"]],
+        "icon": "🗑️", "label": "DELETE FILES",
+        "warn": "This will permanently delete files from your computer."
     },
     "banking": {
-        "keywords": ["bank", "banking", "hdfc", "sbi", "icici", "axis", "kotak", "pnb",
-                     "paytm", "gpay", "google pay", "phonepe", "upi", "neft", "imps", "rtgs",
-                     "transfer money", "send money", "net banking", "mobile banking"],
-        "context": ["any"],
-        "message": "🏦 BANKING / FINANCIAL",
-        "desc": "Dacexy wants to access banking or financial services."
+        "triggers": [["bank","hdfc","sbi","icici","axis","paytm","gpay","phonepe","upi","net banking","money transfer","neft","imps"],["any"]],
+        "icon": "🏦", "label": "BANKING ACCESS",
+        "warn": "Accessing banking or financial services on your behalf."
     },
     "payment": {
-        "keywords": ["payment", "pay now", "checkout", "purchase", "buy now",
-                     "card number", "cvv", "credit card", "debit card", "expiry"],
-        "context": ["any"],
-        "message": "💳 PAYMENT",
-        "desc": "Dacexy wants to make a payment or access payment details."
+        "triggers": [["pay","payment","checkout","purchase","buy now","credit card","debit card","cvv"],["any"]],
+        "icon": "💳", "label": "PAYMENT",
+        "warn": "Making a payment or accessing payment information."
     },
     "private_data": {
-        "keywords": ["aadhar", "aadhaar", "pan card", "passport", "driving license",
-                     "social security", "ssn", "date of birth", "mother maiden",
-                     "secret question", "security answer"],
-        "context": ["any"],
-        "message": "🔒 PRIVATE IDENTITY DATA",
-        "desc": "Dacexy wants to access private identity documents or data."
+        "triggers": [["aadhar","pan card","passport","social security","date of birth","mother maiden"],["any"]],
+        "icon": "🔒", "label": "PRIVATE IDENTITY DATA",
+        "warn": "Accessing sensitive personal identity information."
     },
-    "password_access": {
-        "keywords": ["password", "passwords", "login credentials", "my passwords",
-                     "password manager", "lastpass", "1password", "bitwarden", "keepass"],
-        "context": ["any"],
-        "message": "🔑 PASSWORD ACCESS",
-        "desc": "Dacexy wants to access passwords or credential managers."
+    "passwords": {
+        "triggers": [["password","credentials","lastpass","1password","bitwarden","keychain","my passwords"],["any"]],
+        "icon": "🔑", "label": "PASSWORD ACCESS",
+        "warn": "Accessing passwords or credential storage."
     },
     "camera_mic": {
-        "keywords": ["open camera", "start camera", "record video", "record audio",
-                     "start recording", "take photo with camera", "webcam"],
-        "context": ["any"],
-        "message": "📷 CAMERA / MICROPHONE",
-        "desc": "Dacexy wants to access your camera or record audio."
+        "triggers": [["open camera","start camera","record video","record audio","start recording","webcam"],["any"]],
+        "icon": "📷", "label": "CAMERA/MICROPHONE",
+        "warn": "Accessing camera or recording audio/video."
     },
-    "shutdown_restart": {
-        "keywords": ["shutdown", "shut down", "restart", "reboot", "power off",
-                     "turn off computer", "hibernate", "sleep mode"],
-        "context": ["any"],
-        "message": "⚡ SHUTDOWN / RESTART",
-        "desc": "Dacexy wants to shut down or restart your computer."
+    "shutdown": {
+        "triggers": [["shutdown","restart","reboot","power off","turn off computer","hibernate"],["any"]],
+        "icon": "⚡", "label": "SHUTDOWN/RESTART",
+        "warn": "This will shut down or restart your computer."
     },
     "install_software": {
-        "keywords": ["install", "setup.exe", ".msi installer", "download and install"],
-        "context": ["software", "program", "application", "app", ".exe", ".msi"],
-        "message": "📦 INSTALL SOFTWARE",
-        "desc": "Dacexy wants to install software on your computer."
-    },
-    "registry_edit": {
-        "keywords": ["regedit", "registry editor", "edit registry", "windows registry"],
-        "context": ["any"],
-        "message": "🔧 REGISTRY EDIT",
-        "desc": "Dacexy wants to edit the Windows registry. This is advanced and risky."
-    },
-    "format_disk": {
-        "keywords": ["format disk", "format drive", "fdisk", "diskpart", "wipe drive",
-                     "disk cleanup all", "format c", "format d"],
-        "context": ["any"],
-        "message": "☢️ FORMAT DISK — DANGER",
-        "desc": "DANGER: Dacexy wants to FORMAT a disk. ALL DATA WILL BE LOST."
-    },
-    "admin_elevation": {
-        "keywords": ["run as administrator", "runas", "admin privileges",
-                     "elevated command", "uac prompt"],
-        "context": ["any"],
-        "message": "🔐 ADMINISTRATOR ACCESS",
-        "desc": "Dacexy wants to run something with administrator privileges."
+        "triggers": [["install","setup.exe",".msi"],["software","program","application",".exe"]],
+        "icon": "📦", "label": "INSTALL SOFTWARE",
+        "warn": "Installing software on your computer."
     },
     "email_send": {
-        "keywords": ["send email", "send mail", "compose email"],
-        "context": ["any"],
-        "message": "📧 SEND EMAIL",
-        "desc": "Dacexy wants to send an email on your behalf."
+        "triggers": [["send email","send mail","compose email","email to"],["any"]],
+        "icon": "📧", "label": "SEND EMAIL",
+        "warn": "Sending an email on your behalf."
     },
     "social_post": {
-        "keywords": ["post on", "tweet", "share on", "publish post", "upload to",
-                     "go live", "story on"],
-        "context": ["facebook", "instagram", "twitter", "linkedin", "youtube",
-                    "tiktok", "snapchat", "social media"],
-        "message": "📱 SOCIAL MEDIA POST",
-        "desc": "Dacexy wants to post something on social media on your behalf."
+        "triggers": [["post on","tweet","share on","publish post","go live"],["facebook","instagram","twitter","linkedin","youtube","tiktok"]],
+        "icon": "📱", "label": "SOCIAL MEDIA POST",
+        "warn": "Posting content on social media on your behalf."
+    },
+    "format_disk": {
+        "triggers": [["format disk","format drive","fdisk","diskpart","wipe drive"],["any"]],
+        "icon": "☢️", "label": "FORMAT DISK — DANGER",
+        "warn": "⚠️ DANGER: This will erase ALL data on a disk permanently!"
+    },
+    "registry": {
+        "triggers": [["regedit","registry editor","windows registry"],["any"]],
+        "icon": "🔧", "label": "REGISTRY EDIT",
+        "warn": "Editing the Windows registry — can affect system stability."
     },
 }
 
 BLOCKED_COMMANDS = [
-    "rm -rf /", "rm -rf ~", "rm -rf /*",
-    "format c:", "format c:/q /u",
-    "del /s /q c:\\windows",
-    "del /s /q c:\\",
-    "mkfs.ext4 /dev/sda",
-    "dd if=/dev/zero of=/dev/sda",
-    "deltree c:\\",
-    ":(){:|:&};:",
-    "sudo rm -rf /",
-    "rd /s /q c:\\",
+    "rm -rf /","rm -rf ~","rm -rf /*","format c:","del /s /q c:\\windows",
+    "mkfs","dd if=/dev/zero","deltree c:\\","rd /s /q c:\\","cipher /w:c",
+    ":(){:|:&};:","sudo rm -rf /",
 ]
 
 def needs_permission(task: str) -> tuple:
-    task_lower = task.lower()
-    for perm_type, rule in PERMISSION_RULES.items():
-        kw_match = any(k in task_lower for k in rule["keywords"])
-        if not kw_match:
-            continue
-        if rule["context"] == ["any"]:
-            return True, perm_type
-        ctx_match = any(c in task_lower for c in rule["context"])
-        if ctx_match:
-            return True, perm_type
+    tl = task.lower()
+    for ptype, rule in PERMISSION_RULES.items():
+        kws, ctx = rule["triggers"]
+        if any(k in tl for k in kws):
+            if ctx == ["any"] or any(c in tl for c in ctx):
+                return True, ptype
     return False, ""
 
-def ask_permission(task: str, perm_type: str) -> bool:
-    rule = PERMISSION_RULES.get(perm_type, {})
-    msg = rule.get("message", "⚠️ SENSITIVE ACTION")
-    desc = rule.get("desc", "Dacexy wants to perform a sensitive action.")
-
-    border = "═" * 50
+def ask_permission(task: str, ptype: str) -> bool:
+    rule = PERMISSION_RULES.get(ptype, {})
+    icon = rule.get("icon","⚠️")
+    label = rule.get("label","SENSITIVE ACTION")
+    warn = rule.get("warn","This action needs your approval.")
+    border = "═"*48
     print(f"\n  {border}")
-    print(f"  ⚠️  PERMISSION REQUIRED")
+    print(f"  {icon}  PERMISSION REQUIRED: {label}")
     print(f"  {border}")
-    print(f"  Action: {msg}")
-    print(f"  Detail: {desc}")
-    print(f"  Task  : \"{task}\"")
+    print(f"  ⚠  {warn}")
+    print(f"  📋 Task: \"{task}\"")
     print(f"  {border}")
-
-    speak(f"Permission needed. {desc} Do you want to allow this? Say yes or no.")
+    speak(f"Permission needed. {warn} Do you want to allow this?", priority=False)
     print("\n  Type YES to allow or NO to deny: ", end="", flush=True)
-
     try:
-        response = input().strip().lower()
-        granted = response in ['yes', 'y', 'allow', 'ok', 'approve', 'sure', 'yeah', 'proceed']
+        r = input().strip().lower()
+        granted = r in ['yes','y','allow','ok','sure','approve','proceed','yeah']
         if granted:
-            print(f"  ✅ Permission GRANTED\n")
-            speak("Permission granted. Proceeding carefully.")
+            print("  ✅ Permitted\n")
+            speak("Permission granted.")
         else:
-            print(f"  ❌ Permission DENIED\n")
-            speak("Permission denied. Task cancelled for your security.")
+            print("  ❌ Denied\n")
+            speak("Task cancelled for your security.")
         return granted
-    except:
-        return False
+    except: return False
 
 # ═══════════════════════════════════════════════════════════════════════
-# SMART TYPE & UTILITIES
+# SMART TYPING
 # ═══════════════════════════════════════════════════════════════════════
-
 def smart_type(text: str):
     try:
         pyperclip.copy(str(text))
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.1)
+        time.sleep(0.05)
+        pyautogui.hotkey('ctrl','v')
+        time.sleep(0.08)
     except:
-        pyautogui.write(str(text), interval=0.03)
+        pyautogui.write(str(text), interval=0.025)
 
-def get_active_window_title() -> str:
+def get_active_window() -> str:
     try:
-        if WINDOW_CONTROL:
+        if WINDOW_OK:
             w = gw.getActiveWindow()
-            return w.title if w else "Unknown"
+            return w.title if w else ""
     except: pass
     try:
-        import ctypes
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-        buf = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        buf = ctypes.create_unicode_buffer(length+1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length+1)
         return buf.value
-    except: return "Unknown"
-
-def get_running_processes() -> list:
-    try:
-        return [p.name() for p in psutil.process_iter(['name']) if p.info['name']][:20]
-    except: return []
-
-def get_system_stats() -> dict:
-    try:
-        return {
-            "cpu_percent": psutil.cpu_percent(interval=1),
-            "memory_percent": psutil.virtual_memory().percent,
-            "disk_percent": psutil.disk_usage('/').percent,
-            "battery": psutil.sensors_battery().percent if psutil.sensors_battery() else None,
-        }
-    except: return {}
-
-def find_file(filename: str, search_path: str = None) -> list:
-    results = []
-    search_paths = [search_path] if search_path else [
-        str(Path.home()),
-        str(Path.home() / "Desktop"),
-        str(Path.home() / "Documents"),
-        str(Path.home() / "Downloads"),
-    ]
-    for root_path in search_paths:
-        try:
-            for root, dirs, files in os.walk(root_path):
-                for f in files:
-                    if filename.lower() in f.lower():
-                        results.append(os.path.join(root, f))
-                    if len(results) >= 10:
-                        return results
-        except: pass
-    return results
-
-def open_file_or_url(path_or_url: str):
-    if path_or_url.startswith("http"):
-        webbrowser.open(path_or_url)
-    else:
-        if platform.system() == "Windows":
-            os.startfile(path_or_url)
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", path_or_url])
-        else:
-            subprocess.Popen(["xdg-open", path_or_url])
+    except: return ""
 
 # ═══════════════════════════════════════════════════════════════════════
-# COMMAND EXECUTOR - 120+ ACTIONS
+# COMMAND EXECUTOR — 150+ ACTIONS
 # ═══════════════════════════════════════════════════════════════════════
-
 def execute_command(cmd: dict, token: str = None) -> dict:
-    action = cmd.get("action", "").lower().strip()
-
+    action = cmd.get("action","").lower().strip()
     try:
-        # ── SPEECH ──────────────────────────────────────────
+        # ── SPEECH & NOTIFICATIONS ──────────────────────────────
         if action == "speak":
-            text = cmd.get("text", "")
-            speak(text)
-            return {"status": "ok", "spoken": text}
+            speak(cmd.get("text",""))
+            return {"status":"ok"}
+        elif action == "notify":
+            notify(cmd.get("title","Dacexy"), cmd.get("text",""))
+            return {"status":"ok"}
 
-        # ── SCREENSHOT ──────────────────────────────────────
+        # ── SCREENSHOT & VISION ─────────────────────────────────
         elif action == "screenshot":
-            ss = take_screenshot()
-            return {"status": "ok", "screenshot": ss}
-
+            return {"status":"ok","screenshot":take_screenshot()}
+        elif action == "what_on_screen":
+            if token:
+                desc = get_screen_text_via_ai(token)
+                speak(desc)
+                return {"status":"ok","description":desc}
+            return {"status":"ok"}
         elif action == "screenshot_region":
-            ss = take_region_screenshot(
-                int(cmd.get("x", 0)), int(cmd.get("y", 0)),
-                int(cmd.get("w", 400)), int(cmd.get("h", 300))
-            )
-            return {"status": "ok", "screenshot": ss}
+            try:
+                img = ImageGrab.grab(bbox=(
+                    int(cmd.get("x",0)), int(cmd.get("y",0)),
+                    int(cmd.get("x",0))+int(cmd.get("w",400)),
+                    int(cmd.get("y",0))+int(cmd.get("h",300))
+                ))
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=80)
+                return {"status":"ok","screenshot":base64.b64encode(buf.getvalue()).decode()}
+            except Exception as e: return {"status":"error","message":str(e)}
 
-        # ── MOUSE ────────────────────────────────────────────
+        # ── MOUSE ────────────────────────────────────────────────
         elif action == "click":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            button = cmd.get("button", "left")
-            clicks = int(cmd.get("clicks", 1))
-            pyautogui.click(x, y, button=button, clicks=clicks, interval=0.1)
-            time.sleep(0.15)
-            return {"status": "ok", "clicked": f"({x},{y})"}
-
+            x,y = int(cmd.get("x",0)), int(cmd.get("y",0))
+            pyautogui.click(x, y, button=cmd.get("button","left"), clicks=int(cmd.get("clicks",1)), interval=0.08)
+            time.sleep(0.1)
+            return {"status":"ok","at":f"({x},{y})"}
         elif action == "double_click":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            pyautogui.doubleClick(x, y)
-            time.sleep(0.2)
-            return {"status": "ok"}
-
+            pyautogui.doubleClick(int(cmd.get("x",0)), int(cmd.get("y",0)))
+            time.sleep(0.15)
+            return {"status":"ok"}
         elif action == "right_click":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            pyautogui.rightClick(x, y)
-            time.sleep(0.1)
-            return {"status": "ok"}
-
+            pyautogui.rightClick(int(cmd.get("x",0)), int(cmd.get("y",0)))
+            return {"status":"ok"}
         elif action == "triple_click":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            pyautogui.click(x, y, clicks=3, interval=0.1)
-            return {"status": "ok"}
-
+            pyautogui.click(int(cmd.get("x",0)), int(cmd.get("y",0)), clicks=3, interval=0.08)
+            return {"status":"ok"}
         elif action == "move":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            duration = float(cmd.get("duration", 0.2))
-            pyautogui.moveTo(x, y, duration=duration)
-            return {"status": "ok"}
-
-        elif action == "drag":
-            x1, y1 = int(cmd.get("x1", 0)), int(cmd.get("y1", 0))
-            x2, y2 = int(cmd.get("x2", 0)), int(cmd.get("y2", 0))
-            pyautogui.drag(x1-pyautogui.position().x, y1-pyautogui.position().y, duration=0.3)
-            pyautogui.moveTo(x1, y1)
-            pyautogui.dragTo(x2, y2, duration=0.5, button='left')
-            return {"status": "ok"}
-
+            pyautogui.moveTo(int(cmd.get("x",0)), int(cmd.get("y",0)), duration=float(cmd.get("duration",0.15)))
+            return {"status":"ok"}
+        elif action == "drag_to":
+            sx,sy = int(cmd.get("sx",0)), int(cmd.get("sy",0))
+            ex,ey = int(cmd.get("ex",0)), int(cmd.get("ey",0))
+            pyautogui.moveTo(sx, sy)
+            pyautogui.dragTo(ex, ey, duration=0.4, button='left')
+            return {"status":"ok"}
         elif action == "scroll":
-            x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
-            clicks = int(cmd.get("clicks", 3))
-            if x > 0 or y > 0:
-                pyautogui.moveTo(x, y)
-            pyautogui.scroll(clicks)
-            return {"status": "ok"}
-
+            x,y = int(cmd.get("x",0)), int(cmd.get("y",0))
+            if x or y: pyautogui.moveTo(x, y)
+            pyautogui.scroll(int(cmd.get("clicks",3)))
+            return {"status":"ok"}
         elif action == "scroll_down":
-            amount = int(cmd.get("amount", 3))
-            pyautogui.scroll(-amount)
-            return {"status": "ok"}
-
+            pyautogui.scroll(-int(cmd.get("amount",5)))
+            return {"status":"ok"}
         elif action == "scroll_up":
-            amount = int(cmd.get("amount", 3))
-            pyautogui.scroll(amount)
-            return {"status": "ok"}
+            pyautogui.scroll(int(cmd.get("amount",5)))
+            return {"status":"ok"}
+        elif action == "get_mouse_pos":
+            p = pyautogui.position()
+            return {"status":"ok","x":p.x,"y":p.y}
 
-        elif action == "get_mouse_position":
-            pos = pyautogui.position()
-            return {"status": "ok", "x": pos.x, "y": pos.y}
-
-        # ── KEYBOARD ─────────────────────────────────────────
+        # ── KEYBOARD ─────────────────────────────────────────────
         elif action == "type":
-            text = str(cmd.get("text", ""))
-            smart_type(text)
-            time.sleep(0.1)
-            return {"status": "ok"}
-
+            smart_type(cmd.get("text",""))
+            return {"status":"ok"}
+        elif action == "type_slow":
+            pyautogui.write(str(cmd.get("text","")), interval=0.06)
+            return {"status":"ok"}
         elif action == "key":
-            key = cmd.get("key", "")
-            if key:
-                pyautogui.press(key)
-            return {"status": "ok"}
-
+            pyautogui.press(cmd.get("key",""))
+            return {"status":"ok"}
         elif action == "hotkey":
-            keys = cmd.get("keys", [])
-            if keys:
-                pyautogui.hotkey(*keys)
-            return {"status": "ok"}
-
+            keys = cmd.get("keys",[])
+            if keys: pyautogui.hotkey(*keys)
+            return {"status":"ok"}
         elif action == "key_down":
-            pyautogui.keyDown(cmd.get("key", ""))
-            return {"status": "ok"}
-
+            pyautogui.keyDown(cmd.get("key",""))
+            return {"status":"ok"}
         elif action == "key_up":
-            pyautogui.keyUp(cmd.get("key", ""))
-            return {"status": "ok"}
-
-        elif action == "press_enter":
-            pyautogui.press("enter")
-            return {"status": "ok"}
-
-        elif action == "press_tab":
-            pyautogui.press("tab")
-            return {"status": "ok"}
-
-        elif action == "press_escape":
-            pyautogui.press("escape")
-            return {"status": "ok"}
-
+            pyautogui.keyUp(cmd.get("key",""))
+            return {"status":"ok"}
+        elif action == "press_enter": pyautogui.press("enter"); return {"status":"ok"}
+        elif action == "press_tab": pyautogui.press("tab"); return {"status":"ok"}
+        elif action == "press_escape": pyautogui.press("escape"); return {"status":"ok"}
+        elif action == "press_space": pyautogui.press("space"); return {"status":"ok"}
         elif action == "press_backspace":
-            count = int(cmd.get("count", 1))
-            for _ in range(count):
-                pyautogui.press("backspace")
-            return {"status": "ok"}
+            for _ in range(int(cmd.get("count",1))): pyautogui.press("backspace")
+            return {"status":"ok"}
+        elif action == "press_delete": pyautogui.press("delete"); return {"status":"ok"}
+        elif action == "press_f5": pyautogui.press("f5"); return {"status":"ok"}
 
-        elif action == "press_delete":
-            pyautogui.press("delete")
-            return {"status": "ok"}
-
-        # ── CLIPBOARD ────────────────────────────────────────
+        # ── CLIPBOARD ────────────────────────────────────────────
         elif action == "copy":
-            pyautogui.hotkey("ctrl", "c")
-            time.sleep(0.3)
-            content = pyperclip.paste()
-            SESSION_MEMORY["clipboard_history"].append(content[:200])
-            return {"status": "ok", "content": content}
-
+            pyautogui.hotkey("ctrl","c"); time.sleep(0.2)
+            return {"status":"ok","content":pyperclip.paste()}
         elif action == "paste":
-            pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.1)
-            return {"status": "ok"}
-
+            pyautogui.hotkey("ctrl","v"); return {"status":"ok"}
         elif action == "cut":
-            pyautogui.hotkey("ctrl", "x")
-            time.sleep(0.2)
-            return {"status": "ok"}
-
+            pyautogui.hotkey("ctrl","x"); return {"status":"ok"}
         elif action == "select_all":
-            pyautogui.hotkey("ctrl", "a")
-            return {"status": "ok"}
-
+            pyautogui.hotkey("ctrl","a"); return {"status":"ok"}
         elif action == "get_clipboard":
-            content = pyperclip.paste()
-            return {"status": "ok", "content": content}
-
+            return {"status":"ok","content":pyperclip.paste()}
         elif action == "set_clipboard":
-            text = cmd.get("text", "")
-            pyperclip.copy(text)
-            return {"status": "ok"}
-
+            pyperclip.copy(str(cmd.get("text",""))); return {"status":"ok"}
         elif action == "clear_field":
-            pyautogui.hotkey("ctrl", "a")
-            time.sleep(0.1)
-            pyautogui.press("delete")
-            return {"status": "ok"}
+            pyautogui.hotkey("ctrl","a"); time.sleep(0.05); pyautogui.press("delete"); return {"status":"ok"}
 
-        # ── BROWSER / URL ─────────────────────────────────────
+        # ── BROWSER ──────────────────────────────────────────────
         elif action == "open_url":
-            url = cmd.get("url", "")
-            if not url.startswith("http"):
-                url = "https://" + url
-            webbrowser.open(url)
-            SESSION_MEMORY["last_url"] = url
-            time.sleep(2)
-            return {"status": "ok", "opened": url}
-
+            url = cmd.get("url","")
+            if not url.startswith("http"): url = "https://" + url
+            webbrowser.open(url); time.sleep(2)
+            return {"status":"ok","opened":url}
         elif action == "navigate_url":
-            url = cmd.get("url", "")
-            if not url.startswith("http"):
-                url = "https://" + url
-            pyautogui.hotkey("ctrl", "l")
-            time.sleep(0.4)
-            pyautogui.hotkey("ctrl", "a")
-            smart_type(url)
-            pyautogui.press("enter")
-            SESSION_MEMORY["last_url"] = url
-            time.sleep(2.5)
-            return {"status": "ok", "navigated": url}
-
-        elif action == "new_tab":
-            pyautogui.hotkey("ctrl", "t")
-            time.sleep(0.6)
-            return {"status": "ok"}
-
-        elif action == "close_tab":
-            pyautogui.hotkey("ctrl", "w")
-            time.sleep(0.3)
-            return {"status": "ok"}
-
-        elif action == "new_window":
-            pyautogui.hotkey("ctrl", "n")
-            time.sleep(0.6)
-            return {"status": "ok"}
-
-        elif action == "browser_back":
-            pyautogui.hotkey("alt", "left")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "browser_forward":
-            pyautogui.hotkey("alt", "right")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "browser_refresh":
-            pyautogui.hotkey("ctrl", "r")
-            time.sleep(2)
-            return {"status": "ok"}
-
-        elif action == "browser_zoom_in":
-            pyautogui.hotkey("ctrl", "=")
-            return {"status": "ok"}
-
-        elif action == "browser_zoom_out":
-            pyautogui.hotkey("ctrl", "-")
-            return {"status": "ok"}
-
-        elif action == "browser_zoom_reset":
-            pyautogui.hotkey("ctrl", "0")
-            return {"status": "ok"}
-
+            url = cmd.get("url","")
+            if not url.startswith("http"): url = "https://" + url
+            pyautogui.hotkey("ctrl","l"); time.sleep(0.3)
+            pyautogui.hotkey("ctrl","a"); smart_type(url)
+            pyautogui.press("enter"); time.sleep(2.5)
+            return {"status":"ok"}
+        elif action == "new_tab": pyautogui.hotkey("ctrl","t"); time.sleep(0.5); return {"status":"ok"}
+        elif action == "close_tab": pyautogui.hotkey("ctrl","w"); time.sleep(0.2); return {"status":"ok"}
+        elif action == "new_window": pyautogui.hotkey("ctrl","n"); time.sleep(0.8); return {"status":"ok"}
+        elif action == "incognito": pyautogui.hotkey("ctrl","shift","n"); time.sleep(0.8); return {"status":"ok"}
+        elif action == "browser_back": pyautogui.hotkey("alt","left"); time.sleep(1); return {"status":"ok"}
+        elif action == "browser_forward": pyautogui.hotkey("alt","right"); time.sleep(1); return {"status":"ok"}
+        elif action == "browser_refresh": pyautogui.hotkey("ctrl","r"); time.sleep(2); return {"status":"ok"}
         elif action == "browser_find":
-            query = cmd.get("text", "")
-            pyautogui.hotkey("ctrl", "f")
-            time.sleep(0.3)
-            smart_type(query)
-            pyautogui.press("enter")
-            return {"status": "ok"}
+            pyautogui.hotkey("ctrl","f"); time.sleep(0.3); smart_type(cmd.get("text","")); pyautogui.press("enter")
+            return {"status":"ok"}
+        elif action == "browser_zoom_in": pyautogui.hotkey("ctrl","="); return {"status":"ok"}
+        elif action == "browser_zoom_out": pyautogui.hotkey("ctrl","-"); return {"status":"ok"}
+        elif action == "browser_zoom_reset": pyautogui.hotkey("ctrl","0"); return {"status":"ok"}
+        elif action == "open_dev_tools": pyautogui.press("f12"); time.sleep(0.5); return {"status":"ok"}
 
-        elif action == "open_incognito":
-            pyautogui.hotkey("ctrl", "shift", "n")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        # ── FILE OPERATIONS ───────────────────────────────────
+        # ── FILES ────────────────────────────────────────────────
         elif action == "open_file":
-            path = cmd.get("path", "")
-            if path and os.path.exists(path):
-                open_file_or_url(path)
-                time.sleep(1)
-                return {"status": "ok", "opened": path}
-            return {"status": "error", "message": f"File not found: {path}"}
-
+            path = cmd.get("path","")
+            if os.path.exists(path):
+                os.startfile(path) if platform.system()=="Windows" else subprocess.Popen(["open",path])
+                time.sleep(1); return {"status":"ok","opened":path}
+            return {"status":"error","message":f"File not found: {path}"}
         elif action == "find_file":
-            name = cmd.get("name", "")
-            results = find_file(name)
-            return {"status": "ok", "files": results, "count": len(results)}
-
+            name = cmd.get("name",""); results = []
+            for base in [Path.home(), Path.home()/"Desktop", Path.home()/"Documents", Path.home()/"Downloads"]:
+                try:
+                    for root,dirs,files in os.walk(str(base)):
+                        for f in files:
+                            if name.lower() in f.lower(): results.append(os.path.join(root,f))
+                            if len(results) >= 10: break
+                        if len(results) >= 10: break
+                except: pass
+                if len(results) >= 10: break
+            return {"status":"ok","files":results}
         elif action == "open_folder":
             path = cmd.get("path", str(Path.home()))
-            subprocess.Popen(["explorer", path] if platform.system() == "Windows" else ["open", path])
-            time.sleep(0.8)
-            return {"status": "ok"}
-
+            subprocess.Popen(["explorer",path] if platform.system()=="Windows" else ["open",path])
+            return {"status":"ok"}
         elif action == "create_file":
-            path = cmd.get("path", "")
-            content = cmd.get("content", "")
-            if path:
-                Path(path).write_text(content, encoding="utf-8")
-                return {"status": "ok", "created": path}
-            return {"status": "error", "message": "No path provided"}
-
+            path = cmd.get("path",""); content = cmd.get("content","")
+            if path: Path(path).write_text(content, encoding="utf-8"); return {"status":"ok","created":path}
+            return {"status":"error","message":"No path"}
         elif action == "read_file":
-            path = cmd.get("path", "")
+            path = cmd.get("path","")
             if path and os.path.exists(path):
-                content = Path(path).read_text(encoding="utf-8", errors="ignore")
-                return {"status": "ok", "content": content[:5000]}
-            return {"status": "error", "message": "File not found"}
-
+                return {"status":"ok","content":Path(path).read_text(encoding="utf-8",errors="ignore")[:8000]}
+            return {"status":"error","message":"Not found"}
         elif action == "list_files":
-            path = cmd.get("path", str(Path.home() / "Desktop"))
-            try:
-                files = os.listdir(path)
-                return {"status": "ok", "files": files[:50], "path": path}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
-
+            path = cmd.get("path", str(Path.home()/"Desktop"))
+            try: return {"status":"ok","files":os.listdir(path)[:50]}
+            except Exception as e: return {"status":"error","message":str(e)}
         elif action == "open_downloads":
-            downloads = str(Path.home() / "Downloads")
-            subprocess.Popen(["explorer", downloads])
-            return {"status": "ok"}
-
+            subprocess.Popen(["explorer", str(Path.home()/"Downloads")]); return {"status":"ok"}
         elif action == "open_desktop":
-            desktop = str(Path.home() / "Desktop")
-            subprocess.Popen(["explorer", desktop])
-            return {"status": "ok"}
-
+            subprocess.Popen(["explorer", str(Path.home()/"Desktop")]); return {"status":"ok"}
         elif action == "open_documents":
-            docs = str(Path.home() / "Documents")
-            subprocess.Popen(["explorer", docs])
-            return {"status": "ok"}
-
-        # ── APP CONTROL ───────────────────────────────────────
-        elif action == "open_app":
-            app = cmd.get("app", "")
-            try:
-                if platform.system() == "Windows":
-                    os.startfile(app)
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["open", "-a", app])
-                else:
-                    subprocess.Popen([app])
-                time.sleep(1.5)
-                return {"status": "ok", "opened": app}
-            except Exception as e:
-                # Try shell command as fallback
-                result = subprocess.run(f"start {app}", shell=True, capture_output=True, timeout=10)
-                return {"status": "ok" if result.returncode == 0 else "error"}
-
-        elif action == "run_shell":
-            command = cmd.get("command", "")
-            for blocked in BLOCKED_COMMANDS:
-                if blocked.lower() in command.lower():
-                    return {"status": "error", "message": f"Command blocked for safety: {blocked}"}
-            try:
-                result = subprocess.run(command, shell=True, capture_output=True,
-                                       text=True, timeout=30)
-                return {
-                    "status": "ok",
-                    "stdout": result.stdout[:3000],
-                    "stderr": result.stderr[:500],
-                    "code": result.returncode
-                }
-            except subprocess.TimeoutExpired:
-                return {"status": "error", "message": "Command timed out after 30 seconds"}
-
-        elif action == "run_powershell":
-            command = cmd.get("command", "")
-            for blocked in BLOCKED_COMMANDS:
-                if blocked.lower() in command.lower():
-                    return {"status": "error", "message": "Command blocked for safety"}
-            result = subprocess.run(
-                ["powershell", "-Command", command],
-                capture_output=True, text=True, timeout=30
-            )
-            return {"status": "ok", "stdout": result.stdout[:3000], "stderr": result.stderr[:500]}
-
-        elif action == "kill_process":
-            process_name = cmd.get("name", "")
-            killed = []
-            for proc in psutil.process_iter(['name']):
-                if process_name.lower() in proc.info['name'].lower():
-                    proc.kill()
-                    killed.append(proc.info['name'])
-            return {"status": "ok", "killed": killed}
-
-        elif action == "get_running_apps":
-            processes = get_running_processes()
-            return {"status": "ok", "processes": processes}
-
-        # ── WINDOW MANAGEMENT ─────────────────────────────────
-        elif action == "minimize_window":
-            pyautogui.hotkey("win", "down")
-            return {"status": "ok"}
-
-        elif action == "maximize_window":
-            pyautogui.hotkey("win", "up")
-            return {"status": "ok"}
-
-        elif action == "close_window":
-            pyautogui.hotkey("alt", "f4")
-            time.sleep(0.3)
-            return {"status": "ok"}
-
-        elif action == "switch_window":
-            pyautogui.hotkey("alt", "tab")
-            time.sleep(0.3)
-            return {"status": "ok"}
-
-        elif action == "show_desktop":
-            pyautogui.hotkey("win", "d")
-            return {"status": "ok"}
-
-        elif action == "snap_left":
-            pyautogui.hotkey("win", "left")
-            return {"status": "ok"}
-
-        elif action == "snap_right":
-            pyautogui.hotkey("win", "right")
-            return {"status": "ok"}
-
-        elif action == "get_active_window":
-            title = get_active_window_title()
-            return {"status": "ok", "title": title}
-
-        elif action == "open_task_manager":
-            pyautogui.hotkey("ctrl", "shift", "esc")
-            return {"status": "ok"}
-
-        # ── SYSTEM ────────────────────────────────────────────
-        elif action == "lock_screen":
-            pyautogui.hotkey("win", "l")
-            return {"status": "ok"}
-
-        elif action == "open_settings":
-            pyautogui.hotkey("win", "i")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "open_control_panel":
-            subprocess.Popen(["control"])
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "open_file_explorer":
-            pyautogui.hotkey("win", "e")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "open_run_dialog":
-            pyautogui.hotkey("win", "r")
-            time.sleep(0.5)
-            cmd_text = cmd.get("command", "")
-            if cmd_text:
-                smart_type(cmd_text)
-                pyautogui.press("enter")
-            return {"status": "ok"}
-
-        elif action == "open_search":
-            pyautogui.hotkey("win", "s")
-            time.sleep(0.5)
-            query = cmd.get("query", "")
-            if query:
-                smart_type(query)
-            return {"status": "ok"}
-
+            subprocess.Popen(["explorer", str(Path.home()/"Documents")]); return {"status":"ok"}
         elif action == "take_note":
-            text = cmd.get("text", "")
-            notes_file = Path.home() / "DacexyAgent" / "notes.txt"
-            notes_file.parent.mkdir(exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            with open(notes_file, "a", encoding="utf-8") as f:
-                f.write(f"\n[{timestamp}] {text}\n")
-            return {"status": "ok", "saved_to": str(notes_file)}
+            text = cmd.get("text","")
+            note_file = Path.home()/"DacexyAgent"/"notes.txt"
+            note_file.parent.mkdir(exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            with open(note_file,"a",encoding="utf-8") as f: f.write(f"\n[{ts}] {text}\n")
+            remember(f"User note: {text[:60]}")
+            return {"status":"ok","saved":str(note_file)}
+        elif action == "read_notes":
+            note_file = Path.home()/"DacexyAgent"/"notes.txt"
+            if note_file.exists():
+                content = note_file.read_text(encoding="utf-8")
+                speak("Here are your recent notes: " + content[-500:])
+                return {"status":"ok","notes":content[-2000:]}
+            return {"status":"ok","notes":"No notes yet"}
 
+        # ── APPS ─────────────────────────────────────────────────
+        elif action == "open_app":
+            app = cmd.get("app","")
+            try:
+                if platform.system()=="Windows": os.startfile(app)
+                elif platform.system()=="Darwin": subprocess.Popen(["open","-a",app])
+                else: subprocess.Popen([app])
+                time.sleep(1.5); return {"status":"ok","opened":app}
+            except:
+                result = subprocess.run(f"start {app}", shell=True, capture_output=True, timeout=8)
+                return {"status":"ok" if result.returncode==0 else "error"}
+        elif action == "run_shell":
+            command = cmd.get("command","")
+            for b in BLOCKED_COMMANDS:
+                if b.lower() in command.lower():
+                    return {"status":"error","message":f"Blocked for safety"}
+            try:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+                return {"status":"ok","stdout":result.stdout[:3000],"stderr":result.stderr[:300],"code":result.returncode}
+            except subprocess.TimeoutExpired:
+                return {"status":"error","message":"Timed out"}
+        elif action == "run_powershell":
+            cmd_text = cmd.get("command","")
+            for b in BLOCKED_COMMANDS:
+                if b.lower() in cmd_text.lower(): return {"status":"error","message":"Blocked"}
+            result = subprocess.run(["powershell","-Command",cmd_text], capture_output=True, text=True, timeout=30)
+            return {"status":"ok","stdout":result.stdout[:3000]}
+        elif action == "kill_process":
+            name = cmd.get("name",""); killed = []
+            for proc in psutil.process_iter(['name']):
+                if name.lower() in (proc.info['name'] or "").lower():
+                    try: proc.kill(); killed.append(proc.info['name'])
+                    except: pass
+            return {"status":"ok","killed":killed}
+        elif action == "list_processes":
+            procs = [p.name() for p in psutil.process_iter(['name']) if p.info['name']][:30]
+            return {"status":"ok","processes":procs}
+
+        # ── WINDOW MANAGEMENT ─────────────────────────────────────
+        elif action == "minimize_window": pyautogui.hotkey("win","down"); return {"status":"ok"}
+        elif action == "maximize_window": pyautogui.hotkey("win","up"); return {"status":"ok"}
+        elif action == "close_window": pyautogui.hotkey("alt","f4"); time.sleep(0.2); return {"status":"ok"}
+        elif action == "switch_window": pyautogui.hotkey("alt","tab"); time.sleep(0.3); return {"status":"ok"}
+        elif action == "show_desktop": pyautogui.hotkey("win","d"); return {"status":"ok"}
+        elif action == "snap_left": pyautogui.hotkey("win","left"); return {"status":"ok"}
+        elif action == "snap_right": pyautogui.hotkey("win","right"); return {"status":"ok"}
+        elif action == "task_view": pyautogui.hotkey("win","tab"); return {"status":"ok"}
+        elif action == "open_task_manager": pyautogui.hotkey("ctrl","shift","esc"); return {"status":"ok"}
+        elif action == "get_active_window":
+            return {"status":"ok","title":get_active_window()}
+
+        # ── SYSTEM ────────────────────────────────────────────────
+        elif action == "lock_screen": pyautogui.hotkey("win","l"); return {"status":"ok"}
+        elif action == "open_settings": pyautogui.hotkey("win","i"); time.sleep(1); return {"status":"ok"}
+        elif action == "open_file_explorer": pyautogui.hotkey("win","e"); time.sleep(1); return {"status":"ok"}
+        elif action == "open_run":
+            pyautogui.hotkey("win","r"); time.sleep(0.4)
+            if cmd.get("command"):
+                smart_type(cmd["command"]); pyautogui.press("enter")
+            return {"status":"ok"}
+        elif action == "open_start": pyautogui.press("win"); time.sleep(0.5); return {"status":"ok"}
+        elif action == "search_windows":
+            pyautogui.hotkey("win","s"); time.sleep(0.5)
+            if cmd.get("query"): smart_type(cmd["query"])
+            return {"status":"ok"}
+        elif action == "clipboard_history": pyautogui.hotkey("win","v"); return {"status":"ok"}
+
+        # ── MEMORY ────────────────────────────────────────────────
+        elif action == "remember":
+            fact = cmd.get("fact","") or cmd.get("text","")
+            if fact: remember(fact)
+            return {"status":"ok","remembered":fact}
+        elif action == "recall":
+            ctx = get_memory_context()
+            speak("Here is what I remember: " + (ctx or "I don't have anything saved yet."))
+            return {"status":"ok","memory":ctx}
+        elif action == "forget_all":
+            MEMORY["facts"].clear(); MEMORY["preferences"].clear(); save_memory()
+            speak("I have cleared my memory.")
+            return {"status":"ok"}
+
+        # ── TIME & INFO ───────────────────────────────────────────
         elif action == "get_time":
             now = datetime.datetime.now()
-            return {
-                "status": "ok",
-                "time": now.strftime("%I:%M %p"),
-                "date": now.strftime("%A, %B %d %Y"),
-                "timestamp": now.isoformat()
-            }
-
+            result = {"time":now.strftime("%I:%M %p"),"date":now.strftime("%A, %B %d %Y")}
+            speak(f"It is {result['time']} on {result['date']}")
+            return {"status":"ok",**result}
         elif action == "get_weather":
-            city = cmd.get("city", "")
-            url = f"https://wttr.in/{city.replace(' ', '+')}?format=3" if city else "https://wttr.in/?format=3"
+            city = cmd.get("city","")
+            url = f"https://wttr.in/{city.replace(' ','+')}?format=3" if city else "https://wttr.in/?format=3"
             try:
-                r = req_lib.get(url, timeout=5)
-                return {"status": "ok", "weather": r.text.strip()}
-            except:
-                return {"status": "ok", "weather": "Could not fetch weather"}
-
+                r = req_lib.get(url, timeout=6)
+                w = r.text.strip()
+                speak(w)
+                return {"status":"ok","weather":w}
+            except: return {"status":"error","message":"Could not fetch weather"}
         elif action == "get_system_info":
             sz = pyautogui.size()
-            stats = get_system_stats()
-            battery = None
+            try:
+                bat = psutil.sensors_battery()
+                battery = f"{bat.percent:.0f}% {'charging' if bat.power_plugged else 'discharging'}" if bat else None
+            except: battery = None
+            info = {
+                "status":"ok",
+                "os": platform.system(),
+                "os_version": platform.version(),
+                "hostname": platform.node(),
+                "screen": f"{sz.width}x{sz.height}",
+                "cpu_percent": psutil.cpu_percent(interval=0.5),
+                "memory_percent": psutil.virtual_memory().percent,
+                "battery": battery,
+                "active_window": get_active_window(),
+                "agent_version": VERSION,
+            }
+            return info
+        elif action == "battery_status":
             try:
                 bat = psutil.sensors_battery()
                 if bat:
-                    battery = f"{bat.percent:.0f}% {'charging' if bat.power_plugged else 'discharging'}"
+                    msg = f"Battery is at {bat.percent:.0f}% and {'charging' if bat.power_plugged else 'discharging'}"
+                    speak(msg); return {"status":"ok","message":msg}
             except: pass
-            return {
-                "status": "ok",
-                "os": platform.system(),
-                "os_version": platform.version(),
-                "machine": platform.machine(),
-                "hostname": platform.node(),
-                "python": platform.python_version(),
-                "screen_width": sz.width,
-                "screen_height": sz.height,
-                "cpu_percent": stats.get("cpu_percent"),
-                "memory_percent": stats.get("memory_percent"),
-                "battery": battery,
-                "agent_version": AGENT_VERSION,
-                "active_window": get_active_window_title(),
-                "session_tasks": len(SESSION_MEMORY["task_history"]),
-            }
+            return {"status":"ok","message":"Battery info unavailable"}
 
-        # ── VOLUME / MEDIA ────────────────────────────────────
+        # ── VOLUME & MEDIA ────────────────────────────────────────
         elif action == "volume_up":
-            for _ in range(int(cmd.get("steps", 3))):
-                pyautogui.press("volumeup")
-            return {"status": "ok"}
-
+            for _ in range(int(cmd.get("steps",3))): pyautogui.press("volumeup")
+            return {"status":"ok"}
         elif action == "volume_down":
-            for _ in range(int(cmd.get("steps", 3))):
-                pyautogui.press("volumedown")
-            return {"status": "ok"}
+            for _ in range(int(cmd.get("steps",3))): pyautogui.press("volumedown")
+            return {"status":"ok"}
+        elif action == "volume_mute": pyautogui.press("volumemute"); return {"status":"ok"}
+        elif action == "volume_set":
+            level = int(cmd.get("level",50))
+            steps = abs(level - 50) // 2
+            key = "volumeup" if level > 50 else "volumedown"
+            for _ in range(steps): pyautogui.press(key)
+            return {"status":"ok"}
+        elif action == "media_play_pause": pyautogui.press("playpause"); return {"status":"ok"}
+        elif action == "media_next": pyautogui.press("nexttrack"); return {"status":"ok"}
+        elif action == "media_prev": pyautogui.press("prevtrack"); return {"status":"ok"}
+        elif action == "media_stop": pyautogui.press("stop"); return {"status":"ok"}
 
-        elif action == "volume_mute":
-            pyautogui.press("volumemute")
-            return {"status": "ok"}
+        # ── EDIT ACTIONS ──────────────────────────────────────────
+        elif action == "save": pyautogui.hotkey("ctrl","s"); time.sleep(0.2); return {"status":"ok"}
+        elif action == "save_as": pyautogui.hotkey("ctrl","shift","s"); time.sleep(0.5); return {"status":"ok"}
+        elif action == "undo": pyautogui.hotkey("ctrl","z"); return {"status":"ok"}
+        elif action == "redo": pyautogui.hotkey("ctrl","y"); return {"status":"ok"}
+        elif action == "find": pyautogui.hotkey("ctrl","f"); time.sleep(0.3); smart_type(cmd.get("text","")); pyautogui.press("enter"); return {"status":"ok"}
+        elif action == "print": pyautogui.hotkey("ctrl","p"); time.sleep(1); return {"status":"ok"}
+        elif action == "zoom_in": pyautogui.hotkey("ctrl","="); return {"status":"ok"}
+        elif action == "zoom_out": pyautogui.hotkey("ctrl","-"); return {"status":"ok"}
+        elif action == "fullscreen": pyautogui.press("f11"); return {"status":"ok"}
+        elif action == "bold": pyautogui.hotkey("ctrl","b"); return {"status":"ok"}
+        elif action == "italic": pyautogui.hotkey("ctrl","i"); return {"status":"ok"}
+        elif action == "underline": pyautogui.hotkey("ctrl","u"); return {"status":"ok"}
 
-        elif action == "media_play_pause":
-            pyautogui.press("playpause")
-            return {"status": "ok"}
-
-        elif action == "media_next":
-            pyautogui.press("nexttrack")
-            return {"status": "ok"}
-
-        elif action == "media_prev":
-            pyautogui.press("prevtrack")
-            return {"status": "ok"}
-
-        # ── WAIT ──────────────────────────────────────────────
+        # ── WAIT ──────────────────────────────────────────────────
         elif action == "wait":
-            secs = float(cmd.get("seconds", 1))
-            secs = min(secs, 15)  # max 15 seconds
-            time.sleep(secs)
-            return {"status": "ok"}
-
+            time.sleep(min(float(cmd.get("seconds",1)), 15))
+            return {"status":"ok"}
         elif action == "wait_for_load":
-            time.sleep(float(cmd.get("seconds", 3)))
-            return {"status": "ok"}
+            time.sleep(float(cmd.get("seconds",3)))
+            return {"status":"ok"}
 
-        # ── SAVE / UNDO / REDO ────────────────────────────────
-        elif action == "save":
-            pyautogui.hotkey("ctrl", "s")
-            time.sleep(0.3)
-            return {"status": "ok"}
+        # ── AI QUERY ──────────────────────────────────────────────
+        elif action == "ask_ai":
+            question = cmd.get("question","")
+            if question and token:
+                try:
+                    r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
+                        headers={"Content-Type":"application/json","Authorization":f"Bearer {token}"},
+                        json={"messages":[{"role":"user","content":question}],"stream":False},
+                        timeout=30)
+                    if r.status_code == 200:
+                        answer = r.json().get("content") or r.json().get("response") or ""
+                        if answer: speak(answer[:500])
+                        return {"status":"ok","answer":answer}
+                except Exception as e: return {"status":"error","message":str(e)}
+            return {"status":"ok"}
 
-        elif action == "save_as":
-            pyautogui.hotkey("ctrl", "shift", "s")
-            time.sleep(0.5)
-            return {"status": "ok"}
-
-        elif action == "undo":
-            pyautogui.hotkey("ctrl", "z")
-            return {"status": "ok"}
-
-        elif action == "redo":
-            pyautogui.hotkey("ctrl", "y")
-            return {"status": "ok"}
-
-        elif action == "print":
-            pyautogui.hotkey("ctrl", "p")
-            time.sleep(1)
-            return {"status": "ok"}
-
-        elif action == "zoom_in":
-            pyautogui.hotkey("ctrl", "=")
-            return {"status": "ok"}
-
-        elif action == "zoom_out":
-            pyautogui.hotkey("ctrl", "-")
-            return {"status": "ok"}
-
-        elif action == "fullscreen":
-            pyautogui.press("f11")
-            return {"status": "ok"}
-
-        # ── TASK / SUB-TASK ───────────────────────────────────
+        # ── TASK ──────────────────────────────────────────────────
         elif action == "task":
-            task_text = cmd.get("task", "") or cmd.get("goal", "")
-            context = cmd.get("context", "")
+            task_text = cmd.get("task","") or cmd.get("goal","")
             if task_text and token:
-                execute_full_task(task_text, token, context=context)
-            return {"status": "ok"}
+                execute_full_task(task_text, token)
+            return {"status":"ok"}
 
         else:
-            return {"status": "error", "message": f"Unknown action: {action}"}
+            return {"status":"error","message":f"Unknown action: {action}"}
 
     except pyautogui.FailSafeException:
-        return {"status": "error", "message": "Failsafe triggered — move mouse away from corner"}
+        return {"status":"error","message":"Failsafe triggered"}
     except Exception as e:
-        log.error(f"Command error [{action}]: {e}")
-        return {"status": "error", "message": str(e)}
-
+        log.error(f"Command [{action}]: {e}")
+        return {"status":"error","message":str(e)}
 
 def execute_action_list(actions: list, token: str = None):
     for i, action in enumerate(actions):
-        if not isinstance(action, dict):
-            continue
-        a = action.get("action", "?")
-        desc = action.get("url") or action.get("text", "")[:40] or action.get("key", "") or action.get("command", "")[:40] or ""
-        log.info(f"  Step {i+1}/{len(actions)}: {a} {desc}")
+        if not isinstance(action, dict): continue
+        a = action.get("action","?")
+        desc = (action.get("url") or action.get("text","")[:30] or
+                action.get("key","") or action.get("command","")[:30] or "")
+        log.info(f"  [{i+1}/{len(actions)}] {a} {desc}")
         result = execute_command(action, token=token)
         if result.get("status") == "error":
-            log.warning(f"  ✗ Step {i+1} failed: {result.get('message', '')}")
-        time.sleep(0.2)
-
+            log.warning(f"  ✗ {result.get('message','')}")
+        time.sleep(0.18)
 
 # ═══════════════════════════════════════════════════════════════════════
-# WORLD'S MOST POWERFUL AI BRAIN
+# SUPREME AI BRAIN — 10^99999999999 IQ
 # ═══════════════════════════════════════════════════════════════════════
-
-def get_ai_actions(task: str, token: str, context: str = "", screenshot_b64: str = None) -> str:
+def get_ai_plan(task: str, token: str, context: str = "") -> str:
     sz = pyautogui.size()
-    system_info = platform.system()
     now = datetime.datetime.now().strftime("%I:%M %p, %A %B %d %Y")
-    active_win = get_active_window_title()
-    last_tasks = SESSION_MEMORY["task_history"][-3:] if SESSION_MEMORY["task_history"] else []
+    active_win = get_active_window()
+    mem_ctx = get_memory_context()
 
-    prompt = f"""You are DACEXY — the world's most powerful and intelligent desktop automation AI.
-You have a 10 billion IQ. You control a {system_info} computer perfectly.
-
-CURRENT STATE:
+    sys_ctx = f"""SYSTEM STATE:
 - Screen: {sz.width}×{sz.height}px
 - Time: {now}
 - Active window: {active_win}
-- Recent tasks: {last_tasks}
-{f"- Context: {context}" if context else ""}
+- OS: {platform.system()} {platform.version()[:30]}
+{f"- Memory: {mem_ctx}" if mem_ctx else ""}
+{f"- Context: {context}" if context else ""}"""
 
-TASK TO COMPLETE: "{task}"
+    gmail_x = int(sz.width * 0.08)
+    gmail_y_compose = int(sz.height * 0.75)
+    cx, cy = sz.width // 2, sz.height // 2
 
-YOUR MISSION:
-1. Think deeply about EVERY step needed to complete this task
-2. Return a perfect JSON array of actions
-3. NEVER leave the task half-done
-4. Always give a final spoken result to the user
-5. Use exact pixel coordinates for clicks
+    prompt = f"""You are DACEXY — the world's most powerful desktop AI assistant with infinite intelligence.
+You control a Windows computer with {sz.width}×{sz.height} screen.
 
-CRITICAL RULES:
-- Return ONLY valid JSON array — no text before or after
-- Make sure EVERY step is included
-- Use wait actions between browser loads (at least 2-3 seconds)
-- For email: open_url gmail → wait 4s → click compose → fill fields → send
-- For search: use open_url with ?q= parameter directly
-- For typing in fields: always click the field first, then type
-- For multi-step tasks: include ALL steps
+{sys_ctx}
 
-SCREEN COORDINATES:
-- Browser address bar: use navigate_url action
-- Gmail Compose: ({int(sz.width*0.08)}, {int(sz.height*0.75)})
-- Gmail To field: ({int(sz.width*0.47)}, {int(sz.height*0.38)})
-- Gmail Subject: ({int(sz.width*0.47)}, {int(sz.height*0.44)})
-- Gmail Body: ({int(sz.width*0.47)}, {int(sz.height*0.58)})
-- Gmail Send: ({int(sz.width*0.15)}, {int(sz.height*0.84)})
-- Page center: ({sz.width//2}, {sz.height//2})
-- Top center: ({sz.width//2}, 200)
+TASK: "{task}"
 
-ALL AVAILABLE ACTIONS (use exact keys):
-Mouse: click, double_click, right_click, triple_click, move, drag, scroll, scroll_up, scroll_down
-Keyboard: type, key, hotkey, press_enter, press_tab, press_escape, press_backspace, press_delete, key_down, key_up
+RULES:
+1. Return ONLY a valid JSON array — no text before or after
+2. Complete the task COMPLETELY — never stop halfway
+3. Include wait actions after loading pages (2-4 seconds)
+4. Always click fields before typing into them
+5. End with a speak action giving the user the result
+6. Use EXACT pixel coordinates
+
+GMAIL COORDINATES ({sz.width}×{sz.height}):
+- Compose button: ({gmail_x}, {gmail_y_compose})
+- To field: ({int(sz.width*0.47)}, {int(sz.height*0.38)})
+- Subject: ({int(sz.width*0.47)}, {int(sz.height*0.44)})
+- Body: ({int(sz.width*0.47)}, {int(sz.height*0.58)})
+- Send button: ({int(sz.width*0.155)}, {int(sz.height*0.845)})
+- Center screen: ({cx}, {cy})
+
+COMPLETE ACTION REFERENCE:
+Mouse: click, double_click, right_click, triple_click, move, drag_to, scroll, scroll_up, scroll_down
+Keys: type, key, hotkey, press_enter, press_tab, press_escape, press_backspace, press_delete, press_space, press_f5
 Clipboard: copy, paste, cut, select_all, get_clipboard, set_clipboard, clear_field
-Browser: open_url, navigate_url, new_tab, close_tab, new_window, browser_back, browser_forward, browser_refresh, browser_find, open_incognito, browser_zoom_in, browser_zoom_out
-Files: open_file, find_file, open_folder, create_file, read_file, list_files, open_downloads, open_desktop, open_documents
-Apps: open_app, run_shell, run_powershell, kill_process
-Windows: minimize_window, maximize_window, close_window, switch_window, show_desktop, snap_left, snap_right, open_task_manager
-System: lock_screen, open_settings, open_file_explorer, open_run_dialog, open_search, get_time, get_system_info, take_note
-Media: volume_up, volume_down, volume_mute, media_play_pause, media_next, media_prev
-Other: wait, wait_for_load, save, undo, redo, screenshot, fullscreen, speak
+Browser: open_url, navigate_url, new_tab, close_tab, new_window, incognito, browser_back, browser_forward, browser_refresh, browser_find
+Files: open_file, find_file, open_folder, create_file, read_file, list_files, open_downloads, open_desktop, take_note, read_notes
+Apps: open_app, run_shell, run_powershell, kill_process, list_processes
+Windows: minimize_window, maximize_window, close_window, switch_window, show_desktop, snap_left, snap_right, task_view, open_task_manager
+System: lock_screen, open_settings, open_file_explorer, open_run, open_start, search_windows
+Memory: remember, recall, forget_all
+Info: get_time, get_weather, get_system_info, battery_status, what_on_screen
+Media: volume_up, volume_down, volume_mute, volume_set, media_play_pause, media_next, media_prev
+Edit: save, undo, redo, find, print, fullscreen, bold, italic, underline, zoom_in, zoom_out
+AI: ask_ai
+Other: wait, wait_for_load, screenshot, notify, speak
 
-JSON FIELD DETAILS:
-- click: {{"action":"click","x":N,"y":N,"button":"left/right","clicks":1}}
-- type: {{"action":"type","text":"..."}}
-- key: {{"action":"key","key":"enter/tab/esc/f5/delete/backspace/..."}}
-- hotkey: {{"action":"hotkey","keys":["ctrl","c"]}}
-- open_url: {{"action":"open_url","url":"https://..."}}
-- navigate_url: {{"action":"navigate_url","url":"https://..."}}
-- run_shell: {{"action":"run_shell","command":"..."}}
-- wait: {{"action":"wait","seconds":N}}
-- speak: {{"action":"speak","text":"FINAL RESULT FOR USER"}}
+FIELD FORMATS:
+{{"action":"open_url","url":"https://..."}}
+{{"action":"navigate_url","url":"https://..."}}
+{{"action":"click","x":N,"y":N,"button":"left","clicks":1}}
+{{"action":"type","text":"..."}}
+{{"action":"key","key":"enter/tab/esc/f5/..."}}
+{{"action":"hotkey","keys":["ctrl","c"]}}
+{{"action":"wait","seconds":N}}
+{{"action":"run_shell","command":"..."}}
+{{"action":"ask_ai","question":"..."}}
+{{"action":"remember","fact":"..."}}
+{{"action":"get_weather","city":"Mumbai"}}
+{{"action":"speak","text":"Final result"}}
 
-TASK COMPLETION EXAMPLES:
+TASK EXAMPLES:
 
-"open youtube and search for lofi music and play first video":
-[
-  {{"action":"open_url","url":"https://www.youtube.com/results?search_query=lofi+music"}},
-  {{"action":"wait","seconds":3}},
-  {{"action":"click","x":{sz.width//2},"y":370}},
-  {{"action":"speak","text":"Playing lofi music on YouTube for you!"}}
-]
+"open youtube and play lofi music":
+[{{"action":"open_url","url":"https://youtube.com/results?search_query=lofi+music"}},{{"action":"wait","seconds":3}},{{"action":"click","x":{cx},"y":380}},{{"action":"speak","text":"Playing lofi music on YouTube"}}]
 
-"send email on gmail to test@gmail.com with subject Meeting Tomorrow and say see you at 10am":
-[
-  {{"action":"open_url","url":"https://mail.google.com"}},
-  {{"action":"wait","seconds":4}},
-  {{"action":"click","x":{int(sz.width*0.08)},"y":{int(sz.height*0.75)}}},
-  {{"action":"wait","seconds":1}},
-  {{"action":"click","x":{int(sz.width*0.47)},"y":{int(sz.height*0.38)}}},
-  {{"action":"type","text":"test@gmail.com"}},
-  {{"action":"key","key":"tab"}},
-  {{"action":"type","text":"Meeting Tomorrow"}},
-  {{"action":"click","x":{int(sz.width*0.47)},"y":{int(sz.height*0.58)}}},
-  {{"action":"type","text":"See you at 10am"}},
-  {{"action":"click","x":{int(sz.width*0.15)},"y":{int(sz.height*0.84)}}},
-  {{"action":"speak","text":"Email sent to test@gmail.com with subject Meeting Tomorrow!"}}
-]
+"send email on gmail to john@test.com subject Meeting body Let us meet tomorrow at 10am":
+[{{"action":"open_url","url":"https://mail.google.com"}},{{"action":"wait","seconds":4}},{{"action":"click","x":{gmail_x},"y":{gmail_y_compose}}},{{"action":"wait","seconds":1}},{{"action":"click","x":{int(sz.width*0.47)},"y":{int(sz.height*0.38)}}},{{"action":"type","text":"john@test.com"}},{{"action":"key","key":"tab"}},{{"action":"type","text":"Meeting"}},{{"action":"click","x":{int(sz.width*0.47)},"y":{int(sz.height*0.58)}}},{{"action":"type","text":"Let us meet tomorrow at 10am"}},{{"action":"click","x":{int(sz.width*0.155)},"y":{int(sz.height*0.845)}}},{{"action":"speak","text":"Email sent to john@test.com successfully"}}]
 
-"open notepad write a resignation letter and save it":
-[
-  {{"action":"open_app","app":"notepad"}},
-  {{"action":"wait","seconds":1}},
-  {{"action":"type","text":"Dear Manager,\\n\\nI am writing to formally resign from my position, effective two weeks from today.\\n\\nThank you for the opportunity to work with this organization.\\n\\nSincerely,\\n[Your Name]"}},
-  {{"action":"save"}},
-  {{"action":"speak","text":"Resignation letter written and saved in Notepad"}}
-]
+"what time is it":
+[{{"action":"get_time"}},{{"action":"speak","text":"I just told you the time!"}}]
 
-"what is the weather in mumbai":
-[
-  {{"action":"open_url","url":"https://www.google.com/search?q=weather+in+mumbai"}},
-  {{"action":"wait","seconds":2}},
-  {{"action":"speak","text":"I searched Google for Mumbai weather. Results are on your screen."}}
-]
+"what is the weather in delhi":
+[{{"action":"get_weather","city":"delhi"}}]
 
-"take a screenshot and tell me whats on screen":
-[
-  {{"action":"screenshot"}},
-  {{"action":"speak","text":"Screenshot taken! I can see your current screen."}}
-]
+"remember that my name is Vivaan":
+[{{"action":"remember","fact":"User name is Vivaan"}},{{"action":"speak","text":"Got it! I will remember that your name is Vivaan"}}]
 
-"search google for best laptop under 50000 and open first result":
-[
-  {{"action":"open_url","url":"https://www.google.com/search?q=best+laptop+under+50000"}},
-  {{"action":"wait","seconds":2}},
-  {{"action":"click","x":{sz.width//2},"y":320}},
-  {{"action":"wait","seconds":2}},
-  {{"action":"speak","text":"Opened the first Google result for best laptops under 50000"}}
-]
+"take a note: buy groceries tomorrow":
+[{{"action":"take_note","text":"buy groceries tomorrow"}},{{"action":"speak","text":"Note saved: buy groceries tomorrow"}}]
 
-Now generate the PERFECT action plan for: "{task}"
-Return ONLY the JSON array:"""
+"what is on my screen right now":
+[{{"action":"what_on_screen"}}]
+
+"open notepad and write a resignation letter":
+[{{"action":"open_app","app":"notepad"}},{{"action":"wait","seconds":1}},{{"action":"type","text":"Dear Manager,\\n\\nI am writing to formally resign from my position, effective two weeks from today. Thank you for the opportunity.\\n\\nSincerely,\\n[Your Name]"}},{{"action":"speak","text":"Resignation letter written in Notepad"}}]
+
+"search google for best AI tools 2026":
+[{{"action":"open_url","url":"https://www.google.com/search?q=best+AI+tools+2026"}},{{"action":"speak","text":"Here are Google results for best AI tools 2026"}}]
+
+Now generate the PERFECT complete action plan for: "{task}"
+Return ONLY valid JSON array — nothing else:"""
 
     try:
-        r = req_lib.post(
-            f"{BACKEND_HTTP}/ai/chat",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-            json={"messages": [{"role": "user", "content": prompt}], "stream": False},
-            timeout=60
-        )
+        r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
+            headers={"Content-Type":"application/json","Authorization":f"Bearer {token}"},
+            json={"messages":[{"role":"user","content":prompt}],"stream":False},
+            timeout=60)
         if r.status_code == 200:
-            data = r.json()
-            content = data.get("content") or data.get("response") or data.get("text") or ""
-            log.info(f"AI plan received ({len(content)} chars)")
-
-            # Extract JSON array from response
+            content = r.json().get("content") or r.json().get("response") or r.json().get("text") or ""
+            log.info(f"AI plan ({len(content)} chars)")
             match = re.search(r'\[[\s\S]*\]', content)
             if match:
                 try:
@@ -1232,554 +939,502 @@ Return ONLY the JSON array:"""
                     if isinstance(actions, list) and len(actions) > 0:
                         non_speak = [a for a in actions if a.get("action") != "speak"]
                         if non_speak:
-                            log.info(f"AI returned {len(actions)} actions")
                             return json.dumps(actions)
-                except json.JSONDecodeError:
-                    log.warning("AI returned invalid JSON, using direct action")
-
-        log.warning(f"AI returned status {r.status_code}, using direct action")
-        return force_direct_action(task)
-
+                except json.JSONDecodeError: pass
+        log.warning(f"AI returned {r.status_code}, using direct")
+        return force_direct(task, sz)
     except Exception as e:
         log.error(f"AI brain error: {e}")
-        return force_direct_action(task)
+        return force_direct(task, sz)
 
-
-def force_direct_action(command: str) -> str:
-    """Instant execution for 50+ common commands."""
+def force_direct(command: str, sz=None) -> str:
+    """Lightning-fast direct execution for 60+ common commands."""
+    if sz is None: sz = pyautogui.size()
     cmd = command.lower().strip()
-    sz = pyautogui.size()
+    cx, cy = sz.width//2, sz.height//2
 
-    # ── YouTube ─────────────────────────────────────────────────────
+    # Time / Date
+    if any(x in cmd for x in ["what time","current time","tell me the time","what's the time"]):
+        now = datetime.datetime.now().strftime("%I:%M %p")
+        return json.dumps([{"action":"speak","text":f"It is {now}"}])
+    if any(x in cmd for x in ["what date","today's date","what day","what is today"]):
+        today = datetime.datetime.now().strftime("%A, %B %d %Y")
+        return json.dumps([{"action":"speak","text":f"Today is {today}"}])
+
+    # Weather
+    if "weather" in cmd:
+        city_m = re.search(r'(?:in|at|for)\s+([a-zA-Z\s]+?)(?:\?|$)',command,re.I)
+        city = city_m.group(1).strip() if city_m else "my location"
+        return json.dumps([{"action":"get_weather","city":city}])
+
+    # Battery
+    if "battery" in cmd:
+        return json.dumps([{"action":"battery_status"}])
+
+    # Memory
+    if any(x in cmd for x in ["remember that","please remember","don't forget","note that"]):
+        fact_m = re.search(r'(?:remember that|please remember|note that|don\'t forget)[:\s]+(.+)',command,re.I)
+        fact = fact_m.group(1).strip() if fact_m else command
+        return json.dumps([{"action":"remember","fact":fact},{"action":"speak","text":f"Got it! Remembered: {fact}"}])
+    if any(x in cmd for x in ["what do you remember","recall","what did i tell you","your memory"]):
+        return json.dumps([{"action":"recall"}])
+
+    # Notes
+    if any(x in cmd for x in ["take a note","make a note","note down","write down"]):
+        note_m = re.search(r'(?:note|note down|write down)[:\s]+(.+)',command,re.I)
+        note = note_m.group(1).strip() if note_m else command
+        return json.dumps([{"action":"take_note","text":note},{"action":"speak","text":f"Note saved: {note}"}])
+    if "read my notes" in cmd or "show my notes" in cmd:
+        return json.dumps([{"action":"read_notes"}])
+
+    # YouTube
     if "youtube" in cmd:
-        query = re.sub(r'open|youtube|play|search|for|on|in|chrome|browser|new tab', '', cmd).strip()
-        url = f"https://youtube.com/results?search_query={query.replace(' ', '+')}" if len(query) > 2 else "https://youtube.com"
-        return json.dumps([
-            {"action": "open_url", "url": url},
-            {"action": "wait", "seconds": 3},
-            {"action": "speak", "text": f"YouTube opened{' searching for '+query if len(query)>2 else ''}"}
-        ])
+        q = re.sub(r'open|youtube|play|search|for|on|in|new tab|chrome','',cmd).strip()
+        url = f"https://youtube.com/results?search_query={q.replace(' ','+')}" if len(q)>2 else "https://youtube.com"
+        return json.dumps([{"action":"open_url","url":url},{"action":"wait","seconds":3},
+            {"action":"speak","text":f"YouTube opened{' — searching for '+q if len(q)>2 else ''}"}])
 
-    # ── Gmail / Email ────────────────────────────────────────────────
-    if "gmail" in cmd or ("email" in cmd and ("send" in cmd or "compose" in cmd)):
-        email_match = re.search(r'[\w.\-+]+@[\w.\-]+\.\w+', command)
-        to_email = email_match.group(0) if email_match else ""
-        subj_m = re.search(r'subject[:\s]+([^,]+?)(?:\s+body|\s+saying|\s+with|$)', command, re.I)
-        body_m = re.search(r'(?:body|saying|content|message|write|say)[:\s]+(.+?)(?:\s+send|\s+to\s[\w@]|$)', command, re.I)
-        subject = subj_m.group(1).strip() if subj_m else "Hello from Dacexy"
-        body = body_m.group(1).strip() if body_m else "Hi, hope you are doing well!"
-
-        actions = [
-            {"action": "open_url", "url": "https://mail.google.com"},
-            {"action": "wait", "seconds": 4}
-        ]
-        if to_email:
+    # Gmail / Email
+    if "gmail" in cmd or ("email" in cmd and any(x in cmd for x in ["send","compose","write","check"])):
+        em = re.search(r'[\w.\-+]+@[\w.\-]+\.\w+',command)
+        to = em.group(0) if em else ""
+        sm = re.search(r'subject[:\s]+([^,]+?)(?:\s+body|\s+saying|\s+with|$)',command,re.I)
+        bm = re.search(r'(?:body|saying|content|message|write|say)[:\s]+(.+?)(?:\s+send|$)',command,re.I)
+        subj = sm.group(1).strip() if sm else "Hello"
+        body = bm.group(1).strip() if bm else "Hi there!"
+        actions = [{"action":"open_url","url":"https://mail.google.com"},{"action":"wait","seconds":4}]
+        if to:
             actions += [
-                {"action": "click", "x": int(sz.width*0.08), "y": int(sz.height*0.75)},
-                {"action": "wait", "seconds": 1},
-                {"action": "click", "x": int(sz.width*0.47), "y": int(sz.height*0.38)},
-                {"action": "type", "text": to_email},
-                {"action": "key", "key": "tab"},
-                {"action": "type", "text": subject},
-                {"action": "click", "x": int(sz.width*0.47), "y": int(sz.height*0.58)},
-                {"action": "type", "text": body},
-                {"action": "click", "x": int(sz.width*0.15), "y": int(sz.height*0.84)},
-                {"action": "speak", "text": f"Email sent to {to_email} with subject '{subject}'"}
+                {"action":"click","x":int(sz.width*0.08),"y":int(sz.height*0.75)},
+                {"action":"wait","seconds":1},
+                {"action":"click","x":int(sz.width*0.47),"y":int(sz.height*0.38)},
+                {"action":"type","text":to},{"action":"key","key":"tab"},
+                {"action":"type","text":subj},
+                {"action":"click","x":int(sz.width*0.47),"y":int(sz.height*0.58)},
+                {"action":"type","text":body},
+                {"action":"click","x":int(sz.width*0.155),"y":int(sz.height*0.845)},
+                {"action":"speak","text":f"Email sent to {to} — subject: {subj}"}
             ]
         else:
-            actions += [
-                {"action": "click", "x": int(sz.width*0.08), "y": int(sz.height*0.75)},
-                {"action": "speak", "text": "Gmail compose window opened. Please fill in the recipient."}
-            ]
+            actions += [{"action":"click","x":int(sz.width*0.08),"y":int(sz.height*0.75)},
+                       {"action":"speak","text":"Gmail compose window opened"}]
         return json.dumps(actions)
 
-    # ── Google Search ───────────────────────────────────────────────
+    # Google Search
     if "search" in cmd or ("google" in cmd and "open" not in cmd):
-        query = re.sub(r'search|google|for|on|find|look up|lookup', '', cmd).strip()
-        if not query or len(query) < 2: query = cmd
-        return json.dumps([
-            {"action": "open_url", "url": f"https://google.com/search?q={query.replace(' ', '+')}"},
-            {"action": "speak", "text": f"Searched Google for: {query}"}
-        ])
+        q = re.sub(r'search|google|for|on|find|look up','',cmd).strip() or cmd
+        return json.dumps([{"action":"open_url","url":f"https://google.com/search?q={q.replace(' ','+')}"},
+            {"action":"speak","text":f"Searched Google for: {q}"}])
 
-    # ── WhatsApp ────────────────────────────────────────────────────
-    if "whatsapp" in cmd:
-        return json.dumps([
-            {"action": "open_url", "url": "https://web.whatsapp.com"},
-            {"action": "speak", "text": "WhatsApp Web is open"}
-        ])
+    # Social/Web shortcuts
+    shortcuts = [
+        ("whatsapp","https://web.whatsapp.com","WhatsApp Web"),
+        ("instagram","https://instagram.com","Instagram"),
+        ("twitter","https://x.com","Twitter"),
+        ("facebook","https://facebook.com","Facebook"),
+        ("linkedin","https://linkedin.com","LinkedIn"),
+        ("reddit","https://reddit.com","Reddit"),
+        ("spotify","https://open.spotify.com","Spotify"),
+        ("netflix","https://netflix.com","Netflix"),
+        ("amazon","https://amazon.in","Amazon"),
+        ("flipkart","https://flipkart.com","Flipkart"),
+        ("swiggy","https://swiggy.com","Swiggy"),
+        ("zomato","https://zomato.com","Zomato"),
+        ("github","https://github.com","GitHub"),
+        ("chatgpt","https://chat.openai.com","ChatGPT"),
+        ("maps","https://maps.google.com","Google Maps"),
+        ("gmail","https://mail.google.com","Gmail"),
+        ("drive","https://drive.google.com","Google Drive"),
+        ("docs","https://docs.google.com","Google Docs"),
+        ("sheets","https://sheets.google.com","Google Sheets"),
+        ("translate","https://translate.google.com","Google Translate"),
+    ]
+    for kw,url,name in shortcuts:
+        if kw in cmd:
+            return json.dumps([{"action":"open_url","url":url},{"action":"speak","text":f"{name} opened"}])
 
-    # ── Social Media ────────────────────────────────────────────────
-    for site, url, name in [
-        ("instagram", "https://instagram.com", "Instagram"),
-        ("twitter", "https://x.com", "Twitter"),
-        ("facebook", "https://facebook.com", "Facebook"),
-        ("linkedin", "https://linkedin.com", "LinkedIn"),
-        ("reddit", "https://reddit.com", "Reddit"),
-        ("tiktok", "https://tiktok.com", "TikTok"),
-        ("snapchat", "https://snapchat.com", "Snapchat"),
-        ("pinterest", "https://pinterest.com", "Pinterest"),
-        ("spotify", "https://open.spotify.com", "Spotify"),
-        ("netflix", "https://netflix.com", "Netflix"),
-        ("amazon", "https://amazon.in", "Amazon"),
-        ("flipkart", "https://flipkart.com", "Flipkart"),
-        ("swiggy", "https://swiggy.com", "Swiggy"),
-        ("zomato", "https://zomato.com", "Zomato"),
-        ("github", "https://github.com", "GitHub"),
-        ("stackoverflow", "https://stackoverflow.com", "Stack Overflow"),
-        ("chatgpt", "https://chat.openai.com", "ChatGPT"),
-    ]:
-        if site in cmd:
-            return json.dumps([
-                {"action": "open_url", "url": url},
-                {"action": "speak", "text": f"{name} opened"}
-            ])
-
-    # ── Browser / Chrome ────────────────────────────────────────────
-    if "chrome" in cmd and ("open" in cmd or "start" in cmd or "launch" in cmd):
-        return json.dumps([
-            {"action": "run_shell", "command": "start chrome"},
-            {"action": "speak", "text": "Chrome is opening"}
-        ])
-
-    # ── Notepad ─────────────────────────────────────────────────────
+    # Apps
+    if "chrome" in cmd and any(x in cmd for x in ["open","start","launch"]):
+        return json.dumps([{"action":"run_shell","command":"start chrome"},{"action":"speak","text":"Opening Chrome"}])
     if "notepad" in cmd:
-        text_m = re.search(r'(?:write|type|say|note|create)[:\s]+(.+)', command, re.I)
-        actions = [{"action": "open_app", "app": "notepad"}, {"action": "wait", "seconds": 1}]
-        if text_m:
-            actions.append({"action": "type", "text": text_m.group(1)})
-        actions.append({"action": "speak", "text": f"Notepad opened{' and text written' if text_m else ''}"})
-        return json.dumps(actions)
-
-    # ── Calculator ──────────────────────────────────────────────────
-    if "calculator" in cmd or " calc" in cmd:
-        math_m = re.search(r'(\d[\d\s\+\-\*\/\(\)\.]+\d)', command)
-        actions = [{"action": "open_app", "app": "calc"}, {"action": "wait", "seconds": 1}]
-        if math_m:
-            expr = math_m.group(1).strip()
-            actions.append({"action": "type", "text": expr})
-            actions.append({"action": "press_enter"})
-        actions.append({"action": "speak", "text": f"Calculator opened{' and calculated: '+math_m.group(1) if math_m else ''}"})
-        return json.dumps(actions)
-
-    # ── Screenshot ──────────────────────────────────────────────────
+        tm = re.search(r'(?:write|type|say)[:\s]+(.+)',command,re.I)
+        acts = [{"action":"open_app","app":"notepad"},{"action":"wait","seconds":1}]
+        if tm: acts.append({"action":"type","text":tm.group(1)})
+        acts.append({"action":"speak","text":"Notepad opened"})
+        return json.dumps(acts)
+    if "calculator" in cmd:
+        mm = re.search(r'(\d[\d\s\+\-\*\/\(\)\.]+\d)',command)
+        acts = [{"action":"open_app","app":"calc"},{"action":"wait","seconds":1}]
+        if mm: acts += [{"action":"type","text":mm.group(1).strip()},{"action":"press_enter"}]
+        acts.append({"action":"speak","text":f"Calculator opened{' — calculated: '+mm.group(1) if mm else ''}"})
+        return json.dumps(acts)
     if "screenshot" in cmd:
-        return json.dumps([
-            {"action": "screenshot"},
-            {"action": "speak", "text": "Screenshot taken!"}
-        ])
+        return json.dumps([{"action":"screenshot"},{"action":"speak","text":"Screenshot taken!"}])
+    if "what is on" in cmd or "what's on" in cmd or "whats on" in cmd:
+        return json.dumps([{"action":"what_on_screen"}])
 
-    # ── Volume ──────────────────────────────────────────────────────
-    if "volume up" in cmd or "increase volume" in cmd or "louder" in cmd:
-        return json.dumps([{"action": "volume_up", "steps": 3}, {"action": "speak", "text": "Volume increased"}])
-    if "volume down" in cmd or "decrease volume" in cmd or "quieter" in cmd:
-        return json.dumps([{"action": "volume_down", "steps": 3}, {"action": "speak", "text": "Volume decreased"}])
-    if "mute" in cmd:
-        return json.dumps([{"action": "volume_mute"}, {"action": "speak", "text": "Muted"}])
-    if "unmute" in cmd:
-        return json.dumps([{"action": "volume_mute"}, {"action": "speak", "text": "Unmuted"}])
+    # Volume
+    if any(x in cmd for x in ["volume up","louder","increase volume"]): return json.dumps([{"action":"volume_up","steps":4},{"action":"speak","text":"Volume increased"}])
+    if any(x in cmd for x in ["volume down","quieter","decrease volume"]): return json.dumps([{"action":"volume_down","steps":4},{"action":"speak","text":"Volume decreased"}])
+    if "mute" in cmd: return json.dumps([{"action":"volume_mute"},{"action":"speak","text":"Muted"}])
+    if "unmute" in cmd: return json.dumps([{"action":"volume_mute"},{"action":"speak","text":"Unmuted"}])
 
-    # ── Time / Date ─────────────────────────────────────────────────
-    if ("time" in cmd and ("what" in cmd or "tell" in cmd)) or cmd.strip() in ["time", "what time"]:
-        now = datetime.datetime.now().strftime("%I:%M %p")
-        return json.dumps([{"action": "speak", "text": f"The current time is {now}"}])
+    # System
+    if "lock" in cmd and any(x in cmd for x in ["screen","computer"]): return json.dumps([{"action":"lock_screen"},{"action":"speak","text":"Screen locked"}])
+    if "show desktop" in cmd: return json.dumps([{"action":"show_desktop"},{"action":"speak","text":"Showing desktop"}])
+    if "task manager" in cmd: return json.dumps([{"action":"open_task_manager"},{"action":"speak","text":"Task Manager opened"}])
+    if "file explorer" in cmd: return json.dumps([{"action":"open_file_explorer"},{"action":"speak","text":"File Explorer opened"}])
+    if "close window" in cmd: return json.dumps([{"action":"close_window"},{"action":"speak","text":"Window closed"}])
+    if "fullscreen" in cmd: return json.dumps([{"action":"fullscreen"},{"action":"speak","text":"Toggled fullscreen"}])
+    if "open downloads" in cmd: return json.dumps([{"action":"open_downloads"},{"action":"speak","text":"Downloads folder opened"}])
+    if "open desktop" in cmd: return json.dumps([{"action":"open_desktop"},{"action":"speak","text":"Desktop folder opened"}])
+    if "play pause" in cmd: return json.dumps([{"action":"media_play_pause"},{"action":"speak","text":"Play/Pause"}])
+    if "next song" in cmd: return json.dumps([{"action":"media_next"},{"action":"speak","text":"Next track"}])
+    if "previous song" in cmd: return json.dumps([{"action":"media_prev"},{"action":"speak","text":"Previous track"}])
+    if "battery" in cmd: return json.dumps([{"action":"battery_status"}])
+    if "system info" in cmd: return json.dumps([{"action":"get_system_info"},{"action":"speak","text":"System information retrieved"}])
 
-    if "date" in cmd or ("today" in cmd and "task" not in cmd):
-        today = datetime.datetime.now().strftime("%A, %B %d %Y")
-        return json.dumps([{"action": "speak", "text": f"Today is {today}"}])
-
-    # ── Weather ─────────────────────────────────────────────────────
-    if "weather" in cmd:
-        city_m = re.search(r'(?:in|at|for)\s+([a-zA-Z\s]+?)(?:\s*\?|$)', command, re.I)
-        city = city_m.group(1).strip() if city_m else "my city"
-        return json.dumps([
-            {"action": "open_url", "url": f"https://google.com/search?q=weather+in+{city.replace(' ', '+')}"},
-            {"action": "speak", "text": f"Showing weather for {city}"}
-        ])
-
-    # ── Files ────────────────────────────────────────────────────────
-    if "open downloads" in cmd or "downloads folder" in cmd:
-        return json.dumps([{"action": "open_downloads"}, {"action": "speak", "text": "Downloads folder opened"}])
-    if "open desktop" in cmd or "desktop folder" in cmd:
-        return json.dumps([{"action": "open_desktop"}, {"action": "speak", "text": "Desktop opened"}])
-    if "open documents" in cmd or "documents folder" in cmd:
-        return json.dumps([{"action": "open_documents"}, {"action": "speak", "text": "Documents folder opened"}])
-    if "file explorer" in cmd:
-        return json.dumps([{"action": "open_file_explorer"}, {"action": "speak", "text": "File Explorer opened"}])
-
-    # ── System ───────────────────────────────────────────────────────
-    if "lock screen" in cmd or "lock computer" in cmd:
-        return json.dumps([{"action": "lock_screen"}, {"action": "speak", "text": "Screen locked"}])
-    if "show desktop" in cmd or "minimize all" in cmd:
-        return json.dumps([{"action": "show_desktop"}, {"action": "speak", "text": "Desktop shown"}])
-    if "task manager" in cmd:
-        return json.dumps([{"action": "open_task_manager"}, {"action": "speak", "text": "Task Manager opened"}])
-    if "settings" in cmd and ("open" in cmd or "windows" in cmd):
-        return json.dumps([{"action": "open_settings"}, {"action": "speak", "text": "Windows Settings opened"}])
-    if "close window" in cmd or "close this" in cmd:
-        return json.dumps([{"action": "close_window"}, {"action": "speak", "text": "Window closed"}])
-    if "fullscreen" in cmd or "full screen" in cmd:
-        return json.dumps([{"action": "fullscreen"}, {"action": "speak", "text": "Toggled fullscreen"}])
-
-    # ── Take note ────────────────────────────────────────────────────
-    if "take note" in cmd or "remember this" in cmd or "note that" in cmd:
-        note_m = re.search(r'(?:note|remember|note that)[:\s]+(.+)', command, re.I)
-        if note_m:
-            return json.dumps([
-                {"action": "take_note", "text": note_m.group(1)},
-                {"action": "speak", "text": "Note saved!"}
-            ])
-
-    # ── Default: Google search ────────────────────────────────────────
-    query = command.replace(" ", "+")
+    # Ask AI as fallback
     return json.dumps([
-        {"action": "open_url", "url": f"https://google.com/search?q={query}"},
-        {"action": "speak", "text": f"Searched Google for: {command}"}
+        {"action":"ask_ai","question":command},
     ])
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# TASK EXECUTOR - FULL PIPELINE
-# ═══════════════════════════════════════════════════════════════════════
-
 def execute_full_task(task: str, token: str, context: str = ""):
-    log.info(f"🎯 Task: {task}")
-    SESSION_MEMORY["last_task"] = task
-    SESSION_MEMORY["task_history"].append(task)
+    log.info(f"Task: {task}")
+    MEMORY["task_history"].append(task)
+    save_memory()
 
-    # ── Permission Check ─────────────────────────────────────────────
-    needs_perm, perm_type = needs_permission(task)
+    # Permission check
+    needs_perm, ptype = needs_permission(task)
     if needs_perm:
-        granted = ask_permission(task, perm_type)
-        if not granted:
-            speak("Task cancelled. Your security is protected.")
+        if not ask_permission(task, ptype):
+            speak("Task cancelled for your security.")
             return
 
     speak("On it!")
 
-    # ── Take screenshot for context ───────────────────────────────────
-    ss = take_screenshot(quality=70)
-
-    # ── Get AI plan ───────────────────────────────────────────────────
-    actions_json = get_ai_actions(task, token, context=context, screenshot_b64=ss)
+    # Get plan
+    actions_json = get_ai_plan(task, token, context)
 
     try:
         actions = json.loads(actions_json)
         if isinstance(actions, list) and len(actions) > 0:
-            total = len(actions)
-            non_speak = [a for a in actions if a.get("action") != "speak"]
+            non_speak = [a for a in actions if a.get("action") not in ["speak","notify"]]
             if not non_speak:
-                log.warning("AI returned only speak — using direct action")
-                actions_json = force_direct_action(task)
+                # Retry with force direct
+                actions_json = force_direct(task)
                 actions = json.loads(actions_json)
-
-            log.info(f"▶ Executing {total} steps for: {task}")
+            log.info(f"Executing {len(actions)} actions")
             execute_action_list(actions, token=token)
         else:
-            speak("Could not plan that task. Please try again with more detail.")
+            speak("I could not plan that. Please rephrase and try again.")
     except Exception as e:
-        log.error(f"Task execution error: {e}")
+        log.error(f"Task error: {e}")
         speak("Something went wrong. Please try again.")
 
-
 # ═══════════════════════════════════════════════════════════════════════
-# VOICE AGENT - ALWAYS LISTENING
+# SIRI-LIKE VOICE AGENT — ALWAYS ON 24/7
 # ═══════════════════════════════════════════════════════════════════════
+class SiriAgent:
+    """Always-on background voice agent like Siri/Google Assistant."""
 
-class VoiceAgent:
     def __init__(self, token: str):
         self.token = token
         self.running = False
-        self.recognizer = None
-        self.microphone = None
-        self.is_processing = False
+        self.processing = False
+        self.rec = None
+        self.mic = None
+        self._init_mic()
 
-        if VOICE_AVAILABLE:
-            try:
-                self.recognizer = sr.Recognizer()
-                self.recognizer.energy_threshold = 250
-                self.recognizer.dynamic_energy_threshold = True
-                self.recognizer.pause_threshold = 0.7
-                self.recognizer.phrase_threshold = 0.3
-                self.microphone = sr.Microphone()
-                print("  🎤 Calibrating microphone...")
-                with self.microphone as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=2)
-                print(f'  ✅ Mic ready! Say "{WAKE_WORD.title()}" anytime.')
-            except Exception as e:
-                print(f"  ⚠️ Microphone: {e}")
-                self.microphone = None
-        if not self.microphone:
-            print("  💬 No microphone — using TEXT mode")
-
-    def listen_continuous(self):
-        if not self.microphone:
-            return
-        print(f'\n  👂 Always listening for "{WAKE_WORD.title()}"...\n')
-        while self.running:
-            if self.is_processing:
-                time.sleep(0.05)
-                continue
-            try:
-                with self.microphone as source:
-                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=12)
-                try:
-                    text = self.recognizer.recognize_google(audio).lower()
-                    log.debug(f"Heard: {text}")
-                    if WAKE_WORD in text:
-                        command = text.replace(WAKE_WORD, "").strip()
-                        if len(command) > 2:
-                            print(f"  🗣️ Command: {command}")
-                            self.is_processing = True
-                            threading.Thread(target=self._run, args=(command,), daemon=True).start()
-                        else:
-                            speak("Yes? What would you like me to do?")
-                            self._listen_next()
-                except sr.UnknownValueError:
-                    pass
-            except sr.WaitTimeoutError:
-                pass
-            except Exception:
-                time.sleep(0.3)
-
-    def _listen_next(self):
-        if not self.microphone:
+    def _init_mic(self):
+        if not VOICE_AVAILABLE:
+            print("  ⚠️  No microphone — text mode only")
             return
         try:
-            with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
-                print("  👂 Listening...")
-                audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=20)
-            text = self.recognizer.recognize_google(audio)
-            print(f"  🗣️ You said: {text}")
-            self.is_processing = True
-            threading.Thread(target=self._run, args=(text,), daemon=True).start()
-        except sr.WaitTimeoutError:
-            speak("I didn't hear anything. Say Hey Dacexy to try again.")
-        except sr.UnknownValueError:
-            speak("Couldn't understand. Please speak clearly.")
+            self.rec = sr.Recognizer()
+            self.rec.energy_threshold = 200
+            self.rec.dynamic_energy_threshold = True
+            self.rec.dynamic_energy_adjustment_damping = 0.1
+            self.rec.pause_threshold = 0.6
+            self.rec.phrase_threshold = 0.3
+            self.rec.non_speaking_duration = 0.4
+            self.mic = sr.Microphone()
+            print("  🎤 Calibrating microphone (2 seconds)...")
+            with self.mic as src:
+                self.rec.adjust_for_ambient_noise(src, duration=2)
+            print(f'  ✅ Mic calibrated! Say "{WAKE_WORD.title()}" anytime.\n')
         except Exception as e:
-            log.error(f"Listen error: {e}")
+            print(f"  ⚠️  Mic error: {e}")
+            self.mic = None
 
-    def _run(self, command: str):
+    def _listen_once(self, timeout=1, phrase_limit=12) -> Optional[str]:
+        if not self.mic: return None
+        try:
+            with self.mic as src:
+                audio = self.rec.listen(src, timeout=timeout, phrase_time_limit=phrase_limit)
+            return self.rec.recognize_google(audio).lower()
+        except sr.WaitTimeoutError: return None
+        except sr.UnknownValueError: return None
+        except Exception: return None
+
+    def _listen_command(self, timeout=12) -> Optional[str]:
+        """Listen for the actual command after wake word."""
+        speak("Yes?")
+        try:
+            with self.mic as src:
+                self.rec.adjust_for_ambient_noise(src, duration=0.3)
+                print("  👂 Listening...")
+                audio = self.rec.listen(src, timeout=timeout, phrase_time_limit=25)
+            text = self.rec.recognize_google(audio)
+            print(f"  🗣️  You: {text}")
+            return text
+        except sr.WaitTimeoutError:
+            speak("I didn't hear anything. Try again.")
+            return None
+        except sr.UnknownValueError:
+            speak("Sorry, I didn't catch that.")
+            return None
+        except Exception as e:
+            log.error(f"Command listen error: {e}")
+            return None
+
+    def _process(self, command: str):
+        """Process a voice command in a thread."""
+        self.processing = True
         try:
             execute_full_task(command, self.token)
         finally:
-            self.is_processing = False
+            self.processing = False
 
-    def text_input_loop(self):
-        print("\n  ⌨️  Type any command and press Enter:")
-        print("  ─────────────────────────────────────────")
+    def voice_loop(self):
+        """Background thread — always listening for wake word like Siri."""
+        if not self.mic:
+            return
+        print(f'  👂 Always listening in background for "{WAKE_WORD.title()}"...\n')
+        while self.running:
+            if self.processing:
+                time.sleep(0.05)
+                continue
+            text = self._listen_once(timeout=1, phrase_limit=8)
+            if not text:
+                continue
+            if WAKE_WORD in text:
+                # Command may be inline: "Hey Dacexy open YouTube"
+                inline = text.replace(WAKE_WORD, "").strip()
+                if len(inline) > 2:
+                    print(f"  🗣️  Inline: {inline}")
+                    threading.Thread(target=self._process, args=(inline,), daemon=True).start()
+                else:
+                    # Wait for separate command
+                    cmd = self._listen_command()
+                    if cmd:
+                        threading.Thread(target=self._process, args=(cmd,), daemon=True).start()
+
+    def text_loop(self):
+        """Text input loop — type commands."""
+        print("  ⌨️  Type commands (or say 'Hey Dacexy <command>'):")
+        print("  ──────────────────────────────────────────────")
         print("  Examples:")
-        print("  → open youtube and search lofi music")
-        print("  → send email to boss@company.com subject Leave Request body I need a day off")
-        print("  → search google for best phone under 20000")
-        print("  → take a screenshot")
-        print("  → open notepad and write meeting notes for today")
-        print("  → what is the weather in bangalore")
-        print("  → open calculator and calculate 15 percent of 50000")
-        print("  ─────────────────────────────────────────\n")
+        print("    → open youtube and play lofi music")
+        print("    → send email to boss@company.com subject hello body hi there")
+        print("    → what is the weather in mumbai")
+        print("    → remember that my meeting is at 3pm")
+        print("    → take a screenshot")
+        print("    → what is on my screen")
+        print("    → search google for best restaurants near me")
+        print("    → open notepad and write a to-do list")
+        print("    → what time is it")
+        print("    → history  (see recent tasks)")
+        print("    → quit  (exit agent)")
+        print("  ──────────────────────────────────────────────\n")
 
         while self.running:
             try:
-                command = input("  dacexy > ").strip()
-                if not command:
-                    continue
-                if command.lower() in ['quit', 'exit', 'q', 'bye']:
-                    speak("Goodbye! Dacexy Agent shutting down.")
-                    self.running = False
-                    break
+                command = input("  dacexy ❯ ").strip()
+                if not command: continue
+                if command.lower() in ['quit','exit','q','bye']:
+                    speak("Goodbye! Dacexy is shutting down.")
+                    self.running = False; break
                 if command.lower() == 'history':
-                    print("\n  Task History:")
-                    for i, t in enumerate(SESSION_MEMORY["task_history"][-10:], 1):
-                        print(f"  {i}. {t}")
+                    print("\n  📋 Recent Tasks:")
+                    for i, t in enumerate(list(MEMORY["task_history"])[-10:], 1):
+                        print(f"     {i}. {t}")
                     print()
                     continue
-                if command.lower() == 'help':
-                    print("\n  Available commands:")
-                    print("  Any natural language task!")
-                    print("  'history' - show recent tasks")
-                    print("  'quit' - exit agent\n")
+                if command.lower() == 'memory':
+                    ctx = get_memory_context()
+                    print(f"\n  🧠 Memory:\n  {ctx or 'Empty'}\n")
                     continue
-                threading.Thread(target=self._run, args=(command,), daemon=True).start()
+                if command.lower().startswith('remember '):
+                    fact = command[9:]
+                    remember(fact); speak(f"Remembered: {fact}")
+                    continue
+                # Run in thread so voice stays responsive
+                threading.Thread(target=self._process, args=(command,), daemon=True).start()
             except (EOFError, KeyboardInterrupt):
-                break
+                self.running = False; break
 
     def run(self):
         self.running = True
-        if self.microphone:
-            threading.Thread(target=self.listen_continuous, daemon=True).start()
-        self.text_input_loop()
+        # Start voice in background
+        if self.mic:
+            vt = threading.Thread(target=self.voice_loop, daemon=True)
+            vt.start()
+        # Run text in foreground
+        self.text_loop()
 
     def stop(self):
         self.running = False
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # WEBSOCKET REMOTE CONTROL
 # ═══════════════════════════════════════════════════════════════════════
-
-async def agent_loop(token: str):
-    retry_delay = 3
+async def remote_loop(token: str):
+    delay = 3
     while True:
         try:
-            log.info("🔌 Connecting to Dacexy backend...")
+            log.info("🔌 Connecting to Dacexy cloud...")
             async with websockets.connect(
-                BACKEND_WS,
-                ping_interval=20,
-                ping_timeout=30,
-                open_timeout=30
+                BACKEND_WS, ping_interval=20, ping_timeout=30, open_timeout=30
             ) as ws:
                 await ws.send(json.dumps({"token": token}))
                 resp = await asyncio.wait_for(ws.recv(), timeout=15)
                 data = json.loads(resp)
 
                 if data.get("type") == "error":
-                    msg = data.get("message", "")
-                    print(f"\n  ❌ Auth failed: {msg}")
-                    if "expired" in msg.lower() or "invalid" in msg.lower():
-                        clear_token()
-                        return
-                    await asyncio.sleep(retry_delay)
-                    continue
+                    msg = data.get("message","")
+                    print(f"\n  ❌ Auth: {msg}")
+                    if any(x in msg.lower() for x in ["expired","invalid"]):
+                        clear_token(); return
+                    await asyncio.sleep(delay); continue
 
-                log.info("✅ Remote control CONNECTED!")
-                speak("Remote control connected! I am ready to work.")
-                retry_delay = 3
+                log.info("✅ Remote control connected!")
+                notify("Dacexy", "Remote control connected!")
+                delay = 3
 
-                info = execute_command({"action": "get_system_info"})
-                await ws.send(json.dumps({"type": "system_info", "data": info}))
+                # Send system info
+                info = execute_command({"action":"get_system_info"})
+                await ws.send(json.dumps({"type":"system_info","data":info}))
 
                 async for raw in ws:
                     try:
                         cmd = json.loads(raw)
-                        mtype = cmd.get("type", "")
+                        mtype = cmd.get("type","")
 
                         if mtype == "ping":
-                            await ws.send(json.dumps({"type": "pong"}))
+                            await ws.send(json.dumps({"type":"pong"}))
                             continue
 
                         if mtype == "task":
-                            task_text = cmd.get("task", "") or cmd.get("goal", "")
-                            context = cmd.get("context", "")
+                            task_text = cmd.get("task","") or cmd.get("goal","")
+                            ctx = cmd.get("context","")
                             log.info(f"📋 Remote task: {task_text}")
 
-                            def run_remote():
-                                execute_full_task(task_text, token, context=context)
+                            def run_t():
+                                execute_full_task(task_text, token, context=ctx)
 
-                            t = threading.Thread(target=run_remote, daemon=True)
-                            t.start()
-                            t.join(timeout=120)
+                            t = threading.Thread(target=run_t, daemon=True)
+                            t.start(); t.join(timeout=120)
 
                             await ws.send(json.dumps({
-                                "type": "task_result",
-                                "status": "completed",
-                                "task": task_text,
-                                "actions_taken": len(SESSION_MEMORY["task_history"])
+                                "type":"task_result","status":"completed",
+                                "task":task_text,"actions":len(MEMORY["task_history"])
                             }))
                             continue
 
                         if mtype == "command" or "action" in cmd:
-                            action = cmd.get("action", "")
-                            log.info(f"🎮 Remote command: {action}")
-
-                            # Send before screenshot
-                            if action not in ["screenshot", "get_system_info", "get_screen_info"]:
+                            act = cmd.get("action","")
+                            log.info(f"🎮 Remote: {act}")
+                            if act not in ["screenshot","get_system_info","get_screen_info"]:
                                 ss = take_screenshot()
-                                if ss:
-                                    await ws.send(json.dumps({"type": "screenshot_before", "data": ss}))
-
+                                if ss: await ws.send(json.dumps({"type":"screenshot_before","data":ss}))
                             result = execute_command(cmd, token=token)
-                            await ws.send(json.dumps({"type": "result", "action": action, "data": result}))
-
-                            # Send after screenshot
-                            await asyncio.sleep(0.5)
+                            await ws.send(json.dumps({"type":"result","action":act,"data":result}))
+                            await asyncio.sleep(0.4)
                             ss = take_screenshot()
-                            if ss:
-                                await ws.send(json.dumps({"type": "screenshot_after", "data": ss}))
+                            if ss: await ws.send(json.dumps({"type":"screenshot_after","data":ss}))
 
-                    except json.JSONDecodeError:
-                        pass
-                    except Exception as e:
-                        log.error(f"WebSocket loop error: {e}")
+                    except json.JSONDecodeError: pass
+                    except Exception as e: log.error(f"WS loop: {e}")
 
         except websockets.exceptions.ConnectionClosed:
-            log.warning("Connection closed — reconnecting...")
+            log.warning("Connection closed")
         except ConnectionRefusedError:
-            log.warning("Connection refused — backend may be sleeping...")
+            log.warning("Backend sleeping...")
         except Exception as e:
-            log.error(f"Connection error: {e}")
+            log.error(f"Remote error: {e}")
 
-        log.info(f"⏳ Reconnecting in {retry_delay}s...")
-        await asyncio.sleep(retry_delay)
-        retry_delay = min(retry_delay * 1.5, 30)
-
+        log.info(f"⏳ Retry in {delay}s...")
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 30)
 
 # ═══════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════
-
 def main():
-    print("\n╔══════════════════════════════════════════════════╗")
-    print("║       DACEXY DESKTOP AGENT v10.0                 ║")
-    print("║       World's Most Powerful AI Desktop Agent     ║")
-    print("║       120+ Actions | Vision | Voice | Security   ║")
-    print("╚══════════════════════════════════════════════════╝\n")
+    print("\n╔══════════════════════════════════════════════════════╗")
+    print("║         DACEXY Desktop Agent v11.0                  ║")
+    print("║   World's Most Powerful AI Desktop Agent            ║")
+    print("║   Like Siri — 24/7 Always On — 150+ Actions         ║")
+    print("╚══════════════════════════════════════════════════════╝\n")
 
-    # Setup Windows autostart
+    init_tts()
+    load_memory()
     setup_autostart()
 
-    # Check token
     token = get_token()
     if token:
-        print("  Checking saved session...")
-        if not check_token_valid(token):
-            print("  ⚠️ Session expired. Please login again.")
-            clear_token()
-            token = None
-        else:
+        print("  Verifying session...")
+        if check_token_valid(token):
             print("  ✅ Session valid!\n")
+        else:
+            print("  ⚠️  Session expired\n")
+            clear_token(); token = None
 
-    # Login if needed
     if not token:
         for attempt in range(3):
             token = login()
-            if token:
-                break
+            if token: break
             remaining = 2 - attempt
-            if remaining > 0:
-                print(f"  {remaining} attempts remaining.\n")
+            if remaining > 0: print(f"  {remaining} attempts left\n")
         if not token:
             input("\n  Press Enter to exit...")
             return
 
-    print(f"\n  ✅ Logged in successfully!")
-    print(f"\n  🚀 CAPABILITIES:")
-    print(f"  ├─ 🌐 Browse any website & search anything")
-    print(f"  ├─ 📧 Send emails on Gmail automatically")
-    print(f"  ├─ 📁 Open, read, create, manage files")
-    print(f"  ├─ 🖱️  Click, type, scroll anywhere on screen")
-    print(f"  ├─ 🎤 Voice control (Say '{WAKE_WORD.title()}')")
-    print(f"  ├─ 🔒 Permission system for sensitive actions")
-    print(f"  ├─ 🔄 Auto-reconnects & auto-starts on boot")
-    print(f"  ├─ 🧠 AI vision — sees and understands screen")
-    print(f"  └─ ⚡ 120+ actions for complete computer control\n")
+    print(f"\n  ✅ Logged in!")
+    print(f"\n  🚀 DACEXY CAPABILITIES:")
+    print(f"  ├─ 🌐  Browse web, search, open any site")
+    print(f"  ├─ 📧  Send emails on Gmail automatically")
+    print(f"  ├─ 📁  Manage files, read, create, search")
+    print(f"  ├─ 🖱️   Click, type, scroll anywhere")
+    print(f"  ├─ 🎤  Voice (say '{WAKE_WORD.title()}' to activate)")
+    print(f"  ├─ 🧠  Memory — remembers your preferences")
+    print(f"  ├─ 👁️   Vision — sees what's on your screen")
+    print(f"  ├─ 🔒  Smart permission system for sensitive actions")
+    print(f"  ├─ 🔄  Auto-reconnects, auto-starts on boot")
+    print(f"  └─ ⚡  150+ actions for complete computer control\n")
 
-    # Start voice agent in background
-    voice = VoiceAgent(token)
-    voice_thread = threading.Thread(target=voice.run, daemon=True)
-    voice_thread.start()
+    siri = SiriAgent(token)
 
-    speak(f"Dacexy version 10 is now active. I am the world's most powerful desktop agent. Ready for any task!")
+    speak("Dacexy version 11 is now active. I am your always-on AI assistant. Say Hey Dacexy anytime!")
 
-    # Start WebSocket remote control
+    # Run remote WebSocket in background
+    async def bg():
+        await remote_loop(token)
+
+    def run_remote():
+        asyncio.run(bg())
+
+    remote_thread = threading.Thread(target=run_remote, daemon=True)
+    remote_thread.start()
+
+    # Run Siri-like agent in foreground
     try:
-        asyncio.run(agent_loop(token))
+        siri.run()
     except KeyboardInterrupt:
-        print("\n  👋 Shutting down Dacexy Agent...")
+        print("\n  👋 Shutting down...")
         speak("Goodbye!")
-        voice.stop()
-
+        siri.stop()
 
 if __name__ == "__main__":
     main()
