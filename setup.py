@@ -1613,7 +1613,6 @@ async def google_callback(
         log_msg = str(e)[:60].replace(" ", "+")
         return RedirectResponse(f"{FRONTEND}/login?error={log_msg}")
 """)
-            
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
 import datetime
@@ -1622,7 +1621,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
-from sqlalchemy.orm.attributes import flag_modified
 from typing import Optional
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, ConversationSession, MemoryEntry, GeneratedWebsite
@@ -1647,13 +1645,13 @@ SEARCH_KEYWORDS = [
     "temperature", "rain", "forecast", "humidity"
 ]
 
-def needs_search(messages: list) -> bool:
+def needs_search(messages):
     if not messages:
         return False
     last = messages[-1]["content"].lower()
     return any(kw in last for kw in SEARCH_KEYWORDS)
 
-def needs_website(messages: list) -> bool:
+def needs_website(messages):
     if not messages:
         return False
     last = messages[-1]["content"].lower()
@@ -1661,24 +1659,18 @@ def needs_website(messages: list) -> bool:
     has_site = any(w in last for w in ["website", "landing page", "webpage", "site", "web app", "homepage"])
     return has_build and has_site
 
-def get_base_system_prompt(memory_context: str = "") -> dict:
+def get_system_prompt(memory_context=""):
     today = datetime.datetime.now().strftime("%B %d, %Y")
-    memory_section = f"\\n\\nUser context to personalize responses:\\n{memory_context}" if memory_context else ""
-    content = f"""You are Dacexy AI, a sharp and intelligent AI assistant built into the Dacexy platform. Today is {today}.
-
-RESPONSE STYLE:
-- Be direct. Answer the question first, then add context only if needed
-- Write in plain natural prose like a knowledgeable friend
-- Never use asterisks (*) for bold or bullets
-- No filler openers like "Certainly!", "Of course!", "Great question!"
-- No closing lines like "I hope this helps!", "Feel free to ask!"
-- Keep responses concise
-- Match the user language — if they write in Hindi, respond in Hindi
-
-FOR CODE:
-- Give working code directly without excessive explanation
-- Use proper code formatting{memory_section}"""
-    return {{"role": "system", "content": content}}
+    mem = ("\\n\\nUser context:\\n" + memory_context) if memory_context else ""
+    return {
+        "role": "system",
+        "content": f"""You are Dacexy AI, a sharp intelligent assistant. Today is {today}.
+- Be direct, answer first then add context
+- Plain prose, no asterisks, no ** bold, no ## headings
+- No filler like Certainly! or I hope this helps!
+- Concise responses, match user language
+- For code give working code directly{mem}"""
+    }
 
 class MessageItem(BaseModel):
     role: str
@@ -1690,16 +1682,15 @@ class ChatRequest(BaseModel):
     stream: bool = True
     model: str = "deepseek-chat"
 
-async def _save_messages(db: AsyncSession, session_id, new_messages: list):
-    """Force-save messages to DB using UPDATE statement to bypass SQLAlchemy JSON mutation detection."""
+async def force_save(db: AsyncSession, session_id: str, msgs: list):
     try:
         await db.execute(
             update(ConversationSession)
             .where(ConversationSession.id == session_id)
-            .values(messages=new_messages)
+            .values(messages=msgs)
         )
         await db.commit()
-    except Exception as e:
+    except Exception:
         try:
             await db.rollback()
         except Exception:
@@ -1712,18 +1703,18 @@ async def chat(
     db: AsyncSession = Depends(get_db),
     ai: DeepSeekProvider = Depends(get_deepseek)
 ):
-    messages = [{{"role": m.role, "content": m.content}} for m in body.messages]
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
     session = None
 
     if body.session_id:
         try:
-            result = await db.execute(
+            r = await db.execute(
                 select(ConversationSession).where(
                     ConversationSession.id == body.session_id,
                     ConversationSession.org_id == user.org_id
                 )
             )
-            session = result.scalar_one_or_none()
+            session = r.scalar_one_or_none()
         except Exception:
             session = None
 
@@ -1742,33 +1733,27 @@ async def chat(
     session_id_str = str(session.id)
 
     try:
-        memory_result = await db.execute(
-            select(MemoryEntry).where(
-                MemoryEntry.org_id == user.org_id
-            ).order_by(MemoryEntry.created_at.desc()).limit(20)
+        mr = await db.execute(
+            select(MemoryEntry)
+            .where(MemoryEntry.org_id == user.org_id)
+            .order_by(MemoryEntry.created_at.desc())
+            .limit(20)
         )
-        memories = memory_result.scalars().all()
-        memory_context = "\\n".join([f"- {m.content}" for m in memories]) if memories else ""
+        memories = mr.scalars().all()
+        memory_context = "\\n".join([f"- {m.content}" for m in memories])
     except Exception:
         memory_context = ""
 
-    system_msg = get_base_system_prompt(memory_context)
+    system_msg = get_system_prompt(memory_context)
     full_messages = [system_msg] + messages
 
     last_content = body.messages[-1].content if body.messages else ""
-    memory_keywords = [
-        "my company", "my business", "we are", "i am", "our product",
-        "my name is", "we sell", "our team", "my startup",
-        "remember that", "remember this", "save this"
-    ]
-    if any(kw in last_content.lower() for kw in memory_keywords):
+    mem_triggers = ["my company","my business","we are","i am","our product",
+                    "my name is","we sell","our team","my startup",
+                    "remember that","remember this","save this"]
+    if any(kw in last_content.lower() for kw in mem_triggers):
         try:
-            new_memory = MemoryEntry(
-                org_id=user.org_id,
-                user_id=user.id,
-                content=last_content[:500]
-            )
-            db.add(new_memory)
+            db.add(MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500]))
             await db.flush()
             await db.commit()
         except Exception:
@@ -1780,110 +1765,85 @@ async def chat(
     if website and body.stream:
         from src.application.use_cases.website.website_engine import generate_website
         prompt = body.messages[-1].content
-        record = GeneratedWebsite(
-            org_id=user.org_id,
-            user_id=user.id,
-            prompt=prompt,
-            status="generating"
-        )
+        record = GeneratedWebsite(org_id=user.org_id, user_id=user.id, prompt=prompt, status="generating")
         db.add(record)
         await db.flush()
         await db.commit()
         record_id = str(record.id)
 
         async def website_stream():
-            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id_str}}) + "\\n\\n"
-            yield "data: " + json.dumps({{"type": "chunk", "content": "Building your website...\\n\\n"}}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "session_id", "session_id": session_id_str}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "chunk", "content": "Building your website...\\n\\n"}) + "\\n\\n"
             try:
                 html = await generate_website(prompt, ai)
-                try:
-                    await db.execute(
-                        update(GeneratedWebsite)
-                        .where(GeneratedWebsite.id == record.id)
-                        .values(html_content=html, status="completed")
-                    )
-                    await db.commit()
-                except Exception:
-                    pass
+                await db.execute(
+                    update(GeneratedWebsite)
+                    .where(GeneratedWebsite.id == record.id)
+                    .values(html_content=html, status="completed")
+                )
+                await db.commit()
                 preview_url = "/api/v1/websites/" + record_id + "/preview"
                 msg = "Your website is ready! Preview: " + preview_url + "\\n\\nClick Open to view it."
-                yield "data: " + json.dumps({{"type": "chunk", "content": msg}}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": msg}) + "\\n\\n"
             except Exception as e:
                 try:
-                    await db.execute(
-                        update(GeneratedWebsite)
-                        .where(GeneratedWebsite.id == record.id)
-                        .values(status="failed")
-                    )
+                    await db.execute(update(GeneratedWebsite).where(GeneratedWebsite.id == record.id).values(status="failed"))
                     await db.commit()
                 except Exception:
                     pass
-                yield "data: " + json.dumps({{"type": "chunk", "content": "Website generation failed: " + str(e)}}) + "\\n\\n"
-            yield "data: " + json.dumps({{"type": "done"}}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": "Website generation failed: " + str(e)}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "done"}) + "\\n\\n"
 
         return StreamingResponse(website_stream(), media_type="text/event-stream")
 
     if body.stream:
         async def event_stream():
             full = ""
-            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id_str}}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "session_id", "session_id": session_id_str}) + "\\n\\n"
             if search:
-                yield "data: " + json.dumps({{"type": "chunk", "content": "Searching the web...\\n\\n"}}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": "Searching the web...\\n\\n"}) + "\\n\\n"
             try:
                 async for chunk in await ai.chat(full_messages, model=body.model, stream=True, search=search):
                     full += chunk
-                    yield "data: " + json.dumps({{"type": "chunk", "content": chunk}}) + "\\n\\n"
+                    yield "data: " + json.dumps({"type": "chunk", "content": chunk}) + "\\n\\n"
             except Exception as e:
-                yield "data: " + json.dumps({{"type": "chunk", "content": "Something went wrong: " + str(e)}}) + "\\n\\n"
-            yield "data: " + json.dumps({{"type": "done"}}) + "\\n\\n"
+                yield "data: " + json.dumps({"type": "chunk", "content": "AI error: " + str(e)}) + "\\n\\n"
+            yield "data: " + json.dumps({"type": "done"}) + "\\n\\n"
             if full:
-                # BUILD completely new list — never mutate existing
-                existing = []
                 try:
                     r2 = await db.execute(
-                        select(ConversationSession).where(
-                            ConversationSession.id == session_id_str
-                        )
+                        select(ConversationSession).where(ConversationSession.id == session_id_str)
                     )
                     s2 = r2.scalar_one_or_none()
+                    existing = []
                     if s2 and isinstance(s2.messages, list):
-                        existing = [
-                            m for m in s2.messages
-                            if isinstance(m, dict) and m.get("role") != "system"
-                        ]
+                        existing = [m for m in s2.messages if isinstance(m, dict) and m.get("role") != "system"]
+                    existing.append({"role": "user", "content": last_content})
+                    existing.append({"role": "assistant", "content": full})
+                    await force_save(db, session_id_str, existing)
                 except Exception:
-                    existing = list(messages)
-                new_msgs = existing + [{{"role": "assistant", "content": full}}]
-                await _save_messages(db, session_id_str, new_msgs)
+                    pass
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    # Non-streaming
     try:
         response = await ai.chat(full_messages, model=body.model, stream=False, search=search)
     except Exception as e:
         raise HTTPException(500, f"AI error: {str(e)}")
 
-    existing = []
     try:
-        r2 = await db.execute(
-            select(ConversationSession).where(
-                ConversationSession.id == session_id_str
-            )
-        )
+        r2 = await db.execute(select(ConversationSession).where(ConversationSession.id == session_id_str))
         s2 = r2.scalar_one_or_none()
+        existing = []
         if s2 and isinstance(s2.messages, list):
-            existing = [
-                m for m in s2.messages
-                if isinstance(m, dict) and m.get("role") != "system"
-            ]
+            existing = [m for m in s2.messages if isinstance(m, dict) and m.get("role") != "system"]
+        existing.append({"role": "user", "content": last_content})
+        existing.append({"role": "assistant", "content": response})
+        await force_save(db, session_id_str, existing)
     except Exception:
-        existing = list(messages)
+        pass
 
-    new_msgs = existing + [{{"role": "assistant", "content": response}}]
-    await _save_messages(db, session_id_str, new_msgs)
-
-    return {{"content": response, "session_id": session_id_str}}
+    return {"content": response, "session_id": session_id_str}
 
 @router.get("/sessions")
 async def list_sessions(
@@ -1892,24 +1852,25 @@ async def list_sessions(
 ):
     try:
         result = await db.execute(
-            select(ConversationSession).where(
-                ConversationSession.org_id == user.org_id
-            ).order_by(ConversationSession.updated_at.desc()).limit(50)
+            select(ConversationSession)
+            .where(ConversationSession.org_id == user.org_id)
+            .order_by(ConversationSession.updated_at.desc())
+            .limit(50)
         )
         rows = result.scalars().all()
         out = []
         for s in rows:
             try:
-                out.append({{
+                out.append({
                     "id": str(s.id),
                     "title": s.title or "New Chat",
                     "created_at": str(s.created_at)
-                }})
+                })
             except Exception:
                 continue
-        return {{"sessions": out, "total": len(out)}}
+        return {"sessions": out, "total": len(out)}
     except Exception:
-        return {{"sessions": [], "total": 0}}
+        return {"sessions": [], "total": 0}
 
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(
@@ -1927,25 +1888,21 @@ async def get_messages(
         session = result.scalar_one_or_none()
         if not session:
             raise HTTPException(404, "Session not found")
-        messages = session.messages or []
-        if not isinstance(messages, list):
-            messages = []
+        msgs = session.messages or []
+        if not isinstance(msgs, list):
+            msgs = []
         clean = [
-            m for m in messages
+            m for m in msgs
             if isinstance(m, dict)
             and m.get("role") != "system"
             and str(m.get("content", "")).strip()
         ]
-        return {{
-            "messages": clean,
-            "session_id": str(session.id),
-            "title": session.title or "Chat"
-        }}
+        return {"messages": clean, "session_id": str(session.id), "title": session.title or "Chat"}
     except HTTPException:
         raise
     except Exception:
-        return {{"messages": [], "session_id": session_id, "title": "Chat"}}
-''')
+        return {"messages": [], "session_id": session_id, "title": "Chat"}
+''')            
     
 w("src/interfaces/http/routes/orgs.py", """
 import secrets
