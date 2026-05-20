@@ -1621,7 +1621,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.orm.attributes import flag_modified
 from typing import Optional
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, ConversationSession, MemoryEntry, GeneratedWebsite
@@ -1665,26 +1666,18 @@ def get_base_system_prompt(memory_context: str = "") -> dict:
     memory_section = f"\\n\\nUser context to personalize responses:\\n{memory_context}" if memory_context else ""
     content = f"""You are Dacexy AI, a sharp and intelligent AI assistant built into the Dacexy platform. Today is {today}.
 
-RESPONSE STYLE — FOLLOW STRICTLY:
+RESPONSE STYLE:
 - Be direct. Answer the question first, then add context only if needed
 - Write in plain natural prose like a knowledgeable friend
-- Never use asterisks (*) for bold or bullets in your responses
-- Never use excessive symbols like **text**, _text_, or ##headings
-- No filler openers like "Certainly!", "Of course!", "Great question!", "Sure!", "Absolutely!"
-- No closing lines like "I hope this helps!", "Feel free to ask!", "Let me know if you need more!"
-- Keep responses concise — short answers for simple questions, detailed only when necessary
-- Use numbered lists or plain bullet points only when the user explicitly asks for a list
-- Match the user language — if they write in Hindi, respond in Hindi naturally
+- Never use asterisks (*) for bold or bullets
+- No filler openers like "Certainly!", "Of course!", "Great question!"
+- No closing lines like "I hope this helps!", "Feel free to ask!"
+- Keep responses concise
+- Match the user language — if they write in Hindi, respond in Hindi
 
-FOR NEWS, SPORTS, PRICES, CURRENT EVENTS:
-- Always use the most recent information from web search when available
-- Today is {today} — never present information from 2022 or 2023 as current
-- For sports scores, election results, stock prices — clearly state you are showing the latest available data
-- If you do not have current data, say so clearly and briefly
-
-FOR CODE AND TECHNICAL QUESTIONS:
-- Give working code directly without excessive explanation unless asked
-- Use proper code formatting with language labels{memory_section}"""
+FOR CODE:
+- Give working code directly without excessive explanation
+- Use proper code formatting{memory_section}"""
     return {{"role": "system", "content": content}}
 
 class MessageItem(BaseModel):
@@ -1696,6 +1689,21 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     stream: bool = True
     model: str = "deepseek-chat"
+
+async def _save_messages(db: AsyncSession, session_id, new_messages: list):
+    """Force-save messages to DB using UPDATE statement to bypass SQLAlchemy JSON mutation detection."""
+    try:
+        await db.execute(
+            update(ConversationSession)
+            .where(ConversationSession.id == session_id)
+            .values(messages=new_messages)
+        )
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 @router.post("/chat")
 async def chat(
@@ -1729,9 +1737,9 @@ async def chat(
         )
         db.add(session)
         await db.flush()
+        await db.commit()
 
-    search = needs_search(messages)
-    website = needs_website(messages)
+    session_id_str = str(session.id)
 
     try:
         memory_result = await db.execute(
@@ -1762,10 +1770,12 @@ async def chat(
             )
             db.add(new_memory)
             await db.flush()
+            await db.commit()
         except Exception:
             pass
 
-    session_id_str = str(session.id)
+    search = needs_search(messages)
+    website = needs_website(messages)
 
     if website and body.stream:
         from src.application.use_cases.website.website_engine import generate_website
@@ -1778,6 +1788,7 @@ async def chat(
         )
         db.add(record)
         await db.flush()
+        await db.commit()
         record_id = str(record.id)
 
         async def website_stream():
@@ -1785,15 +1796,25 @@ async def chat(
             yield "data: " + json.dumps({{"type": "chunk", "content": "Building your website...\\n\\n"}}) + "\\n\\n"
             try:
                 html = await generate_website(prompt, ai)
-                record.html_content = html
-                record.status = "completed"
-                await db.commit()
+                try:
+                    await db.execute(
+                        update(GeneratedWebsite)
+                        .where(GeneratedWebsite.id == record.id)
+                        .values(html_content=html, status="completed")
+                    )
+                    await db.commit()
+                except Exception:
+                    pass
                 preview_url = "/api/v1/websites/" + record_id + "/preview"
                 msg = "Your website is ready! Preview: " + preview_url + "\\n\\nClick Open to view it."
                 yield "data: " + json.dumps({{"type": "chunk", "content": msg}}) + "\\n\\n"
             except Exception as e:
                 try:
-                    record.status = "failed"
+                    await db.execute(
+                        update(GeneratedWebsite)
+                        .where(GeneratedWebsite.id == record.id)
+                        .values(status="failed")
+                    )
                     await db.commit()
                 except Exception:
                     pass
@@ -1815,28 +1836,52 @@ async def chat(
             except Exception as e:
                 yield "data: " + json.dumps({{"type": "chunk", "content": "Something went wrong: " + str(e)}}) + "\\n\\n"
             yield "data: " + json.dumps({{"type": "done"}}) + "\\n\\n"
-            try:
-                saved = list(messages)
-                saved.append({{"role": "assistant", "content": full}})
-                session.messages = saved
-                await db.commit()
-            except Exception:
-                pass
+            if full:
+                # BUILD completely new list — never mutate existing
+                existing = []
+                try:
+                    r2 = await db.execute(
+                        select(ConversationSession).where(
+                            ConversationSession.id == session_id_str
+                        )
+                    )
+                    s2 = r2.scalar_one_or_none()
+                    if s2 and isinstance(s2.messages, list):
+                        existing = [
+                            m for m in s2.messages
+                            if isinstance(m, dict) and m.get("role") != "system"
+                        ]
+                except Exception:
+                    existing = list(messages)
+                new_msgs = existing + [{{"role": "assistant", "content": full}}]
+                await _save_messages(db, session_id_str, new_msgs)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+    # Non-streaming
     try:
         response = await ai.chat(full_messages, model=body.model, stream=False, search=search)
     except Exception as e:
         raise HTTPException(500, f"AI error: {str(e)}")
 
+    existing = []
     try:
-        saved = list(messages)
-        saved.append({{"role": "assistant", "content": response}})
-        session.messages = saved
-        await db.commit()
+        r2 = await db.execute(
+            select(ConversationSession).where(
+                ConversationSession.id == session_id_str
+            )
+        )
+        s2 = r2.scalar_one_or_none()
+        if s2 and isinstance(s2.messages, list):
+            existing = [
+                m for m in s2.messages
+                if isinstance(m, dict) and m.get("role") != "system"
+            ]
     except Exception:
-        pass
+        existing = list(messages)
+
+    new_msgs = existing + [{{"role": "assistant", "content": response}}]
+    await _save_messages(db, session_id_str, new_msgs)
 
     return {{"content": response, "session_id": session_id_str}}
 
@@ -1851,20 +1896,19 @@ async def list_sessions(
                 ConversationSession.org_id == user.org_id
             ).order_by(ConversationSession.updated_at.desc()).limit(50)
         )
-        # FIX: use scalars().all() correctly — was crashing with unhashable dict
-        sessions = result.scalars().all()
-        session_list = []
-        for s in sessions:
+        rows = result.scalars().all()
+        out = []
+        for s in rows:
             try:
-                session_list.append({{
+                out.append({{
                     "id": str(s.id),
                     "title": s.title or "New Chat",
                     "created_at": str(s.created_at)
                 }})
             except Exception:
                 continue
-        return {{"sessions": session_list, "total": len(session_list)}}
-    except Exception as e:
+        return {{"sessions": out, "total": len(out)}}
+    except Exception:
         return {{"sessions": [], "total": 0}}
 
 @router.get("/sessions/{session_id}/messages")
@@ -1890,13 +1934,16 @@ async def get_messages(
             m for m in messages
             if isinstance(m, dict)
             and m.get("role") != "system"
-            and m.get("content")
             and str(m.get("content", "")).strip()
         ]
-        return {{"messages": clean, "session_id": str(session.id), "title": session.title or "Chat"}}
+        return {{
+            "messages": clean,
+            "session_id": str(session.id),
+            "title": session.title or "Chat"
+        }}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         return {{"messages": [], "session_id": session_id, "title": "Chat"}}
 ''')
     
