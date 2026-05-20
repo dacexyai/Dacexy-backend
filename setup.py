@@ -585,7 +585,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
-    
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import urllib.parse
@@ -619,21 +618,21 @@ def get_category(prompt: str) -> str:
     p = prompt.lower()
     if any(x in p for x in ["restaurant","food","cafe","kitchen","dining","menu","eat","chef","pizza","hotel","bakery","cuisine"]): return "restaurant"
     if any(x in p for x in ["saas","software","app","platform","tech","startup","ai","tool","dashboard","crm","b2b"]): return "saas"
-    if any(x in p for x in ["portfolio","designer","freelance","artist","creative","photography","studio","agency creative"]): return "portfolio"
+    if any(x in p for x in ["portfolio","designer","freelance","artist","creative","photography","studio"]): return "portfolio"
     if any(x in p for x in ["shop","store","ecommerce","product","sell","buy","fashion","clothing","brand","retail"]): return "ecommerce"
-    if any(x in p for x in ["agency","marketing","consultant","service","firm","company","corporate","enterprise"]): return "agency"
+    if any(x in p for x in ["agency","marketing","consultant","service","firm","corporate","enterprise"]): return "agency"
     if any(x in p for x in ["fitness","gym","health","wellness","yoga","trainer","sport","workout"]): return "fitness"
     return "business"
 
 def get_palette(category: str) -> dict:
     palettes = {
-        "restaurant": {"primary":"#C8102E","secondary":"#FF6B35","dark":"#1A0A00","light":"#FFF8F0","accent":"#FFD700"},
-        "saas": {"primary":"#6366F1","secondary":"#8B5CF6","dark":"#0F0A1E","light":"#F0F0FF","accent":"#06B6D4"},
-        "portfolio": {"primary":"#0F172A","secondary":"#334155","dark":"#020617","light":"#F8FAFC","accent":"#F59E0B"},
-        "ecommerce": {"primary":"#059669","secondary":"#10B981","dark":"#022C22","light":"#ECFDF5","accent":"#F97316"},
-        "agency": {"primary":"#DC2626","secondary":"#EF4444","dark":"#0A0000","light":"#FFF5F5","accent":"#FBBF24"},
-        "fitness": {"primary":"#EA580C","secondary":"#F97316","dark":"#0C0500","light":"#FFF7ED","accent":"#22C55E"},
-        "business": {"primary":"#2563EB","secondary":"#3B82F6","dark":"#020617","light":"#EFF6FF","accent":"#F59E0B"},
+        "restaurant": {"primary":"#C8102E","secondary":"#FF6B35","dark":"#0D0500","light":"#FFF8F0","accent":"#FFD700","grad1":"#1A0800","grad2":"#C8102E"},
+        "saas": {"primary":"#6366F1","secondary":"#8B5CF6","dark":"#0A0A1A","light":"#F0F0FF","accent":"#06B6D4","grad1":"#0A0A1A","grad2":"#1E1B4B"},
+        "portfolio": {"primary":"#F59E0B","secondary":"#EF4444","dark":"#0A0A0A","light":"#FAFAFA","accent":"#10B981","grad1":"#0A0A0A","grad2":"#1C1917"},
+        "ecommerce": {"primary":"#059669","secondary":"#10B981","dark":"#022C22","light":"#ECFDF5","accent":"#F97316","grad1":"#022C22","grad2":"#064E3B"},
+        "agency": {"primary":"#DC2626","secondary":"#F97316","dark":"#0A0000","light":"#FFF5F5","accent":"#FBBF24","grad1":"#0A0000","grad2":"#1C0A00"},
+        "fitness": {"primary":"#EA580C","secondary":"#F97316","dark":"#0C0500","light":"#FFF7ED","accent":"#22C55E","grad1":"#0C0500","grad2":"#1C0A00"},
+        "business": {"primary":"#2563EB","secondary":"#7C3AED","dark":"#020617","light":"#EFF6FF","accent":"#F59E0B","grad1":"#020617","grad2":"#0F172A"},
     }
     return palettes.get(category, palettes["business"])
 
@@ -642,718 +641,406 @@ def build_template(prompt: str) -> str:
     category = get_category(prompt)
     p = get_palette(category)
     seed = abs(hash(prompt)) % 99999
-    encoded = urllib.parse.quote(prompt[:60])
+    enc = urllib.parse.quote(prompt[:60])
 
     imgs = {
-        "hero": f"https://image.pollinations.ai/prompt/ultra_realistic_professional_{encoded}_hero_cinematic_4k?width=1400&height=700&seed={seed}&nologo=true&model=flux",
-        "about": f"https://image.pollinations.ai/prompt/professional_{encoded}_team_modern_office?width=800&height=600&seed={seed+1}&nologo=true&model=flux",
-        "s1": f"https://image.pollinations.ai/prompt/{encoded}_product_showcase_elegant?width=700&height=500&seed={seed+2}&nologo=true&model=flux",
-        "s2": f"https://image.pollinations.ai/prompt/{encoded}_service_professional?width=700&height=500&seed={seed+3}&nologo=true&model=flux",
-        "s3": f"https://image.pollinations.ai/prompt/{encoded}_result_success?width=700&height=500&seed={seed+4}&nologo=true&model=flux",
+        "hero": f"https://image.pollinations.ai/prompt/ultra_realistic_cinematic_{enc}_hero_4k_dramatic_lighting?width=1600&height=900&seed={seed}&nologo=true&model=flux",
+        "about": f"https://image.pollinations.ai/prompt/professional_{enc}_modern_premium?width=900&height=700&seed={seed+1}&nologo=true&model=flux",
+        "g1": f"https://image.pollinations.ai/prompt/{enc}_showcase_elegant_premium?width=800&height=600&seed={seed+2}&nologo=true&model=flux",
+        "g2": f"https://image.pollinations.ai/prompt/{enc}_detail_luxury_close?width=800&height=600&seed={seed+3}&nologo=true&model=flux",
+        "g3": f"https://image.pollinations.ai/prompt/{enc}_lifestyle_aspirational?width=800&height=600&seed={seed+4}&nologo=true&model=flux",
+        "g4": f"https://image.pollinations.ai/prompt/{enc}_product_hero_premium?width=800&height=600&seed={seed+5}&nologo=true&model=flux",
     }
 
-    categories_data = {
+    data = {
         "restaurant": {
-            "tagline": f"Where Every Bite Tells a Story",
-            "sub": f"Experience authentic flavors crafted with passion at {name}. Fresh ingredients, timeless recipes, unforgettable moments.",
-            "cta": "Reserve Your Table",
-            "cta2": "View Our Menu",
-            "services_title": "Our Specialties",
-            "services": [
-                ("🍽️","Fine Dining","Exquisite multi-course meals crafted by award-winning chefs using the finest seasonal ingredients."),
-                ("🍷","Premium Bar","Curated wine cellar and craft cocktails to complement your dining experience perfectly."),
-                ("🎂","Private Events","Intimate celebrations, corporate dinners, and special occasions in our exclusive private dining rooms."),
-                ("🚗","Valet & Delivery","Complimentary valet parking and premium home delivery for your convenience."),
-            ],
-            "stats": [("15+","Years of Excellence"),("50K+","Happy Guests"),("4.9★","Average Rating"),("200+","Menu Items")],
-            "testimonials": [
-                ("Arjun Mehta","Food Critic","The best dining experience in the city. Every dish is a masterpiece of flavour and presentation."),
-                ("Priya Sharma","Regular Guest","We celebrate every anniversary here. The ambiance and food never disappoint — pure magic."),
-                ("Rahul Singh","Corporate Client","Our team events here are always exceptional. The private dining rooms are world-class."),
-            ],
+            "tagline":"Where Every Bite Tells a Story",
+            "sub":f"Experience authentic flavours crafted with passion at {name}. Fresh ingredients, timeless recipes, unforgettable moments.",
+            "cta":"Reserve Your Table","cta2":"View Our Menu",
+            "about_title":"A Legacy of Flavour","about_sub":f"Founded with a single vision — to serve food that moves people. At {name}, every dish is a love letter to tradition, reimagined for the modern palate.",
+            "services_title":"Our Specialties",
+            "services":[("🍽️","Fine Dining","Exquisite multi-course meals by award-winning chefs using the finest seasonal ingredients."),("🍷","Premium Bar","Curated wine cellar and craft cocktails to complement your dining experience."),("🎂","Private Events","Intimate celebrations and corporate dinners in exclusive private dining rooms."),("🚗","Delivery","Premium home delivery — restaurant quality, at your doorstep.")],
+            "stats":[("15+","Years of Excellence"),("50K+","Happy Guests"),("4.9★","Average Rating"),("200+","Menu Items")],
+            "testimonials":[("Arjun Mehta","Food Critic","The finest dining experience in the city. Every dish is a masterpiece of flavour and art."),("Priya Sharma","Regular Guest","We celebrate every anniversary here. The ambiance and food never disappoint."),("Rahul Singh","Corporate Client","Our team events here are always exceptional. Truly world-class.")],
         },
         "saas": {
-            "tagline": f"The Platform That Powers Your Growth",
-            "sub": f"{name} gives your team the AI-powered tools to move faster, work smarter, and scale without limits.",
-            "cta": "Start Free Trial",
-            "cta2": "Watch Demo",
-            "services_title": "Core Features",
-            "services": [
-                ("⚡","10x Faster","Automated workflows that eliminate manual work and accelerate every process in your business."),
-                ("🤖","AI-Powered","Smart automation learns from your data and optimises processes without any configuration needed."),
-                ("🔒","Enterprise Security","SOC2 compliant with end-to-end encryption, SSO, and granular permission controls built in."),
-                ("📊","Real-time Analytics","Beautiful dashboards with actionable insights — see what matters most, instantly."),
-            ],
-            "stats": [("10K+","Teams Using"),("99.9%","Uptime SLA"),("10x","Faster Results"),("4.8★","G2 Rating")],
-            "testimonials": [
-                ("Sarah Chen","CTO, TechFlow","We cut our operational costs by 60% in the first month. Absolutely transformative platform."),
-                ("Marcus Johnson","CEO, ScaleUp","The ROI was immediate. Our team ships 3x faster and customer satisfaction is at an all-time high."),
-                ("Aisha Patel","VP Engineering","Best developer experience we have ever had. The API is clean and the support is world-class."),
-            ],
+            "tagline":"The Platform That Powers Your Growth",
+            "sub":f"{name} gives teams AI-powered tools to move faster, work smarter, and scale without limits.",
+            "cta":"Start Free Trial","cta2":"Watch Demo",
+            "about_title":"Built for Scale","about_sub":f"{name} was built by engineers who were tired of duct-taping together broken tools. One platform. Every workflow. Zero compromise.",
+            "services_title":"Core Features",
+            "services":[("⚡","10x Faster","Automated workflows that eliminate manual work and accelerate every process."),("🤖","AI-Powered","Smart automation learns from your data and optimises without configuration."),("🔒","Enterprise Security","SOC2 compliant with end-to-end encryption and granular permissions."),("📊","Real-time Analytics","Beautiful dashboards with actionable insights — see what matters, instantly.")],
+            "stats":[("10K+","Teams Using"),("99.9%","Uptime SLA"),("10x","Faster Results"),("4.8★","G2 Rating")],
+            "testimonials":[("Sarah Chen","CTO, TechFlow","We cut operational costs by 60% in the first month. Absolutely transformative."),("Marcus Johnson","CEO, ScaleUp","The ROI was immediate. Our team ships 3x faster now."),("Aisha Patel","VP Engineering","Best developer experience we have ever had. World-class support.")],
         },
         "portfolio": {
-            "tagline": f"Crafting Digital Experiences That Matter",
-            "sub": f"I design and build exceptional digital products. Every pixel, every interaction, every line of code — crafted with purpose.",
-            "cta": "View My Work",
-            "cta2": "Let's Collaborate",
-            "services_title": "What I Do",
-            "services": [
-                ("🎨","UI/UX Design","Human-centred design that converts. From wireframes to pixel-perfect interfaces users love."),
-                ("💻","Web Development","Clean, performant code in React, Next.js and modern frameworks. Fast, accessible, scalable."),
-                ("📱","Mobile Apps","Native iOS and Android apps plus cross-platform solutions that delight users on every device."),
-                ("🚀","Brand Identity","Complete visual identities — logo, typography, colour systems, and brand guidelines."),
-            ],
-            "stats": [("50+","Projects Delivered"),("30+","Happy Clients"),("5★","Average Rating"),("8+","Years Experience")],
-            "testimonials": [
-                ("David Park","Founder, Launchpad","Exceptional work. Delivered beyond our expectations and on time. Will work together again."),
-                ("Emma Wilson","Marketing Director","Our conversion rate increased by 240% after the redesign. Truly world-class design talent."),
-                ("Carlos Rivera","CEO, Momentum","The best investment we made this year. The new brand completely transformed our market position."),
-            ],
+            "tagline":"Crafting Digital Experiences That Matter",
+            "sub":"I design and build exceptional digital products. Every pixel, every interaction — crafted with purpose.",
+            "cta":"View My Work","cta2":"Let's Collaborate",
+            "about_title":"Design With Intent","about_sub":"I believe great design is invisible. It just works. After 8 years and 50+ projects, I have learned that the best solutions are always the simplest ones.",
+            "services_title":"What I Do",
+            "services":[("🎨","UI/UX Design","Human-centred design that converts. From wireframes to pixel-perfect interfaces."),("💻","Web Development","Clean, performant code in React and Next.js. Fast, accessible, scalable."),("📱","Mobile Apps","Native iOS and Android apps that delight users on every device."),("🚀","Brand Identity","Complete visual identities — logo, typography, colour systems, guidelines.")],
+            "stats":[("50+","Projects Delivered"),("30+","Happy Clients"),("5★","Average Rating"),("8+","Years Experience")],
+            "testimonials":[("David Park","Founder, Launchpad","Exceptional work. Delivered beyond expectations and on time. Truly outstanding."),("Emma Wilson","Marketing Director","Our conversion rate increased by 240% after the redesign. World-class talent."),("Carlos Rivera","CEO, Momentum","The best investment we made this year. Completely transformed our market position.")],
         },
         "ecommerce": {
-            "tagline": f"Premium Quality, Delivered to Your Door",
-            "sub": f"Discover {name}'s carefully curated collection. Free shipping on all orders. 30-day returns. Shop with confidence.",
-            "cta": "Shop Collection",
-            "cta2": "View Lookbook",
-            "services_title": "Why Shop With Us",
-            "services": [
-                ("🚚","Free Shipping","Free express delivery on all orders above ₹999. Get your order within 2-3 business days."),
-                ("✅","Quality Assured","Every product passes our 47-point quality check before it reaches your doorstep."),
-                ("↩️","Easy Returns","Hassle-free 30-day returns. No questions asked. Full refund guaranteed."),
-                ("💳","Secure Checkout","UPI, cards, EMI, COD — all payment methods accepted with bank-grade security."),
-            ],
-            "stats": [("50K+","Happy Customers"),("10K+","Products"),("4.9★","Average Rating"),("99%","Satisfaction"),],
-            "testimonials": [
-                ("Sneha Gupta","Verified Buyer","Amazing quality! Exactly as described and delivered in 2 days. Will definitely shop again."),
-                ("Vikram Nair","Premium Member","Been shopping here for 3 years. Quality is consistently excellent and service is top-notch."),
-                ("Divya Krishnan","Style Blogger","My go-to store for premium finds. The curation is impeccable and prices are fair."),
-            ],
+            "tagline":"Premium Quality, Delivered to Your Door",
+            "sub":f"Discover {name}'s curated collection. Free shipping. 30-day returns. Shop with complete confidence.",
+            "cta":"Shop Collection","cta2":"View Lookbook",
+            "about_title":"Quality You Can Feel","about_sub":f"Every product at {name} passes our 47-point quality check. We source only the finest materials and work with artisans who share our obsession with excellence.",
+            "services_title":"Why Shop With Us",
+            "services":[("🚚","Free Shipping","Free express delivery on all orders. Get your order within 2-3 business days."),("✅","Quality Assured","Every product passes our 47-point quality check before reaching your door."),("↩️","Easy Returns","Hassle-free 30-day returns. No questions asked. Full refund guaranteed."),("💳","Secure Checkout","UPI, cards, EMI, COD — all payment methods with bank-grade security.")],
+            "stats":[("50K+","Happy Customers"),("10K+","Products"),("4.9★","Average Rating"),("99%","Satisfaction")],
+            "testimonials":[("Sneha Gupta","Verified Buyer","Amazing quality! Exactly as described, delivered in 2 days. Will shop again."),("Vikram Nair","Premium Member","Been shopping here 3 years. Quality is consistently excellent."),("Divya Krishnan","Style Blogger","My go-to store for premium finds. The curation is impeccable.")],
         },
         "agency": {
-            "tagline": f"We Build Brands That Dominate Markets",
-            "sub": f"{name} is a full-service agency that transforms businesses through strategy, creative, and technology that actually works.",
-            "cta": "Get a Proposal",
-            "cta2": "See Our Work",
-            "services_title": "Our Services",
-            "services": [
-                ("📈","Growth Strategy","Data-driven strategies that have helped 100+ brands achieve explosive, sustainable growth."),
-                ("🎯","Performance Marketing","ROI-focused campaigns across Google, Meta, and programmatic that consistently beat benchmarks."),
-                ("🌐","Digital Products","We build websites, apps, and platforms that convert visitors into loyal, paying customers."),
-                ("✍️","Content & Creative","Storytelling that connects emotionally and drives action — from brand film to social content."),
-            ],
-            "stats": [("100+","Brands Grown"),("₹50Cr+","Revenue Generated"),("4.9★","Client Rating"),("8+","Years Experience")],
-            "testimonials": [
-                ("Ankit Joshi","CMO, GrowthBrand","They tripled our qualified leads in 90 days. Best agency we have ever partnered with."),
-                ("Meera Kapoor","Founder, StyleCo","The rebrand completely transformed how the market perceives us. Revenue up 180% YoY."),
-                ("Rajesh Patel","CEO, TechStart","From strategy to execution — they are a true growth partner. Exceptional results every time."),
-            ],
+            "tagline":"We Build Brands That Dominate Markets",
+            "sub":f"{name} is a full-service agency that transforms businesses through strategy, creative, and technology.",
+            "cta":"Get a Proposal","cta2":"See Our Work",
+            "about_title":"Strategy Meets Execution","about_sub":f"We are not a typical agency. We embed ourselves in your mission, move at startup speed, and deliver enterprise-grade results. That is the {name} difference.",
+            "services_title":"Our Services",
+            "services":[("📈","Growth Strategy","Data-driven strategies that have helped 100+ brands achieve explosive growth."),("🎯","Performance Marketing","ROI-focused campaigns across Google and Meta that consistently beat benchmarks."),("🌐","Digital Products","Websites, apps, and platforms that convert visitors into paying customers."),("✍️","Content & Creative","Storytelling that connects emotionally and drives action at every touchpoint.")],
+            "stats":[("100+","Brands Grown"),("₹50Cr+","Revenue Generated"),("4.9★","Client Rating"),("8+","Years Experience")],
+            "testimonials":[("Ankit Joshi","CMO, GrowthBrand","They tripled our qualified leads in 90 days. Best agency we have ever worked with."),("Meera Kapoor","Founder, StyleCo","The rebrand transformed how the market perceives us. Revenue up 180% YoY."),("Rajesh Patel","CEO, TechStart","From strategy to execution — a true growth partner. Exceptional results every time.")],
         },
         "fitness": {
-            "tagline": f"Transform Your Body, Elevate Your Life",
-            "sub": f"Join {name} and unlock your true potential. Expert coaching, state-of-the-art facilities, and a community that pushes you further.",
-            "cta": "Start Free Trial",
-            "cta2": "View Programs",
-            "services_title": "Our Programs",
-            "services": [
-                ("💪","Strength Training","Progressive overload programs designed by elite coaches to build real, lasting strength."),
-                ("🏃","Cardio & HIIT","High-intensity programs that torch calories, improve endurance, and keep you energised all day."),
-                ("🧘","Mind & Body","Yoga, meditation, and mobility work to balance your training and optimise recovery."),
-                ("🥗","Nutrition Coaching","Personalised meal plans and nutrition coaching to fuel your transformation from the inside out."),
-            ],
-            "stats": [("5K+","Members"),("50+","Expert Trainers"),("98%","Success Rate"),("4.9★","Member Rating")],
-            "testimonials": [
-                ("Kiran Rao","Member since 2022","Lost 20kg in 6 months. The trainers here are exceptional and the community keeps you motivated."),
-                ("Ananya Singh","Marathon Runner","Improved my personal best by 22 minutes. The coaching and programs here are world-class."),
-                ("Dev Malhotra","Strength Athlete","Gained 12kg of muscle in a year. The programming is scientific and the results speak for themselves."),
-            ],
+            "tagline":"Transform Your Body. Elevate Your Life.",
+            "sub":f"Join {name} and unlock your true potential. Expert coaching, world-class facilities, unstoppable community.",
+            "cta":"Start Free Trial","cta2":"View Programs",
+            "about_title":"More Than a Gym","about_sub":f"{name} is a movement. We believe every person has an elite athlete inside them — they just need the right environment, coaching, and community to unleash it.",
+            "services_title":"Our Programs",
+            "services":[("💪","Strength Training","Progressive overload programs by elite coaches to build real, lasting strength."),("🏃","Cardio & HIIT","High-intensity programs that torch calories and keep you energised all day."),("🧘","Mind & Body","Yoga, meditation, and mobility work to balance training and optimise recovery."),("🥗","Nutrition Coaching","Personalised meal plans to fuel your transformation from the inside out.")],
+            "stats":[("5K+","Members"),("50+","Expert Trainers"),("98%","Success Rate"),("4.9★","Member Rating")],
+            "testimonials":[("Kiran Rao","Member since 2022","Lost 20kg in 6 months. The trainers are exceptional and the community keeps you going."),("Ananya Singh","Marathon Runner","Improved my personal best by 22 minutes. The coaching here is world-class."),("Dev Malhotra","Strength Athlete","Gained 12kg of muscle in a year. The programming is scientific, the results real.")],
         },
         "business": {
-            "tagline": f"Excellence Delivered, Every Single Time",
-            "sub": f"{name} combines deep expertise with innovative thinking to deliver results that exceed expectations and drive real business impact.",
-            "cta": "Get Started Today",
-            "cta2": "Learn More",
-            "services_title": "What We Offer",
-            "services": [
-                ("⚡","Fast Delivery","We deliver exceptional results in record time — without ever compromising on quality or attention to detail."),
-                ("🎯","Results Focused","Every decision we make is tied to measurable outcomes and the specific goals of your business."),
-                ("🤝","True Partnership","We embed ourselves in your mission and work as a genuine extension of your team."),
-                ("🛡️","Proven Reliability","100+ satisfied clients trust us with their most important projects. We never miss a deadline."),
-            ],
-            "stats": [("100+","Projects Done"),("50+","Happy Clients"),("4.9★","Average Rating"),("5+","Years Experience")],
-            "testimonials": [
-                ("Rohit Kumar","Managing Director","Exceptional quality and professionalism. They delivered exactly what they promised and more."),
-                ("Nisha Agarwal","Operations Head","Reliable, skilled, and genuinely invested in our success. The best vendor relationship we have."),
-                ("Amit Sharma","Founder","Working with them was a game-changer for our business. Results speak louder than words."),
-            ],
+            "tagline":"Excellence Delivered. Every Single Time.",
+            "sub":f"{name} combines deep expertise with innovative thinking to deliver results that exceed every expectation.",
+            "cta":"Get Started Today","cta2":"Learn More",
+            "about_title":"Why We Are Different","about_sub":f"At {name}, we do not just complete projects — we build partnerships. We are invested in your success as deeply as you are, and our track record proves it.",
+            "services_title":"What We Offer",
+            "services":[("⚡","Fast Delivery","Exceptional results in record time — without compromising on quality or detail."),("🎯","Results Focused","Every decision tied to measurable outcomes and your specific business goals."),("🤝","True Partnership","We embed in your mission and work as a genuine extension of your team."),("🛡️","Proven Reliability","100+ satisfied clients trust us with their most important projects.")],
+            "stats":[("100+","Projects Done"),("50+","Happy Clients"),("4.9★","Average Rating"),("5+","Years Experience")],
+            "testimonials":[("Rohit Kumar","Managing Director","Exceptional quality and professionalism. Delivered exactly what they promised and more."),("Nisha Agarwal","Operations Head","Reliable, skilled, genuinely invested in our success. Best vendor relationship we have."),("Amit Sharma","Founder","Working with them was a game-changer for our business. Results speak for themselves.")],
         },
     }
 
-    d = categories_data.get(category, categories_data["business"])
-    tagline = d["tagline"]
-    sub = d["sub"]
-    cta = d["cta"]
-    cta2 = d["cta2"]
-    services_title = d["services_title"]
-    services = d["services"]
-    stats = d["stats"]
-    testimonials = d["testimonials"]
+    d = data.get(category, data["business"])
 
     services_html = ""
-    for icon, title, desc in services:
-        services_html += f\'\'\'
+    for icon, title, desc in d["services"]:
+        services_html += f"""
         <div class="service-card">
             <div class="service-icon">{icon}</div>
             <h3>{title}</h3>
             <p>{desc}</p>
-        </div>\'\'\'
+        </div>"""
 
     stats_html = ""
-    for num, label in stats:
+    for num, label in d["stats"]:
         stats_html += f\'<div class="stat-item"><div class="stat-num">{num}</div><div class="stat-label">{label}</div></div>\'
 
     testimonials_html = ""
-    for author, role, text in testimonials:
+    for author, role, text in d["testimonials"]:
         initials = "".join([w[0] for w in author.split()[:2]])
-        testimonials_html += f\'\'\'
+        testimonials_html += f"""
         <div class="testimonial-card">
             <div class="stars">★★★★★</div>
-            <p class="testimonial-text">"{text}"</p>
-            <div class="testimonial-author">
-                <div class="author-avatar">{initials}</div>
-                <div>
-                    <div class="author-name">{author}</div>
-                    <div class="author-role">{role}</div>
-                </div>
+            <p class="t-text">"{text}"</p>
+            <div class="t-author">
+                <div class="t-avatar">{initials}</div>
+                <div><div class="t-name">{author}</div><div class="t-role">{role}</div></div>
             </div>
-        </div>\'\'\'
+        </div>"""
+
+    gallery_html = ""
+    for key in ["g1","g2","g3","g4"]:
+        gallery_html += f\'<div class="gallery-item"><img src="{imgs[key]}" alt="Gallery" loading="lazy"/></div>\'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{name} — {tagline}</title>
+<title>{name} — {d["tagline"]}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,700;0,800;0,900;1,700&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 :root{{
-  --primary:{p["primary"]};
-  --secondary:{p["secondary"]};
-  --dark:{p["dark"]};
-  --light:{p["light"]};
-  --accent:{p["accent"]};
-  --white:#ffffff;
-  --gray:#6B7280;
-  --border:rgba(0,0,0,0.08);
+  --pr:{p["primary"]};--sc:{p["secondary"]};--dk:{p["dark"]};
+  --lt:{p["light"]};--ac:{p["accent"]};--g1:{p["grad1"]};--g2:{p["grad2"]};
+  --white:#fff;--gray:#6B7280;--border:rgba(0,0,0,0.08);
+  --radius:16px;--shadow:0 25px 60px rgba(0,0,0,0.15);
 }}
 html{{scroll-behavior:smooth}}
-body{{font-family:"Inter",sans-serif;color:var(--dark);background:var(--white);overflow-x:hidden;line-height:1.6}}
+body{{font-family:"Inter",sans-serif;color:var(--dk);background:var(--white);overflow-x:hidden;line-height:1.6}}
 
-/* ── NAVIGATION ── */
-nav{{
-  position:fixed;top:0;width:100%;z-index:1000;
-  padding:0 5%;transition:all 0.4s cubic-bezier(0.4,0,0.2,1);
-}}
-nav.scrolled{{
-  background:rgba(255,255,255,0.95);backdrop-filter:blur(20px);
-  box-shadow:0 4px 40px rgba(0,0,0,0.08);border-bottom:1px solid var(--border);
-}}
-.nav-inner{{
-  max-width:1280px;margin:0 auto;display:flex;align-items:center;
-  justify-content:space-between;height:72px;
-}}
-.nav-logo{{
-  font-family:"Playfair Display",serif;font-size:1.8rem;font-weight:900;
-  color:var(--white);text-decoration:none;letter-spacing:-0.5px;
-  transition:color 0.3s;
-}}
-nav.scrolled .nav-logo{{color:var(--primary);}}
-.nav-links{{display:flex;align-items:center;gap:40px;list-style:none;}}
-.nav-links a{{
-  color:rgba(255,255,255,0.85);text-decoration:none;font-weight:500;
-  font-size:0.9rem;transition:all 0.2s;letter-spacing:0.3px;
-}}
-nav.scrolled .nav-links a{{color:var(--gray);}}
-.nav-links a:hover{{color:var(--white);}}
-nav.scrolled .nav-links a:hover{{color:var(--primary);}}
-.nav-cta{{
-  background:var(--primary)!important;color:var(--white)!important;
-  padding:10px 24px;border-radius:100px;font-weight:700!important;
-  font-size:0.85rem!important;transition:all 0.3s!important;
-  box-shadow:0 4px 20px rgba(0,0,0,0.2);
-}}
-.nav-cta:hover{{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,0,0,0.25)!important;}}
+/* ── NAV ── */
+nav{{position:fixed;top:0;width:100%;z-index:1000;padding:0 5%;transition:all 0.4s ease}}
+nav.scrolled{{background:rgba(255,255,255,0.97);backdrop-filter:blur(24px);box-shadow:0 4px 40px rgba(0,0,0,0.1);border-bottom:1px solid var(--border)}}
+.nav-inner{{max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:76px}}
+.nav-logo{{font-family:"Playfair Display",serif;font-size:1.9rem;font-weight:900;color:#fff;text-decoration:none;transition:color 0.3s;letter-spacing:-0.5px}}
+nav.scrolled .nav-logo{{color:var(--pr)}}
+.nav-links{{display:flex;align-items:center;gap:36px;list-style:none}}
+.nav-links a{{color:rgba(255,255,255,0.85);text-decoration:none;font-weight:500;font-size:0.9rem;transition:all 0.2s}}
+nav.scrolled .nav-links a{{color:var(--gray)}}
+.nav-links a:hover{{color:#fff}}
+nav.scrolled .nav-links a:hover{{color:var(--pr)}}
+.nav-cta{{background:var(--pr)!important;color:#fff!important;padding:11px 26px;border-radius:100px;font-weight:700!important;transition:all 0.3s!important;box-shadow:0 4px 20px rgba(0,0,0,0.2)}}
+.nav-cta:hover{{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,0,0,0.3)!important}}
+.nav-hamburger{{display:none;background:none;border:none;cursor:pointer;flex-direction:column;gap:5px;padding:4px}}
+.nav-hamburger span{{width:24px;height:2px;background:#fff;border-radius:2px;transition:all 0.3s;display:block}}
+nav.scrolled .nav-hamburger span{{background:var(--dk)}}
+.nav-mobile{{display:none;position:fixed;top:76px;left:0;right:0;background:#fff;border-bottom:1px solid var(--border);padding:20px 5%;flex-direction:column;gap:16px;box-shadow:0 10px 40px rgba(0,0,0,0.1)}}
+.nav-mobile.open{{display:flex}}
+.nav-mobile a{{color:var(--gray);text-decoration:none;font-weight:600;font-size:0.95rem;padding:8px 0;border-bottom:1px solid var(--border)}}
+.nav-mobile .mob-cta{{background:var(--pr);color:#fff!important;text-align:center;padding:14px;border-radius:12px;border:none!important;margin-top:4px}}
 
 /* ── HERO ── */
 .hero{{
   position:relative;min-height:100vh;display:flex;align-items:center;
   padding:100px 5% 80px;overflow:hidden;
-  background:linear-gradient(135deg,{p["dark"]} 0%,{p["primary"]}99 60%,{p["secondary"]} 100%);
+  background:linear-gradient(135deg,var(--g1) 0%,var(--g2) 50%,var(--pr) 100%);
 }}
-.hero-bg{{
-  position:absolute;inset:0;
-  background:url("{imgs["hero"]}") center/cover no-repeat;
-  opacity:0.15;filter:blur(2px);
-}}
-.hero-overlay{{
-  position:absolute;inset:0;
-  background:linear-gradient(135deg,{p["dark"]}F0 0%,{p["primary"]}CC 60%,{p["secondary"]}99 100%);
-}}
-.hero-shapes{{position:absolute;inset:0;overflow:hidden;pointer-events:none;}}
-.hero-circle{{
-  position:absolute;border-radius:50%;
-  background:radial-gradient(circle,rgba(255,255,255,0.06) 0%,transparent 70%);
-}}
-.hero-circle:nth-child(1){{width:600px;height:600px;top:-200px;right:-100px;}}
-.hero-circle:nth-child(2){{width:400px;height:400px;bottom:-100px;left:-50px;}}
-.hero-circle:nth-child(3){{width:300px;height:300px;top:50%;right:20%;}}
-.hero-inner{{
-  position:relative;z-index:2;max-width:1280px;margin:0 auto;width:100%;
-  display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center;
-}}
-.hero-badge{{
-  display:inline-flex;align-items:center;gap:8px;
-  background:rgba(255,255,255,0.12);backdrop-filter:blur(10px);
-  border:1px solid rgba(255,255,255,0.2);
-  color:rgba(255,255,255,0.95);padding:8px 18px;
-  border-radius:100px;font-size:0.78rem;font-weight:700;
-  text-transform:uppercase;letter-spacing:1.5px;margin-bottom:28px;
-  width:fit-content;
-}}
-.hero-badge::before{{content:"✦";color:var(--accent);}}
-.hero-title{{
-  font-family:"Playfair Display",serif;
-  font-size:clamp(2.8rem,5vw,5rem);font-weight:900;
-  color:var(--white);line-height:1.08;margin-bottom:24px;
-  letter-spacing:-1px;
-}}
-.hero-title span{{
-  color:var(--accent);font-style:italic;
-  text-shadow:0 0 40px rgba(255,215,0,0.3);
-}}
-.hero-sub{{
-  font-size:1.1rem;color:rgba(255,255,255,0.78);
-  margin-bottom:44px;line-height:1.8;max-width:520px;font-weight:400;
-}}
-.hero-buttons{{display:flex;gap:16px;flex-wrap:wrap;}}
-.btn-primary{{
-  background:var(--accent);color:var(--dark);
-  padding:16px 36px;border-radius:100px;font-weight:800;
-  font-size:0.95rem;text-decoration:none;transition:all 0.3s;
-  box-shadow:0 8px 30px rgba(0,0,0,0.3);letter-spacing:0.3px;
-  display:inline-flex;align-items:center;gap:8px;
-}}
-.btn-primary:hover{{transform:translateY(-3px);box-shadow:0 16px 40px rgba(0,0,0,0.35);}}
-.btn-secondary{{
-  background:transparent;border:2px solid rgba(255,255,255,0.5);color:var(--white);
-  padding:16px 36px;border-radius:100px;font-weight:700;font-size:0.95rem;
-  text-decoration:none;transition:all 0.3s;
-  display:inline-flex;align-items:center;gap:8px;
-}}
-.btn-secondary:hover{{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.8);}}
-.hero-stats{{
-  display:flex;gap:40px;margin-top:60px;padding-top:40px;
-  border-top:1px solid rgba(255,255,255,0.15);
-}}
-.hero-stat-num{{font-size:2.2rem;font-weight:900;color:var(--white);line-height:1;}}
-.hero-stat-label{{font-size:0.78rem;color:rgba(255,255,255,0.6);margin-top:4px;text-transform:uppercase;letter-spacing:0.5px;}}
-.hero-visual{{position:relative;}}
-.hero-card{{
-  background:rgba(255,255,255,0.07);backdrop-filter:blur(20px);
-  border:1px solid rgba(255,255,255,0.15);border-radius:28px;
-  overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,0.4);
-}}
-.hero-card img{{width:100%;height:420px;object-fit:cover;display:block;}}
-.hero-card-badge{{
-  position:absolute;bottom:24px;left:24px;right:24px;
-  background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);
-  border:1px solid rgba(255,255,255,0.2);border-radius:16px;
-  padding:16px 20px;display:flex;align-items:center;gap:12px;
-}}
-.hero-card-badge-dot{{width:10px;height:10px;border-radius:50%;background:#22C55E;animation:pulse 2s infinite;}}
-@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.5}}}}
-.hero-card-badge-text{{color:var(--white);font-size:0.85rem;font-weight:600;}}
-.hero-floating{{
-  position:absolute;top:-20px;right:-20px;
-  background:var(--accent);border-radius:20px;
-  padding:16px 20px;color:var(--dark);font-weight:800;
-  font-size:0.85rem;box-shadow:0 10px 30px rgba(0,0,0,0.3);
-}}
+.hero-bg-img{{position:absolute;inset:0;background:url("{imgs["hero"]}") center/cover no-repeat;opacity:0.12;filter:blur(3px);transform:scale(1.05)}}
+.hero-overlay{{position:absolute;inset:0;background:linear-gradient(135deg,{p["dark"]}F5 0%,{p["primary"]}BB 70%,{p["secondary"]}88 100%)}}
+.hero-particles{{position:absolute;inset:0;overflow:hidden;pointer-events:none}}
+.particle{{position:absolute;border-radius:50%;background:rgba(255,255,255,0.06);animation:float linear infinite}}
+@keyframes float{{0%{{transform:translateY(100vh) rotate(0deg);opacity:0}}10%{{opacity:1}}90%{{opacity:1}}100%{{transform:translateY(-100px) rotate(720deg);opacity:0}}}}
+.hero-inner{{position:relative;z-index:2;max-width:1280px;margin:0 auto;width:100%;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
+.hero-badge{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.12);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.25);color:rgba(255,255,255,0.95);padding:9px 20px;border-radius:100px;font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:24px;animation:fadeInUp 0.6s ease}}
+.badge-dot{{width:8px;height:8px;border-radius:50%;background:var(--ac);box-shadow:0 0 12px var(--ac);animation:pulse 2s infinite}}
+@keyframes pulse{{0%,100%{{opacity:1;transform:scale(1)}}50%{{opacity:0.6;transform:scale(1.3)}}}}
+.hero-title{{font-family:"Playfair Display",serif;font-size:clamp(2.8rem,5vw,4.5rem);font-weight:900;color:#fff;line-height:1.05;letter-spacing:-2px;margin-bottom:16px;animation:fadeInUp 0.7s ease 0.1s both}}
+.hero-title-accent{{color:var(--ac);font-style:italic;display:block}}
+.hero-sub{{font-size:1.05rem;color:rgba(255,255,255,0.75);line-height:1.75;margin-bottom:36px;max-width:480px;animation:fadeInUp 0.7s ease 0.2s both}}
+.hero-btns{{display:flex;gap:14px;flex-wrap:wrap;animation:fadeInUp 0.7s ease 0.3s both}}
+.btn-primary{{display:inline-flex;align-items:center;gap:8px;background:var(--ac);color:var(--dk);font-weight:800;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.3);letter-spacing:0.3px}}
+.btn-primary:hover{{transform:translateY(-3px);box-shadow:0 16px 40px rgba(0,0,0,0.4);filter:brightness(1.1)}}
+.btn-secondary{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.1);backdrop-filter:blur(10px);color:#fff;font-weight:700;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;border:1px solid rgba(255,255,255,0.3);transition:all 0.3s}}
+.btn-secondary:hover{{background:rgba(255,255,255,0.2);transform:translateY(-3px)}}
+.hero-img-wrap{{position:relative;animation:fadeInRight 0.9s ease 0.2s both}}
+@keyframes fadeInRight{{from{{opacity:0;transform:translateX(40px)}}to{{opacity:1;transform:translateX(0)}}}}
+.hero-img{{width:100%;border-radius:24px;overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.1);position:relative}}
+.hero-img img{{width:100%;height:420px;object-fit:cover;display:block}}
+.hero-img-badge{{position:absolute;bottom:20px;left:20px;background:rgba(0,0,0,0.7);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);padding:12px 18px;border-radius:14px;display:flex;align-items:center;gap:10px}}
+.live-dot{{width:8px;height:8px;border-radius:50%;background:#22C55E;box-shadow:0 0 10px #22C55E;animation:pulse 2s infinite}}
+.live-text{{color:#fff;font-size:0.78rem;font-weight:600}}
+@keyframes fadeInUp{{from{{opacity:0;transform:translateY(30px)}}to{{opacity:1;transform:translateY(0)}}}}
 
-/* ── SECTIONS ── */
-section{{padding:120px 5%;}}
-.section-inner{{max-width:1280px;margin:0 auto;}}
-.section-badge{{
-  display:inline-flex;align-items:center;gap:6px;
-  background:linear-gradient(135deg,{p["primary"]}18,{p["secondary"]}18);
-  color:var(--primary);font-size:0.75rem;font-weight:800;
-  padding:8px 18px;border-radius:100px;
-  border:1px solid {p["primary"]}30;
-  text-transform:uppercase;letter-spacing:1.5px;margin-bottom:20px;
-}}
-.section-title{{
-  font-family:"Playfair Display",serif;
-  font-size:clamp(2rem,4vw,3.5rem);font-weight:900;
-  color:var(--dark);margin-bottom:20px;line-height:1.1;letter-spacing:-0.5px;
-}}
-.section-title em{{font-style:italic;color:var(--primary);}}
-.section-sub{{color:var(--gray);font-size:1.05rem;max-width:600px;line-height:1.8;}}
-.text-center{{text-align:center;}}
-.text-center .section-sub{{margin:0 auto;}}
+/* ── STATS BAR ── */
+.stats-bar{{background:var(--dk);padding:0 5%}}
+.stats-inner{{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid rgba(255,255,255,0.06)}}
+.stat-item{{padding:36px 24px;text-align:center;border-right:1px solid rgba(255,255,255,0.06);border-bottom:1px solid rgba(255,255,255,0.06);transition:background 0.3s}}
+.stat-item:hover{{background:rgba(255,255,255,0.03)}}
+.stat-num{{font-family:"Playfair Display",serif;font-size:2.4rem;font-weight:900;color:#fff;line-height:1;margin-bottom:6px}}
+.stat-label{{font-size:0.75rem;color:rgba(255,255,255,0.45);font-weight:600;text-transform:uppercase;letter-spacing:1.2px}}
+
+/* ── ABOUT ── */
+.about{{padding:120px 5%;background:var(--lt)}}
+.about-inner{{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
+.about-img{{border-radius:24px;overflow:hidden;box-shadow:var(--shadow);position:relative}}
+.about-img img{{width:100%;height:500px;object-fit:cover;display:block;transition:transform 0.6s ease}}
+.about-img:hover img{{transform:scale(1.04)}}
+.about-img-tag{{position:absolute;top:24px;left:24px;background:var(--pr);color:#fff;font-size:0.72rem;font-weight:800;padding:8px 16px;border-radius:100px;text-transform:uppercase;letter-spacing:1px}}
+.section-label{{display:inline-flex;align-items:center;gap:8px;background:var(--pr)18;color:var(--pr);font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid var(--pr)30}}
+.section-title{{font-family:"Playfair Display",serif;font-size:clamp(2rem,3.5vw,3rem);font-weight:900;color:var(--dk);line-height:1.15;letter-spacing:-1px;margin-bottom:20px}}
+.section-title span{{color:var(--pr)}}
+.section-sub{{font-size:1rem;color:var(--gray);line-height:1.8;margin-bottom:36px}}
+.about-features{{display:flex;flex-direction:column;gap:16px}}
+.about-feature{{display:flex;align-items:flex-start;gap:14px;padding:18px;background:#fff;border-radius:16px;border:1px solid var(--border);transition:all 0.3s}}
+.about-feature:hover{{border-color:var(--pr);box-shadow:0 8px 30px rgba(0,0,0,0.08);transform:translateX(4px)}}
+.af-icon{{width:44px;height:44px;border-radius:12px;background:var(--pr)15;display:flex;align-items:center;justify-content:center;font-size:1.4rem;flex-shrink:0}}
+.af-text h4{{font-weight:700;font-size:0.9rem;color:var(--dk);margin-bottom:4px}}
+.af-text p{{font-size:0.82rem;color:var(--gray);line-height:1.5}}
 
 /* ── SERVICES ── */
-.services-section{{background:var(--light);}}
-.services-grid{{
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-  gap:28px;margin-top:64px;
-}}
+.services{{padding:120px 5%;background:#fff}}
+.services-inner{{max-width:1280px;margin:0 auto}}
+.section-header{{text-align:center;margin-bottom:60px}}
+.services-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:24px}}
 .service-card{{
-  background:var(--white);border-radius:24px;padding:40px 32px;
-  border:1px solid var(--border);transition:all 0.4s cubic-bezier(0.4,0,0.2,1);
-  position:relative;overflow:hidden;cursor:default;
+  background:var(--lt);border:1px solid var(--border);border-radius:24px;
+  padding:36px;transition:all 0.4s cubic-bezier(0.4,0,0.2,1);
+  position:relative;overflow:hidden;
 }}
 .service-card::before{{
   content:"";position:absolute;inset:0;
-  background:linear-gradient(135deg,{p["primary"]}08,{p["secondary"]}08);
+  background:linear-gradient(135deg,var(--pr)08,transparent);
   opacity:0;transition:opacity 0.4s;
 }}
-.service-card::after{{
-  content:"";position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,{p["primary"]},{p["secondary"]});
-  transform:scaleX(0);transform-origin:left;transition:transform 0.4s;
-}}
-.service-card:hover{{transform:translateY(-8px);box-shadow:0 30px 60px rgba(0,0,0,0.1);border-color:transparent;}}
-.service-card:hover::before{{opacity:1;}}
-.service-card:hover::after{{transform:scaleX(1);}}
-.service-icon{{
-  width:64px;height:64px;border-radius:18px;
-  background:linear-gradient(135deg,{p["primary"]}15,{p["secondary"]}15);
-  display:flex;align-items:center;justify-content:center;
-  font-size:1.8rem;margin-bottom:24px;transition:transform 0.3s;
-}}
-.service-card:hover .service-icon{{transform:scale(1.1) rotate(5deg);}}
-.service-card h3{{font-size:1.2rem;font-weight:800;margin-bottom:12px;color:var(--dark);}}
-.service-card p{{color:var(--gray);line-height:1.75;font-size:0.93rem;}}
-
-/* ── STATS ── */
-.stats-section{{
-  background:linear-gradient(135deg,{p["dark"]},{p["primary"]});
-  position:relative;overflow:hidden;
-}}
-.stats-section::before{{
-  content:"";position:absolute;inset:0;
-  background:url("data:image/svg+xml,%3Csvg width=\'80\' height=\'80\' viewBox=\'0 0 80 80\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23ffffff\' fill-opacity=\'0.03\'%3E%3Cpath d=\'M40 40L0 0h80z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-}}
-.stats-grid{{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:0;
-  position:relative;z-index:1;
-}}
-.stat-item{{
-  text-align:center;padding:60px 32px;border-right:1px solid rgba(255,255,255,0.1);
-}}
-.stat-item:last-child{{border-right:none;}}
-.stat-num{{
-  font-family:"Playfair Display",serif;font-size:3.2rem;font-weight:900;
-  color:var(--white);line-height:1;margin-bottom:12px;
-}}
-.stat-label{{font-size:0.85rem;color:rgba(255,255,255,0.6);font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}}
-
-/* ── ABOUT ── */
-.about-section{{background:var(--white);}}
-.about-grid{{display:grid;grid-template-columns:1fr 1fr;gap:100px;align-items:center;}}
-.about-image-wrap{{position:relative;}}
-.about-image-main{{
-  width:100%;border-radius:28px;
-  box-shadow:0 40px 80px rgba(0,0,0,0.15);display:block;
-}}
-.about-image-secondary{{
-  position:absolute;bottom:-32px;right:-32px;
-  width:55%;border-radius:20px;
-  box-shadow:0 20px 60px rgba(0,0,0,0.2);
-  border:6px solid var(--white);
-}}
-.about-accent{{
-  position:absolute;top:-20px;left:-20px;
-  width:80px;height:80px;border-radius:20px;
-  background:linear-gradient(135deg,var(--primary),var(--secondary));
-  display:flex;align-items:center;justify-content:center;
-  font-size:2rem;box-shadow:0 10px 30px {p["primary"]}50;
-}}
-.about-text h2{{
-  font-family:"Playfair Display",serif;font-size:2.8rem;
-  font-weight:900;margin-bottom:24px;color:var(--dark);line-height:1.1;
-}}
-.about-text p{{color:var(--gray);line-height:1.9;margin-bottom:20px;font-size:1rem;}}
-.about-points{{list-style:none;margin:32px 0;}}
-.about-points li{{
-  display:flex;align-items:flex-start;gap:12px;
-  padding:12px 0;border-bottom:1px solid var(--border);font-size:0.95rem;color:var(--dark);
-}}
-.about-points li::before{{
-  content:"✓";width:24px;height:24px;border-radius:50%;
-  background:var(--primary);color:var(--white);
-  display:flex;align-items:center;justify-content:center;
-  font-size:0.7rem;font-weight:900;flex-shrink:0;margin-top:2px;
-}}
+.service-card:hover{{border-color:var(--pr);box-shadow:0 20px 60px rgba(0,0,0,0.12);transform:translateY(-6px)}}
+.service-card:hover::before{{opacity:1}}
+.service-icon{{font-size:2.4rem;margin-bottom:20px;display:block}}
+.service-card h3{{font-family:"Playfair Display",serif;font-size:1.3rem;font-weight:800;color:var(--dk);margin-bottom:12px}}
+.service-card p{{font-size:0.88rem;color:var(--gray);line-height:1.7}}
 
 /* ── GALLERY ── */
-.gallery-section{{background:var(--light);}}
-.gallery-grid{{
-  display:grid;grid-template-columns:repeat(3,1fr);
-  grid-template-rows:auto auto;gap:20px;margin-top:64px;
-}}
-.gallery-item{{
-  border-radius:20px;overflow:hidden;position:relative;
-  cursor:pointer;
-}}
-.gallery-item:first-child{{grid-column:span 2;}}
-.gallery-item img{{
-  width:100%;height:100%;min-height:280px;object-fit:cover;
-  transition:transform 0.6s cubic-bezier(0.4,0,0.2,1);display:block;
-}}
-.gallery-item:hover img{{transform:scale(1.07);}}
-.gallery-item-overlay{{
-  position:absolute;inset:0;
-  background:linear-gradient(to top,{p["primary"]}CC 0%,transparent 50%);
-  opacity:0;transition:opacity 0.4s;
-  display:flex;align-items:flex-end;padding:24px;
-}}
-.gallery-item:hover .gallery-item-overlay{{opacity:1;}}
-.gallery-item-overlay span{{
-  color:var(--white);font-weight:700;font-size:0.9rem;
-  border-bottom:2px solid var(--accent);padding-bottom:4px;
-}}
+.gallery{{padding:80px 5%;background:var(--dk)}}
+.gallery-inner{{max-width:1280px;margin:0 auto}}
+.gallery-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:48px}}
+.gallery-item{{border-radius:20px;overflow:hidden;aspect-ratio:4/3;position:relative;cursor:pointer}}
+.gallery-item img{{width:100%;height:100%;object-fit:cover;display:block;transition:transform 0.6s ease}}
+.gallery-item:hover img{{transform:scale(1.08)}}
+.gallery-item::after{{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.4),transparent);opacity:0;transition:opacity 0.3s}}
+.gallery-item:hover::after{{opacity:1}}
 
 /* ── TESTIMONIALS ── */
-.testimonials-section{{
-  background:linear-gradient(135deg,{p["dark"]} 0%,#1a1a2e 100%);
-}}
-.testimonials-section .section-title{{color:var(--white);}}
-.testimonials-section .section-sub{{color:rgba(255,255,255,0.6);}}
-.testimonials-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:64px;}}
+.testimonials{{padding:120px 5%;background:var(--lt)}}
+.testimonials-inner{{max-width:1280px;margin:0 auto}}
+.testimonials-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:48px}}
 .testimonial-card{{
-  background:rgba(255,255,255,0.05);
-  border:1px solid rgba(255,255,255,0.1);
-  border-radius:24px;padding:36px;
-  transition:all 0.4s;backdrop-filter:blur(10px);
+  background:#fff;border:1px solid var(--border);border-radius:24px;
+  padding:32px;transition:all 0.3s;position:relative;overflow:hidden;
 }}
-.testimonial-card:hover{{
-  background:rgba(255,255,255,0.08);
-  transform:translateY(-6px);
-  border-color:rgba(255,255,255,0.2);
-}}
-.stars{{color:var(--accent);font-size:1rem;letter-spacing:3px;margin-bottom:20px;}}
-.testimonial-text{{
-  color:rgba(255,255,255,0.85);line-height:1.8;
-  font-style:italic;margin-bottom:28px;font-size:0.95rem;
-}}
-.testimonial-author{{display:flex;align-items:center;gap:14px;}}
-.author-avatar{{
-  width:48px;height:48px;border-radius:50%;
-  background:linear-gradient(135deg,var(--primary),var(--secondary));
-  display:flex;align-items:center;justify-content:center;
-  color:var(--white);font-weight:900;font-size:0.95rem;flex-shrink:0;
-}}
-.author-name{{color:var(--white);font-weight:700;font-size:0.95rem;}}
-.author-role{{color:rgba(255,255,255,0.5);font-size:0.8rem;margin-top:2px;}}
+.testimonial-card::before{{content:"\\201C";position:absolute;top:-10px;right:20px;font-size:8rem;color:var(--pr);opacity:0.06;font-family:"Playfair Display",serif;line-height:1}}
+.testimonial-card:hover{{border-color:var(--pr);box-shadow:0 20px 50px rgba(0,0,0,0.1);transform:translateY(-4px)}}
+.stars{{color:var(--ac);font-size:1rem;margin-bottom:16px;letter-spacing:2px}}
+.t-text{{font-size:0.9rem;color:var(--gray);line-height:1.75;margin-bottom:24px;font-style:italic}}
+.t-author{{display:flex;align-items:center;gap:12px}}
+.t-avatar{{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--pr),var(--sc));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:0.9rem;flex-shrink:0}}
+.t-name{{font-weight:700;font-size:0.88rem;color:var(--dk)}}
+.t-role{{font-size:0.75rem;color:var(--gray)}}
 
 /* ── CTA ── */
-.cta-section{{
-  background:linear-gradient(135deg,var(--primary),var(--secondary));
-  text-align:center;padding:120px 5%;position:relative;overflow:hidden;
+.cta-section{{padding:120px 5%;background:#fff}}
+.cta-inner{{
+  max-width:1000px;margin:0 auto;
+  background:linear-gradient(135deg,var(--g1),var(--pr) 60%,var(--sc));
+  border-radius:32px;padding:80px 60px;text-align:center;
+  position:relative;overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,0.2);
 }}
-.cta-section::before{{
-  content:"";position:absolute;inset:0;
-  background:url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\'%3E%3Cg fill=\'%23ffffff\' fill-opacity=\'0.05\'%3E%3Ccircle cx=\'30\' cy=\'30\' r=\'4\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-}}
-.cta-section h2{{
-  font-family:"Playfair Display",serif;font-size:clamp(2rem,4vw,3.5rem);
-  font-weight:900;color:var(--white);margin-bottom:20px;position:relative;
-}}
-.cta-section p{{color:rgba(255,255,255,0.85);font-size:1.1rem;margin-bottom:48px;position:relative;}}
-.btn-cta{{
-  display:inline-flex;align-items:center;gap:10px;
-  background:var(--white);color:var(--primary);
-  padding:18px 48px;border-radius:100px;font-weight:800;
-  font-size:1rem;text-decoration:none;transition:all 0.3s;
-  box-shadow:0 10px 40px rgba(0,0,0,0.2);
-  position:relative;
-}}
-.btn-cta:hover{{transform:translateY(-4px);box-shadow:0 20px 50px rgba(0,0,0,0.25);}}
-
-/* ── CONTACT ── */
-.contact-section{{background:var(--white);}}
-.contact-grid{{display:grid;grid-template-columns:1fr 1.4fr;gap:80px;align-items:start;}}
-.contact-info h3{{
-  font-family:"Playfair Display",serif;font-size:2rem;font-weight:900;
-  margin-bottom:20px;color:var(--dark);
-}}
-.contact-info p{{color:var(--gray);line-height:1.8;margin-bottom:40px;}}
-.contact-detail{{
-  display:flex;align-items:center;gap:16px;
-  margin-bottom:24px;padding:16px;
-  background:var(--light);border-radius:16px;
-  transition:all 0.3s;
-}}
-.contact-detail:hover{{background:linear-gradient(135deg,{p["primary"]}10,{p["secondary"]}10);}}
-.contact-detail-icon{{
-  width:48px;height:48px;border-radius:14px;
-  background:linear-gradient(135deg,{p["primary"]},{p["secondary"]});
-  display:flex;align-items:center;justify-content:center;
-  font-size:1.2rem;flex-shrink:0;
-}}
-.contact-detail-text strong{{display:block;color:var(--dark);font-weight:700;font-size:0.9rem;}}
-.contact-detail-text span{{color:var(--gray);font-size:0.85rem;}}
-.contact-form-wrap{{
-  background:var(--light);border-radius:28px;padding:48px;
-  border:1px solid var(--border);
-}}
-.form-row{{display:grid;grid-template-columns:1fr 1fr;gap:16px;}}
-.form-group{{margin-bottom:20px;}}
-.form-group label{{
-  display:block;font-weight:700;font-size:0.8rem;
-  text-transform:uppercase;letter-spacing:0.5px;
-  color:var(--dark);margin-bottom:8px;
-}}
-.form-group input,.form-group textarea,.form-group select{{
-  width:100%;background:var(--white);border:1.5px solid var(--border);
-  border-radius:14px;padding:14px 18px;color:var(--dark);
-  font-size:0.95rem;outline:none;font-family:"Inter",sans-serif;
-  transition:all 0.2s;
-}}
-.form-group input:focus,.form-group textarea:focus{{
-  border-color:var(--primary);
-  box-shadow:0 0 0 4px {p["primary"]}18;
-}}
-.form-group textarea{{height:140px;resize:vertical;}}
-.btn-submit{{
-  width:100%;background:linear-gradient(135deg,{p["primary"]},{p["secondary"]});
-  color:var(--white);padding:16px;border-radius:14px;font-weight:800;
-  font-size:1rem;border:none;cursor:pointer;transition:all 0.3s;
-  font-family:"Inter",sans-serif;letter-spacing:0.3px;
-}}
-.btn-submit:hover{{transform:translateY(-2px);box-shadow:0 10px 30px {p["primary"]}50;}}
+.cta-inner::before{{content:"";position:absolute;top:-50%;right:-10%;width:500px;height:500px;border-radius:50%;background:rgba(255,255,255,0.05);pointer-events:none}}
+.cta-inner::after{{content:"";position:absolute;bottom:-30%;left:-5%;width:350px;height:350px;border-radius:50%;background:rgba(255,255,255,0.04);pointer-events:none}}
+.cta-title{{font-family:"Playfair Display",serif;font-size:clamp(2rem,4vw,3.2rem);font-weight:900;color:#fff;margin-bottom:16px;position:relative;z-index:1;letter-spacing:-1px}}
+.cta-sub{{font-size:1rem;color:rgba(255,255,255,0.7);margin-bottom:40px;position:relative;z-index:1;max-width:500px;margin-left:auto;margin-right:auto}}
+.cta-btns{{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative;z-index:1}}
+.cta-btn-primary{{display:inline-flex;align-items:center;gap:8px;background:var(--ac);color:var(--dk);font-weight:800;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.3)}}
+.cta-btn-primary:hover{{transform:translateY(-3px);filter:brightness(1.1);box-shadow:0 16px 40px rgba(0,0,0,0.4)}}
+.cta-btn-secondary{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.12);backdrop-filter:blur(10px);color:#fff;font-weight:700;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;border:1px solid rgba(255,255,255,0.3);transition:all 0.3s}}
+.cta-btn-secondary:hover{{background:rgba(255,255,255,0.2);transform:translateY(-3px)}}
 
 /* ── FOOTER ── */
-footer{{
-  background:{p["dark"]};color:rgba(255,255,255,0.5);
-  padding:80px 5% 32px;
-}}
-.footer-inner{{max-width:1280px;margin:0 auto;}}
-.footer-top{{
-  display:grid;grid-template-columns:2fr 1fr 1fr 1fr;
-  gap:60px;margin-bottom:60px;
-  padding-bottom:60px;border-bottom:1px solid rgba(255,255,255,0.08);
-}}
-.footer-brand .footer-logo{{
-  font-family:"Playfair Display",serif;font-size:1.8rem;
-  font-weight:900;color:var(--white);display:block;margin-bottom:16px;
-  letter-spacing:-0.5px;
-}}
-.footer-brand p{{font-size:0.9rem;line-height:1.8;max-width:280px;}}
-.footer-col h4{{
-  color:var(--white);font-weight:800;margin-bottom:20px;
-  font-size:0.85rem;text-transform:uppercase;letter-spacing:1px;
-}}
-.footer-col ul{{list-style:none;}}
-.footer-col ul li{{margin-bottom:12px;}}
-.footer-col ul li a{{
-  color:rgba(255,255,255,0.45);text-decoration:none;
-  font-size:0.9rem;transition:color 0.2s;
-}}
-.footer-col ul li a:hover{{color:var(--primary);}}
-.footer-bottom{{
-  display:flex;justify-content:space-between;align-items:center;
-  flex-wrap:wrap;gap:16px;
-}}
-.footer-bottom p{{font-size:0.85rem;}}
-.footer-socials{{display:flex;gap:12px;}}
-.footer-social{{
-  width:36px;height:36px;border-radius:10px;
-  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);
-  display:flex;align-items:center;justify-content:center;
-  color:rgba(255,255,255,0.5);text-decoration:none;font-size:0.85rem;
-  transition:all 0.2s;
-}}
-.footer-social:hover{{background:var(--primary);color:var(--white);border-color:var(--primary);}}
-
-/* ── ANIMATIONS ── */
-.reveal{{opacity:0;transform:translateY(40px);transition:all 0.7s cubic-bezier(0.4,0,0.2,1);}}
-.reveal.visible{{opacity:1;transform:translateY(0);}}
-.reveal-left{{opacity:0;transform:translateX(-40px);transition:all 0.7s cubic-bezier(0.4,0,0.2,1);}}
-.reveal-left.visible{{opacity:1;transform:translateX(0);}}
-.reveal-right{{opacity:0;transform:translateX(40px);transition:all 0.7s cubic-bezier(0.4,0,0.2,1);}}
-.reveal-right.visible{{opacity:1;transform:translateX(0);}}
+footer{{background:var(--dk);padding:60px 5% 30px;border-top:1px solid rgba(255,255,255,0.06)}}
+.footer-inner{{max-width:1280px;margin:0 auto}}
+.footer-top{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:48px;margin-bottom:48px}}
+.footer-brand p{{font-size:0.85rem;color:rgba(255,255,255,0.45);margin-top:12px;line-height:1.7;max-width:260px}}
+.footer-logo{{font-family:"Playfair Display",serif;font-size:1.6rem;font-weight:900;color:#fff}}
+.footer-col h4{{font-weight:700;font-size:0.8rem;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:16px}}
+.footer-col a{{display:block;color:rgba(255,255,255,0.4);text-decoration:none;font-size:0.85rem;margin-bottom:10px;transition:color 0.2s}}
+.footer-col a:hover{{color:#fff}}
+.footer-bottom{{border-top:1px solid rgba(255,255,255,0.06);padding-top:28px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}}
+.footer-bottom p{{font-size:0.78rem;color:rgba(255,255,255,0.25)}}
 
 /* ── RESPONSIVE ── */
-@media(max-width:1024px){{
-  .hero-inner,.about-grid,.contact-grid{{grid-template-columns:1fr;}}
-  .hero-inner{{gap:48px;}}
-  .footer-top{{grid-template-columns:1fr 1fr;gap:40px;}}
-  .about-image-secondary{{display:none;}}
+@media(max-width:900px){{
+  .hero-inner{{grid-template-columns:1fr;gap:48px;text-align:center}}
+  .hero-img-wrap{{order:-1}}
+  .hero-sub{{max-width:100%}}
+  .hero-btns{{justify-content:center}}
+  .about-inner{{grid-template-columns:1fr;gap:48px}}
+  .services-grid{{grid-template-columns:1fr}}
+  .gallery-grid{{grid-template-columns:1fr 1fr}}
+  .testimonials-grid{{grid-template-columns:1fr}}
+  .stats-inner{{grid-template-columns:repeat(2,1fr)}}
+  .footer-top{{grid-template-columns:1fr 1fr;gap:32px}}
+  .nav-links,.nav-cta-wrap{{display:none}}
+  .nav-hamburger{{display:flex}}
+  .cta-inner{{padding:60px 30px}}
 }}
-@media(max-width:768px){{
-  section{{padding:80px 5%;}}
-  .stats-grid{{grid-template-columns:repeat(2,1fr);}}
-  .stat-item{{border-right:none;border-bottom:1px solid rgba(255,255,255,0.1);}}
-  .testimonials-grid{{grid-template-columns:1fr;}}
-  .gallery-grid{{grid-template-columns:1fr;}}
-  .gallery-item:first-child{{grid-column:span 1;}}
-  .footer-top{{grid-template-columns:1fr;}}
-  .nav-links{{display:none;}}
-  .hero-stats{{gap:24px;}}
-  .form-row{{grid-template-columns:1fr;}}
+@media(max-width:540px){{
+  .gallery-grid{{grid-template-columns:1fr}}
+  .stats-inner{{grid-template-columns:1fr 1fr}}
+  .hero-title{{font-size:2.4rem}}
+  .footer-top{{grid-template-columns:1fr}}
+  .footer-bottom{{flex-direction:column;text-align:center}}
 }}
 </style>
 </head>
 <body>
 
-<!-- NAVIGATION -->
-<nav id="navbar">
+<!-- NAV -->
+<nav id="nav">
   <div class="nav-inner">
     <a href="#" class="nav-logo">{name}</a>
     <ul class="nav-links">
-      <li><a href="#services">Services</a></li>
       <li><a href="#about">About</a></li>
-      <li><a href="#gallery">Work</a></li>
-      <li><a href="#testimonials">Reviews</a></li>
-      <li><a href="#contact" class="nav-cta">{cta}</a></li>
+      <li><a href="#services">{d["services_title"]}</a></li>
+      <li><a href="#gallery">Gallery</a></li>
+      <li><a href="#contact" class="nav-cta">{d["cta"]}</a></li>
     </ul>
+    <button class="nav-hamburger" id="hamburger" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
   </div>
 </nav>
+<div class="nav-mobile" id="navMobile">
+  <a href="#about">About</a>
+  <a href="#services">{d["services_title"]}</a>
+  <a href="#gallery">Gallery</a>
+  <a href="#contact" class="mob-cta">{d["cta"]}</a>
+</div>
 
 <!-- HERO -->
-<section class="hero">
-  <div class="hero-bg"></div>
+<section class="hero" id="home">
+  <div class="hero-bg-img"></div>
   <div class="hero-overlay"></div>
-  <div class="hero-shapes">
-    <div class="hero-circle"></div>
-    <div class="hero-circle"></div>
-    <div class="hero-circle"></div>
-  </div>
+  <div class="hero-particles" id="particles"></div>
   <div class="hero-inner">
-    <div class="hero-content reveal-left">
-      <div class="hero-badge">{name} · {category.title()}</div>
+    <div class="hero-content">
+      <div class="hero-badge"><span class="badge-dot"></span>✦ {name} · {category.title()}</div>
       <h1 class="hero-title">
-        {name}<br>
-        <span>{tagline}</span>
+        {name}
+        <span class="hero-title-accent">{d["tagline"]}</span>
       </h1>
-      <p class="hero-sub">{sub}</p>
-      <div class="hero-buttons">
-        <a href="#contact" class="btn-primary">{cta} →</a>
-        <a href="#services" class="btn-secondary">{cta2}</a>
-      </div>
-      <div class="hero-stats">
-        {stats_html}
+      <p class="hero-sub">{d["sub"]}</p>
+      <div class="hero-btns">
+        <a href="#contact" class="btn-primary">{d["cta"]} →</a>
+        <a href="#services" class="btn-secondary">▶ {d["cta2"]}</a>
       </div>
     </div>
-    <div class="hero-visual reveal-right">
-      <div class="hero-floating">⭐ Top Rated 2026</div>
-      <div class="hero-card">
-        <img src="{imgs["hero"]}" alt="{name}" loading="lazy">
-        <div class="hero-card-badge">
-          <div class="hero-card-badge-dot"></div>
-          <span class="hero-card-badge-text">Live & Serving Clients Now</span>
+    <div class="hero-img-wrap">
+      <div class="hero-img">
+        <img src="{imgs["hero"]}" alt="{name}" loading="eager"/>
+        <div class="hero-img-badge">
+          <div class="live-dot"></div>
+          <span class="live-text">Live &amp; Serving Clients Now</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS -->
+<div class="stats-bar">
+  <div class="stats-inner">
+    {stats_html}
+  </div>
+</div>
+
+<!-- ABOUT -->
+<section class="about" id="about">
+  <div class="about-inner">
+    <div class="about-img">
+      <img src="{imgs["about"]}" alt="About {name}" loading="lazy"/>
+      <div class="about-img-tag">Est. 2010</div>
+    </div>
+    <div class="about-text">
+      <div class="section-label">✦ Our Story</div>
+      <h2 class="section-title">{d["about_title"]}<span>.</span></h2>
+      <p class="section-sub">{d["about_sub"]}</p>
+      <div class="about-features">
+        <div class="about-feature">
+          <div class="af-icon">🏆</div>
+          <div class="af-text"><h4>Award-Winning Quality</h4><p>Recognised for excellence by industry leaders and customers alike.</p></div>
+        </div>
+        <div class="about-feature">
+          <div class="af-icon">🌍</div>
+          <div class="af-text"><h4>Trusted Globally</h4><p>Serving clients across India and beyond with consistent world-class results.</p></div>
+        </div>
+        <div class="about-feature">
+          <div class="af-icon">💡</div>
+          <div class="af-text"><h4>Innovation First</h4><p>We never stop improving — always finding better ways to serve you.</p></div>
         </div>
       </div>
     </div>
@@ -1361,12 +1048,12 @@ footer{{
 </section>
 
 <!-- SERVICES -->
-<section class="services-section" id="services">
-  <div class="section-inner">
-    <div class="text-center reveal">
-      <span class="section-badge">✦ {services_title}</span>
-      <h2 class="section-title">Everything You Need,<br><em>Delivered Perfectly</em></h2>
-      <p class="section-sub">We bring together expertise, technology, and passion to deliver outcomes that exceed expectations every time.</p>
+<section class="services" id="services">
+  <div class="services-inner">
+    <div class="section-header">
+      <div class="section-label">✦ {d["services_title"]}</div>
+      <h2 class="section-title">What Makes Us <span>Different</span></h2>
+      <p class="section-sub" style="max-width:500px;margin:0 auto">Everything you need, crafted to the highest standard — nothing less.</p>
     </div>
     <div class="services-grid">
       {services_html}
@@ -1374,78 +1061,26 @@ footer{{
   </div>
 </section>
 
-<!-- STATS -->
-<section class="stats-section">
-  <div class="section-inner">
-    <div class="stats-grid">
-      {stats_html}
-    </div>
-  </div>
-</section>
-
-<!-- ABOUT -->
-<section class="about-section" id="about">
-  <div class="section-inner">
-    <div class="about-grid">
-      <div class="about-image-wrap reveal-left">
-        <div class="about-accent">✦</div>
-        <img src="{imgs["about"]}" alt="About {name}" class="about-image-main" loading="lazy">
-        <img src="{imgs["s1"]}" alt="{name} work" class="about-image-secondary" loading="lazy">
-      </div>
-      <div class="about-text reveal-right">
-        <span class="section-badge">✦ Our Story</span>
-        <h2>Why {name} Is the Best Choice for You</h2>
-        <p>We started with a singular obsession: delivering excellence that actually moves the needle for our clients. Not just pretty outputs, but real, measurable impact that transforms businesses and lives.</p>
-        <p>Every project we take on is treated as if it were our own. We bring the same energy, rigour, and creative fire to a small startup as we do to a Fortune 500 company.</p>
-        <ul class="about-points">
-          <li>Proven track record with 100+ successful projects</li>
-          <li>Team of world-class experts with decades of combined experience</li>
-          <li>Results-obsessed — we measure everything that matters</li>
-          <li>Transparent, honest communication throughout every project</li>
-          <li>Post-delivery support and genuine long-term partnership</li>
-        </ul>
-        <a href="#contact" class="btn-primary" style="display:inline-flex;margin-top:8px;">{cta} →</a>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- GALLERY -->
-<section class="gallery-section" id="gallery">
-  <div class="section-inner">
-    <div class="text-center reveal">
-      <span class="section-badge">✦ Our Work</span>
-      <h2 class="section-title">Results That<br><em>Speak for Themselves</em></h2>
-      <p class="section-sub">A glimpse into the work, impact, and craft that defines everything we do at {name}.</p>
+<section class="gallery" id="gallery">
+  <div class="gallery-inner">
+    <div class="section-header">
+      <div class="section-label" style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.8);border-color:rgba(255,255,255,0.2)">✦ Gallery</div>
+      <h2 class="section-title" style="color:#fff">See It For <span style="color:var(--ac)">Yourself</span></h2>
     </div>
-    <div class="gallery-grid reveal">
-      <div class="gallery-item">
-        <img src="{imgs["hero"]}" alt="Work 1" loading="lazy">
-        <div class="gallery-item-overlay"><span>View Project →</span></div>
-      </div>
-      <div class="gallery-item">
-        <img src="{imgs["s2"]}" alt="Work 2" loading="lazy">
-        <div class="gallery-item-overlay"><span>View Project →</span></div>
-      </div>
-      <div class="gallery-item">
-        <img src="{imgs["s1"]}" alt="Work 3" loading="lazy">
-        <div class="gallery-item-overlay"><span>View Project →</span></div>
-      </div>
-      <div class="gallery-item">
-        <img src="{imgs["s3"]}" alt="Work 4" loading="lazy">
-        <div class="gallery-item-overlay"><span>View Project →</span></div>
-      </div>
+    <div class="gallery-grid">
+      {gallery_html}
     </div>
   </div>
 </section>
 
 <!-- TESTIMONIALS -->
-<section class="testimonials-section" id="testimonials">
-  <div class="section-inner">
-    <div class="text-center reveal">
-      <span class="section-badge" style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.9);border-color:rgba(255,255,255,0.2);">✦ Client Love</span>
-      <h2 class="section-title">Trusted by the<br>Best in the Business</h2>
-      <p class="section-sub" style="color:rgba(255,255,255,0.6);">Real words from real clients who have experienced the {name} difference.</p>
+<section class="testimonials" id="testimonials">
+  <div class="testimonials-inner">
+    <div class="section-header">
+      <div class="section-label">✦ Testimonials</div>
+      <h2 class="section-title">What Our <span>Clients Say</span></h2>
+      <p class="section-sub" style="max-width:480px;margin:0 auto">Real results from real people who trusted us with what matters most.</p>
     </div>
     <div class="testimonials-grid">
       {testimonials_html}
@@ -1453,69 +1088,14 @@ footer{{
   </div>
 </section>
 
-<!-- CTA BANNER -->
-<section class="cta-section">
-  <div class="section-inner">
-    <span class="section-badge" style="background:rgba(255,255,255,0.15);color:rgba(255,255,255,0.95);border-color:rgba(255,255,255,0.3);">✦ Get Started Today</span>
-    <h2>Ready to Work With<br>the Best?</h2>
-    <p>Join hundreds of clients who trust {name} to deliver extraordinary results. Your success story starts here.</p>
-    <a href="#contact" class="btn-cta">{cta} — It\'s Free to Start →</a>
-  </div>
-</section>
-
-<!-- CONTACT -->
-<section class="contact-section" id="contact">
-  <div class="section-inner">
-    <div class="contact-grid">
-      <div>
-        <span class="section-badge">✦ Contact Us</span>
-        <div class="contact-info">
-          <h3>Let\'s Create Something Extraordinary Together</h3>
-          <p>Whether you have a clear vision or just a spark of an idea — we would love to hear from you. Let\'s start a conversation.</p>
-        </div>
-        <div class="contact-detail">
-          <div class="contact-detail-icon">📧</div>
-          <div class="contact-detail-text">
-            <strong>Email Us</strong>
-            <span>hello@{name.lower().replace(" ","")}.com</span>
-          </div>
-        </div>
-        <div class="contact-detail">
-          <div class="contact-detail-icon">📞</div>
-          <div class="contact-detail-text">
-            <strong>Call Us</strong>
-            <span>+91 98765 43210</span>
-          </div>
-        </div>
-        <div class="contact-detail">
-          <div class="contact-detail-icon">📍</div>
-          <div class="contact-detail-text">
-            <strong>Find Us</strong>
-            <span>Mumbai, Maharashtra, India</span>
-          </div>
-        </div>
-        <div class="contact-detail">
-          <div class="contact-detail-icon">⏰</div>
-          <div class="contact-detail-text">
-            <strong>Working Hours</strong>
-            <span>Mon–Sat: 9 AM – 8 PM IST</span>
-          </div>
-        </div>
-      </div>
-      <div class="contact-form-wrap reveal-right">
-        <div class="form-row">
-          <div class="form-group"><label>Full Name *</label><input type="text" placeholder="Your name"></div>
-          <div class="form-group"><label>Email *</label><input type="email" placeholder="your@email.com"></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Phone</label><input type="tel" placeholder="+91 98765 43210"></div>
-          <div class="form-group"><label>Subject</label>
-            <select><option>General Inquiry</option><option>Pricing</option><option>Partnership</option><option>Support</option><option>Other</option></select>
-          </div>
-        </div>
-        <div class="form-group"><label>Your Message *</label><textarea placeholder="Tell us about your project, goals, or any questions you have..."></textarea></div>
-        <button class="btn-submit" onclick="this.textContent=\'✓ Message Sent! We will reply within 24h\';this.style.background=\'#22C55E\';setTimeout(()=>{{this.textContent=\'Send Message\';this.style.background=\'\'}},4000)">Send Message →</button>
-      </div>
+<!-- CTA -->
+<section class="cta-section" id="contact">
+  <div class="cta-inner">
+    <h2 class="cta-title">Ready to Get Started?</h2>
+    <p class="cta-sub">Join thousands who have already transformed their experience with {name}. Take the first step today.</p>
+    <div class="cta-btns">
+      <a href="mailto:hello@{name.lower().replace(' ','')}.com" class="cta-btn-primary">{d["cta"]} →</a>
+      <a href="tel:+919999999999" class="cta-btn-secondary">📞 Call Us Now</a>
     </div>
   </div>
 </section>
@@ -1525,88 +1105,81 @@ footer{{
   <div class="footer-inner">
     <div class="footer-top">
       <div class="footer-brand">
-        <span class="footer-logo">{name}</span>
-        <p>We exist to make our clients wildly successful. Every project. Every time. No exceptions.</p>
+        <div class="footer-logo">{name}</div>
+        <p>{d["sub"][:100]}...</p>
       </div>
       <div class="footer-col">
         <h4>Company</h4>
-        <ul>
-          <li><a href="#about">About Us</a></li>
-          <li><a href="#services">Services</a></li>
-          <li><a href="#gallery">Portfolio</a></li>
-          <li><a href="#contact">Contact</a></li>
-        </ul>
+        <a href="#about">About Us</a>
+        <a href="#services">Services</a>
+        <a href="#gallery">Gallery</a>
+        <a href="#contact">Contact</a>
       </div>
       <div class="footer-col">
         <h4>Services</h4>
-        <ul>
-          <li><a href="#">Consulting</a></li>
-          <li><a href="#">Development</a></li>
-          <li><a href="#">Design</a></li>
-          <li><a href="#">Marketing</a></li>
-        </ul>
+        {''.join([f\'<a href="#services">{s[1]}</a>\' for s in d["services"]])}
       </div>
       <div class="footer-col">
-        <h4>Connect</h4>
-        <ul>
-          <li><a href="#">Twitter / X</a></li>
-          <li><a href="#">LinkedIn</a></li>
-          <li><a href="#">Instagram</a></li>
-          <li><a href="#">YouTube</a></li>
-        </ul>
+        <h4>Contact</h4>
+        <a href="mailto:hello@{name.lower().replace(' ','')}.com">Email Us</a>
+        <a href="tel:+919999999999">+91 99999 99999</a>
+        <a href="#">Instagram</a>
+        <a href="#">LinkedIn</a>
       </div>
     </div>
     <div class="footer-bottom">
-      <p>© 2026 {name}. All rights reserved. Built with Dacexy AI.</p>
-      <div class="footer-socials">
-        <a href="#" class="footer-social">𝕏</a>
-        <a href="#" class="footer-social">in</a>
-        <a href="#" class="footer-social">ig</a>
-        <a href="#" class="footer-social">yt</a>
-      </div>
-      <p><a href="#" style="color:rgba(255,255,255,0.3);text-decoration:none;">Privacy</a> · <a href="#" style="color:rgba(255,255,255,0.3);text-decoration:none;">Terms</a></p>
+      <p>© 2024 {name}. All rights reserved.</p>
+      <p>Built with ❤️ using Dacexy AI</p>
     </div>
   </div>
 </footer>
 
 <script>
-// Navbar scroll
-const nav=document.getElementById("navbar");
-window.addEventListener("scroll",()=>nav.classList.toggle("scrolled",window.scrollY>60));
+// Nav scroll
+const nav=document.getElementById("nav");
+window.addEventListener("scroll",()=>{{nav.classList.toggle("scrolled",scrollY>60)}});
 
-// Smooth scroll
-document.querySelectorAll("a[href^=\'#\']").forEach(a=>{{
-  a.addEventListener("click",e=>{{
-    e.preventDefault();
-    const t=document.querySelector(a.getAttribute("href"));
-    if(t) t.scrollIntoView({{behavior:"smooth",block:"start"}});
-  }});
-}});
+// Hamburger
+const hb=document.getElementById("hamburger");
+const nm=document.getElementById("navMobile");
+hb.addEventListener("click",()=>{{nm.classList.toggle("open")}});
+nm.querySelectorAll("a").forEach(a=>a.addEventListener("click",()=>nm.classList.remove("open")));
+
+// Particles
+const pc=document.getElementById("particles");
+for(let i=0;i<18;i++){{
+  const d=document.createElement("div");
+  const s=Math.random()*60+20;
+  d.className="particle";
+  d.style.cssText=`width:${{s}}px;height:${{s}}px;left:${{Math.random()*100}}%;animation-duration:${{Math.random()*15+10}}s;animation-delay:${{Math.random()*10}}s;`;
+  pc.appendChild(d);
+}}
 
 // Scroll reveal
-const observer=new IntersectionObserver(entries=>{{
+const observer=new IntersectionObserver((entries)=>{{
   entries.forEach(e=>{{
-    if(e.isIntersecting){{e.target.classList.add("visible");observer.unobserve(e.target);}}
+    if(e.isIntersecting){{
+      e.target.style.opacity="1";
+      e.target.style.transform="translateY(0)";
+    }}
   }});
-}},{{threshold:0.12,rootMargin:"0px 0px -60px 0px"}});
-document.querySelectorAll(".reveal,.reveal-left,.reveal-right").forEach(el=>observer.observe(el));
-
-// Stagger service cards
-document.querySelectorAll(".service-card").forEach((card,i)=>{{
-  card.style.transitionDelay=i*0.08+"s";
-  observer.observe(card);
-  card.classList.add("reveal");
+}},{{threshold:0.1}});
+document.querySelectorAll(".service-card,.testimonial-card,.about-feature,.gallery-item,.stat-item").forEach(el=>{{
+  el.style.opacity="0";
+  el.style.transform="translateY(30px)";
+  el.style.transition="opacity 0.6s ease,transform 0.6s ease";
+  observer.observe(el);
 }});
 </script>
 </body>
 </html>"""
 
-async def generate_website(prompt: str, ai: DeepSeekProvider) -> str:
+async def generate_website(prompt: str, user_id: str) -> str:
     try:
         return build_template(prompt)
     except Exception as e:
-        log.error(f"Website generation failed: {e}")
-        return build_template("Business")
+        log.error(f"Website generation error: {{e}}")
+        raise
 ''')
           
 w("src/interfaces/http/routes/auth.py", """
