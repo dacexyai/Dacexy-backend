@@ -3057,8 +3057,9 @@ async def global_exception_handler(request: Request, exc: Exception):
     log.error("Unhandled: %s %s %s", request.method, request.url.path, exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
+from fastapi import Request
 @app.api_route("/health", methods=["GET", "HEAD"])
-async def health():
+async def health(request: Request):
     return {"status": "ok"}
 
     
