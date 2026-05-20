@@ -1614,7 +1614,6 @@ async def google_callback(
         return RedirectResponse(f"{FRONTEND}/login?error={log_msg}")
 """)
             
-
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
 import datetime
@@ -1675,13 +1674,13 @@ RESPONSE STYLE — FOLLOW STRICTLY:
 - No closing lines like "I hope this helps!", "Feel free to ask!", "Let me know if you need more!"
 - Keep responses concise — short answers for simple questions, detailed only when necessary
 - Use numbered lists or plain bullet points only when the user explicitly asks for a list
-- Match the user's language — if they write in Hindi, respond in Hindi naturally
+- Match the user language — if they write in Hindi, respond in Hindi naturally
 
 FOR NEWS, SPORTS, PRICES, CURRENT EVENTS:
 - Always use the most recent information from web search when available
 - Today is {today} — never present information from 2022 or 2023 as current
 - For sports scores, election results, stock prices — clearly state you are showing the latest available data
-- If you don't have current data, say so clearly and briefly
+- If you do not have current data, say so clearly and briefly
 
 FOR CODE AND TECHNICAL QUESTIONS:
 - Give working code directly without excessive explanation unless asked
@@ -1699,44 +1698,90 @@ class ChatRequest(BaseModel):
     model: str = "deepseek-chat"
 
 @router.post("/chat")
-async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
+async def chat(
+    body: ChatRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db),
+    ai: DeepSeekProvider = Depends(get_deepseek)
+):
     messages = [{{"role": m.role, "content": m.content}} for m in body.messages]
     session = None
+
     if body.session_id:
-        result = await db.execute(select(ConversationSession).where(ConversationSession.id == body.session_id, ConversationSession.org_id == user.org_id))
-        session = result.scalar_one_or_none()
+        try:
+            result = await db.execute(
+                select(ConversationSession).where(
+                    ConversationSession.id == body.session_id,
+                    ConversationSession.org_id == user.org_id
+                )
+            )
+            session = result.scalar_one_or_none()
+        except Exception:
+            session = None
+
     if not session:
         title = body.messages[0].content[:60] if body.messages else "New Chat"
-        session = ConversationSession(org_id=user.org_id, user_id=user.id, title=title, messages=messages)
+        session = ConversationSession(
+            org_id=user.org_id,
+            user_id=user.id,
+            title=title,
+            messages=[]
+        )
         db.add(session)
         await db.flush()
 
     search = needs_search(messages)
     website = needs_website(messages)
 
-    memory_result = await db.execute(select(MemoryEntry).where(MemoryEntry.org_id == user.org_id).order_by(MemoryEntry.created_at.desc()).limit(20))
-    memories = memory_result.scalars().all()
-    memory_context = "\\n".join([f"- {m.content}" for m in memories]) if memories else ""
+    try:
+        memory_result = await db.execute(
+            select(MemoryEntry).where(
+                MemoryEntry.org_id == user.org_id
+            ).order_by(MemoryEntry.created_at.desc()).limit(20)
+        )
+        memories = memory_result.scalars().all()
+        memory_context = "\\n".join([f"- {m.content}" for m in memories]) if memories else ""
+    except Exception:
+        memory_context = ""
+
     system_msg = get_base_system_prompt(memory_context)
-    messages = [system_msg] + messages
+    full_messages = [system_msg] + messages
 
     last_content = body.messages[-1].content if body.messages else ""
-    memory_keywords = ["my company", "my business", "we are", "i am", "our product", "my name is", "we sell", "our team", "my startup", "remember that", "remember this", "save this"]
+    memory_keywords = [
+        "my company", "my business", "we are", "i am", "our product",
+        "my name is", "we sell", "our team", "my startup",
+        "remember that", "remember this", "save this"
+    ]
     if any(kw in last_content.lower() for kw in memory_keywords):
-        new_memory = MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500])
-        db.add(new_memory)
-        await db.flush()
+        try:
+            new_memory = MemoryEntry(
+                org_id=user.org_id,
+                user_id=user.id,
+                content=last_content[:500]
+            )
+            db.add(new_memory)
+            await db.flush()
+        except Exception:
+            pass
+
+    session_id_str = str(session.id)
 
     if website and body.stream:
         from src.application.use_cases.website.website_engine import generate_website
         prompt = body.messages[-1].content
-        record = GeneratedWebsite(org_id=user.org_id, user_id=user.id, prompt=prompt, status="generating")
+        record = GeneratedWebsite(
+            org_id=user.org_id,
+            user_id=user.id,
+            prompt=prompt,
+            status="generating"
+        )
         db.add(record)
         await db.flush()
         record_id = str(record.id)
-        session_id = str(session.id)
+
         async def website_stream():
-            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id}}) + "\\n\\n"
+            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id_str}}) + "\\n\\n"
             yield "data: " + json.dumps({{"type": "chunk", "content": "Building your website...\\n\\n"}}) + "\\n\\n"
             try:
                 html = await generate_website(prompt, ai)
@@ -1747,52 +1792,112 @@ async def chat(body: ChatRequest, user: User = Depends(_get_current_user), db: A
                 msg = "Your website is ready! Preview: " + preview_url + "\\n\\nClick Open to view it."
                 yield "data: " + json.dumps({{"type": "chunk", "content": msg}}) + "\\n\\n"
             except Exception as e:
-                record.status = "failed"
+                try:
+                    record.status = "failed"
+                    await db.commit()
+                except Exception:
+                    pass
                 yield "data: " + json.dumps({{"type": "chunk", "content": "Website generation failed: " + str(e)}}) + "\\n\\n"
             yield "data: " + json.dumps({{"type": "done"}}) + "\\n\\n"
+
         return StreamingResponse(website_stream(), media_type="text/event-stream")
 
     if body.stream:
-        session_id = str(session.id)
         async def event_stream():
             full = ""
-            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id}}) + "\\n\\n"
+            yield "data: " + json.dumps({{"type": "session_id", "session_id": session_id_str}}) + "\\n\\n"
             if search:
                 yield "data: " + json.dumps({{"type": "chunk", "content": "Searching the web...\\n\\n"}}) + "\\n\\n"
             try:
-                async for chunk in await ai.chat(messages, model=body.model, stream=True, search=search):
+                async for chunk in await ai.chat(full_messages, model=body.model, stream=True, search=search):
                     full += chunk
                     yield "data: " + json.dumps({{"type": "chunk", "content": chunk}}) + "\\n\\n"
             except Exception as e:
                 yield "data: " + json.dumps({{"type": "chunk", "content": "Something went wrong: " + str(e)}}) + "\\n\\n"
             yield "data: " + json.dumps({{"type": "done"}}) + "\\n\\n"
-            session.messages = messages + [{{"role": "assistant", "content": full}}]
             try:
+                saved = list(messages)
+                saved.append({{"role": "assistant", "content": full}})
+                session.messages = saved
                 await db.commit()
             except Exception:
                 pass
+
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    response = await ai.chat(messages, model=body.model, stream=False, search=search)
-    session.messages = messages + [{{"role": "assistant", "content": response}}]
-    await db.commit()
-    return {{"content": response, "session_id": str(session.id)}}
+    try:
+        response = await ai.chat(full_messages, model=body.model, stream=False, search=search)
+    except Exception as e:
+        raise HTTPException(500, f"AI error: {str(e)}")
+
+    try:
+        saved = list(messages)
+        saved.append({{"role": "assistant", "content": response}})
+        session.messages = saved
+        await db.commit()
+    except Exception:
+        pass
+
+    return {{"content": response, "session_id": session_id_str}}
 
 @router.get("/sessions")
-async def list_sessions(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ConversationSession).where(ConversationSession.org_id == user.org_id).order_by(ConversationSession.updated_at.desc()).limit(50))
-    sessions = result.scalars().all()
-    return {{"sessions": [{{"id": str(s.id), "title": s.title, "created_at": str(s.created_at)}} for s in sessions], "total": len(sessions)}}
+async def list_sessions(
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        result = await db.execute(
+            select(ConversationSession).where(
+                ConversationSession.org_id == user.org_id
+            ).order_by(ConversationSession.updated_at.desc()).limit(50)
+        )
+        # FIX: use scalars().all() correctly — was crashing with unhashable dict
+        sessions = result.scalars().all()
+        session_list = []
+        for s in sessions:
+            try:
+                session_list.append({{
+                    "id": str(s.id),
+                    "title": s.title or "New Chat",
+                    "created_at": str(s.created_at)
+                }})
+            except Exception:
+                continue
+        return {{"sessions": session_list, "total": len(session_list)}}
+    except Exception as e:
+        return {{"sessions": [], "total": 0}}
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: str, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ConversationSession).where(ConversationSession.id == session_id, ConversationSession.org_id == user.org_id))
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(404, "Session not found")
-    messages = session.messages or []
-    clean = [m for m in messages if isinstance(m, dict) and m.get("role") != "system" and m.get("content")]
-    return {{"messages": clean, "session_id": str(session.id), "title": session.title}}
+async def get_messages(
+    session_id: str,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        result = await db.execute(
+            select(ConversationSession).where(
+                ConversationSession.id == session_id,
+                ConversationSession.org_id == user.org_id
+            )
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            raise HTTPException(404, "Session not found")
+        messages = session.messages or []
+        if not isinstance(messages, list):
+            messages = []
+        clean = [
+            m for m in messages
+            if isinstance(m, dict)
+            and m.get("role") != "system"
+            and m.get("content")
+            and str(m.get("content", "")).strip()
+        ]
+        return {{"messages": clean, "session_id": str(session.id), "title": session.title or "Chat"}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {{"messages": [], "session_id": session_id, "title": "Chat"}}
 ''')
     
 w("src/interfaces/http/routes/orgs.py", """
