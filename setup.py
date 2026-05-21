@@ -585,8 +585,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
-
- w("src/application/use_cases/website/website_engine.py", '''
+w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import urllib.parse
 import re
@@ -612,14 +611,14 @@ def extract_name(prompt: str) -> str:
 def get_category(prompt: str) -> str:
     p = prompt.lower()
     scores = {
-        "restaurant": sum(p.count(x) for x in ["restaurant","food","cafe","kitchen","dining","menu","eat","chef","pizza","hotel","bakery","cuisine","biryani","dhaba","tiffin"]),
-        "saas": sum(p.count(x) for x in ["saas","software","app","platform","tech","startup","ai tool","dashboard","crm","b2b","productivity","workflow","automation tool"]),
-        "portfolio": sum(p.count(x) for x in ["portfolio","designer","freelance","artist","creative","photography","my work","personal","illustrator","architect"]),
-        "ecommerce": sum(p.count(x) for x in ["shop","store","ecommerce","product","sell","buy","fashion","clothing","brand","retail","marketplace","cart"]),
-        "agency": sum(p.count(x) for x in ["agency","marketing","consultant","service","firm","corporate","enterprise","digital agency","creative agency"]),
-        "fitness": sum(p.count(x) for x in ["fitness","gym","health","wellness","yoga","trainer","sport","workout","weight loss","muscle"]),
-        "education": sum(p.count(x) for x in ["education","school","course","learning","teach","tutor","academy","college","online learning","edtech"]),
-        "realestate": sum(p.count(x) for x in ["real estate","property","house","apartment","rent","buy home","realtor","housing","flat","villa"]),
+        "restaurant": sum(1 for x in ["restaurant","food","cafe","kitchen","dining","menu","eat","chef","pizza","hotel","bakery","cuisine","biryani","dhaba","tiffin","bar","grill","diner"] if x in p),
+        "saas": sum(1 for x in ["saas","software","app","platform","tech","startup","ai tool","dashboard","crm","b2b","productivity","workflow","automation tool","tool","service as"] if x in p),
+        "portfolio": sum(1 for x in ["portfolio","designer","freelance","artist","creative","photography","my work","personal","illustrator","architect","photographer","myself"] if x in p),
+        "ecommerce": sum(1 for x in ["shop","store","ecommerce","product","sell","buy","fashion","clothing","brand","retail","marketplace","cart","order","delivery"] if x in p),
+        "agency": sum(1 for x in ["agency","marketing","consultant","service firm","corporate","enterprise","digital agency","creative agency","advertising"] if x in p),
+        "fitness": sum(1 for x in ["fitness","gym","health","wellness","yoga","trainer","sport","workout","weight loss","muscle","exercise","crossfit"] if x in p),
+        "education": sum(1 for x in ["education","school","course","learning","teach","tutor","academy","college","online learning","edtech","classes","training"] if x in p),
+        "realestate": sum(1 for x in ["real estate","property","house","apartment","rent","buy home","realtor","housing","flat","villa","plot","land"] if x in p),
     }
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "business"
@@ -632,113 +631,128 @@ def build_template(prompt: str) -> str:
 
     configs = {
         "restaurant": {
-            "colors": {"bg":"#0D0500","primary":"#C8102E","accent":"#FFD700","text":"#FFF8F0","muted":"rgba(255,248,240,0.6)","card":"rgba(255,255,255,0.04)","border":"rgba(255,215,0,0.15)"},
-            "font_heading": "Playfair Display",
+            "dark": True,
+            "colors": {"bg":"#0D0500","primary":"#C8102E","accent":"#FFD700","text":"#FFF8F0","muted":"rgba(255,248,240,0.55)","card":"rgba(255,255,255,0.04)","border":"rgba(255,215,0,0.12)","navbg":"rgba(13,5,0,0.92)","navtext":"rgba(255,248,240,0.85)"},
+            "font": "Playfair Display",
             "tagline": "Where Every Bite Tells a Story",
             "sub": f"Experience authentic flavours crafted with passion at {name}. Fresh ingredients, timeless recipes, unforgettable moments.",
             "cta1": "Reserve a Table", "cta2": "View Menu",
-            "services": [("🍽️","Fine Dining","Exquisite multi-course meals by award-winning chefs."),("🍷","Premium Bar","Curated wines and craft cocktails."),("🎂","Private Events","Exclusive dining rooms for celebrations."),("🚗","Home Delivery","Restaurant quality at your doorstep.")],
+            "services": [("🍽️","Fine Dining","Exquisite multi-course meals by award-winning chefs."),("🍷","Premium Bar","Curated wines and craft cocktails."),("🎂","Private Events","Exclusive rooms for celebrations."),("🚗","Home Delivery","Restaurant quality at your doorstep.")],
             "stats": [("15+","Years"),("50K+","Guests"),("4.9★","Rating"),("200+","Dishes")],
-            "testimonials": [("Arjun M.","Food Critic","Best dining in the city. Every dish is perfection."),("Priya S.","Guest","We celebrate here every year. Simply magical."),("Rahul K.","Corporate","World-class private dining experience.")],
+            "testi": [("Arjun M.","Food Critic","Best dining in the city. Every dish is perfection."),("Priya S.","Regular Guest","We celebrate here every year. Simply magical."),("Rahul K.","Corporate","World-class private dining.")],
         },
         "saas": {
-            "colors": {"bg":"#060614","primary":"#6366F1","accent":"#06B6D4","text":"#F0F0FF","muted":"rgba(240,240,255,0.55)","card":"rgba(99,102,241,0.08)","border":"rgba(99,102,241,0.2)"},
-            "font_heading": "Inter",
+            "dark": False,
+            "colors": {"bg":"#FFFFFF","primary":"#6366F1","accent":"#06B6D4","text":"#0F0F1A","muted":"#6B7280","card":"#F8F7FF","border":"#E5E7EB","navbg":"rgba(255,255,255,0.95)","navtext":"#374151"},
+            "font": "Inter",
             "tagline": "Ship Faster. Scale Smarter.",
             "sub": f"{name} gives your team AI superpowers — automate workflows, ship products faster, and grow without limits.",
             "cta1": "Start Free Trial", "cta2": "Watch Demo",
-            "services": [("⚡","10x Velocity","Automated workflows eliminate manual bottlenecks instantly."),("🤖","AI-Native","Smart automation that learns and improves continuously."),("🔒","SOC2 Secure","Enterprise-grade security with full audit trails."),("📊","Live Analytics","Real-time dashboards with actionable insights.")],
+            "services": [("⚡","10x Velocity","Automated workflows eliminate manual bottlenecks."),("🤖","AI-Native","Smart automation that learns continuously."),("🔒","SOC2 Secure","Enterprise-grade security built in."),("📊","Live Analytics","Real-time dashboards with actionable insights.")],
             "stats": [("10K+","Teams"),("99.9%","Uptime"),("10x","ROI"),("4.8★","G2")],
-            "testimonials": [("Sarah C.","CTO TechFlow","Cut costs 60% in month one. Transformative."),("Marcus J.","CEO ScaleUp","Team ships 3x faster. ROI was immediate."),("Aisha P.","VP Eng","Best developer experience we have ever had.")],
+            "testi": [("Sarah C.","CTO TechFlow","Cut costs 60% in month one. Transformative."),("Marcus J.","CEO ScaleUp","Team ships 3x faster. ROI was immediate."),("Aisha P.","VP Eng","Best developer experience we have ever had.")],
         },
         "portfolio": {
-            "colors": {"bg":"#0A0A0A","primary":"#F59E0B","accent":"#EF4444","text":"#FAFAFA","muted":"rgba(250,250,250,0.55)","card":"rgba(245,158,11,0.06)","border":"rgba(245,158,11,0.15)"},
-            "font_heading": "Playfair Display",
+            "dark": False,
+            "colors": {"bg":"#FFFBF0","primary":"#D97706","accent":"#EF4444","text":"#1C1917","muted":"#78716C","card":"#FEF3C7","border":"#FDE68A","navbg":"rgba(255,251,240,0.95)","navtext":"#44403C"},
+            "font": "Playfair Display",
             "tagline": "Design That Moves People",
-            "sub": "I craft digital experiences that convert. Every pixel, every interaction, every line of code — built with purpose.",
+            "sub": "I craft digital experiences that convert. Every pixel, every interaction — built with intent and precision.",
             "cta1": "See My Work", "cta2": "Hire Me",
-            "services": [("🎨","UI/UX Design","Human-centred interfaces users love."),("💻","Development","React, Next.js — fast, accessible, scalable."),("📱","Mobile Apps","iOS and Android that delight every user."),("🚀","Brand Identity","Logos, systems, and guidelines that last.")],
+            "services": [("🎨","UI/UX Design","Human-centred interfaces users love."),("💻","Development","React and Next.js — fast and scalable."),("📱","Mobile Apps","iOS and Android that delight every user."),("🚀","Brand Identity","Logos and systems that stand the test of time.")],
             "stats": [("50+","Projects"),("30+","Clients"),("5★","Rating"),("8+","Years")],
-            "testimonials": [("David P.","Founder","Delivered beyond expectations. Outstanding."),("Emma W.","Director","Conversion up 240% after redesign. World-class."),("Carlos R.","CEO","Best investment this year. Market-changing.")],
+            "testi": [("David P.","Founder","Delivered beyond expectations. Outstanding."),("Emma W.","Director","Conversion up 240% after redesign."),("Carlos R.","CEO","Best investment this year. Market-changing.")],
         },
         "ecommerce": {
-            "colors": {"bg":"#022C22","primary":"#10B981","accent":"#F97316","text":"#ECFDF5","muted":"rgba(236,253,245,0.6)","card":"rgba(16,185,129,0.08)","border":"rgba(16,185,129,0.2)"},
-            "font_heading": "Inter",
+            "dark": False,
+            "colors": {"bg":"#F0FDF4","primary":"#059669","accent":"#F97316","text":"#022C22","muted":"#6B7280","card":"#DCFCE7","border":"#A7F3D0","navbg":"rgba(240,253,244,0.95)","navtext":"#065F46"},
+            "font": "Inter",
             "tagline": "Premium Quality, Fast Delivery",
             "sub": f"Shop {name}'s curated collection. Free shipping on all orders. 30-day hassle-free returns.",
-            "cta1": "Shop Now", "cta2": "View Collection",
-            "services": [("🚚","Free Shipping","Express delivery on all orders nationwide."),("✅","Quality Check","47-point inspection on every product."),("↩️","Easy Returns","30-day no-questions-asked returns."),("💳","Secure Pay","UPI, cards, COD — all accepted.")],
+            "cta1": "Shop Now", "cta2": "View Lookbook",
+            "services": [("🚚","Free Shipping","Express delivery nationwide."),("✅","Quality Check","47-point inspection on every product."),("↩️","Easy Returns","30-day no-questions returns."),("💳","Secure Pay","UPI, cards, COD — all accepted.")],
             "stats": [("50K+","Customers"),("10K+","Products"),("4.9★","Rating"),("99%","Satisfaction")],
-            "testimonials": [("Sneha G.","Buyer","Amazing quality, delivered in 2 days!"),("Vikram N.","Member","Shopping here 3 years. Always excellent."),("Divya K.","Blogger","My go-to for premium finds. Impeccable.")],
+            "testi": [("Sneha G.","Buyer","Amazing quality, delivered in 2 days!"),("Vikram N.","Member","Shopping here 3 years. Always excellent."),("Divya K.","Blogger","My go-to for premium finds.")],
         },
         "agency": {
-            "colors": {"bg":"#0A0000","primary":"#DC2626","accent":"#FBBF24","text":"#FFF5F5","muted":"rgba(255,245,245,0.55)","card":"rgba(220,38,38,0.08)","border":"rgba(220,38,38,0.2)"},
-            "font_heading": "Playfair Display",
+            "dark": False,
+            "colors": {"bg":"#FFF5F5","primary":"#DC2626","accent":"#F59E0B","text":"#1A0000","muted":"#6B7280","card":"#FEE2E2","border":"#FECACA","navbg":"rgba(255,245,245,0.95)","navtext":"#7F1D1D"},
+            "font": "Playfair Display",
             "tagline": "We Build Brands That Dominate",
             "sub": f"{name} transforms businesses through razor-sharp strategy, bold creative, and technology that delivers results.",
             "cta1": "Get a Proposal", "cta2": "See Our Work",
-            "services": [("📈","Growth Strategy","Data-driven plans for explosive growth."),("🎯","Performance Ads","ROI-focused campaigns that beat benchmarks."),("🌐","Digital Products","Websites and apps that convert."),("✍️","Creative Content","Stories that connect and drive action.")],
+            "services": [("📈","Growth Strategy","Data-driven plans for explosive growth."),("🎯","Performance Ads","ROI-focused campaigns that beat benchmarks."),("🌐","Digital Products","Websites and apps that convert visitors."),("✍️","Creative Content","Stories that connect and drive action.")],
             "stats": [("100+","Brands"),("₹50Cr+","Revenue"),("4.9★","Rating"),("8+","Years")],
-            "testimonials": [("Ankit J.","CMO","Tripled leads in 90 days. Best agency ever."),("Meera K.","Founder","Rebrand drove 180% revenue growth."),("Rajesh P.","CEO","True growth partner. Exceptional results.")],
+            "testi": [("Ankit J.","CMO","Tripled leads in 90 days. Best agency ever."),("Meera K.","Founder","Rebrand drove 180% revenue growth."),("Rajesh P.","CEO","True growth partner. Exceptional results.")],
         },
         "fitness": {
-            "colors": {"bg":"#0C0500","primary":"#EA580C","accent":"#22C55E","text":"#FFF7ED","muted":"rgba(255,247,237,0.55)","card":"rgba(234,88,12,0.08)","border":"rgba(234,88,12,0.2)"},
-            "font_heading": "Inter",
+            "dark": False,
+            "colors": {"bg":"#FFF7ED","primary":"#EA580C","accent":"#22C55E","text":"#1C0A00","muted":"#6B7280","card":"#FFEDD5","border":"#FED7AA","navbg":"rgba(255,247,237,0.95)","navtext":"#7C2D12"},
+            "font": "Inter",
             "tagline": "Transform Your Body. Own Your Life.",
             "sub": f"Join {name} and unlock your peak potential. Expert coaches, elite facilities, unstoppable community.",
             "cta1": "Start Free Trial", "cta2": "View Programs",
             "services": [("💪","Strength","Elite programming to build real power."),("🏃","HIIT Cardio","High-intensity sessions that torch fat fast."),("🧘","Recovery","Yoga and mobility for peak performance."),("🥗","Nutrition","Personalised plans that fuel transformation.")],
             "stats": [("5K+","Members"),("50+","Coaches"),("98%","Success"),("4.9★","Rating")],
-            "testimonials": [("Kiran R.","Member","Lost 20kg in 6 months. Life-changing."),("Ananya S.","Runner","PR improved 22 minutes. World-class coaching."),("Dev M.","Athlete","12kg muscle in a year. Scientific programming.")],
+            "testi": [("Kiran R.","Member","Lost 20kg in 6 months. Life-changing."),("Ananya S.","Runner","PR improved 22 minutes. World-class."),("Dev M.","Athlete","12kg muscle in a year. Incredible programming.")],
         },
         "education": {
-            "colors": {"bg":"#0F0A2E","primary":"#7C3AED","accent":"#F59E0B","text":"#F5F0FF","muted":"rgba(245,240,255,0.55)","card":"rgba(124,58,237,0.08)","border":"rgba(124,58,237,0.2)"},
-            "font_heading": "Playfair Display",
+            "dark": False,
+            "colors": {"bg":"#FAF5FF","primary":"#7C3AED","accent":"#F59E0B","text":"#1A0A3E","muted":"#6B7280","card":"#EDE9FE","border":"#DDD6FE","navbg":"rgba(250,245,255,0.95)","navtext":"#4C1D95"},
+            "font": "Playfair Display",
             "tagline": "Learn Without Limits",
             "sub": f"{name} delivers world-class education that transforms careers. Expert instructors, live classes, lifetime access.",
             "cta1": "Enroll Now", "cta2": "Browse Courses",
-            "services": [("📚","Expert Courses","Industry leaders teach real-world skills."),("🎯","Live Sessions","Interactive classes with Q&A and mentorship."),("🏆","Certifications","Recognised credentials that employers value."),("♾️","Lifetime Access","Learn at your pace, revisit anytime forever.")],
+            "services": [("📚","Expert Courses","Industry leaders teach real-world skills."),("🎯","Live Sessions","Interactive classes with Q&A and mentorship."),("🏆","Certifications","Recognised credentials employers value."),("♾️","Lifetime Access","Learn at your pace, revisit anytime.")],
             "stats": [("20K+","Students"),("500+","Courses"),("4.9★","Rating"),("95%","Job Rate")],
-            "testimonials": [("Rohan M.","Student","Got my dream job 3 months after completing."),("Priya T.","Graduate","Best investment in my career. Life-changing."),("Amit S.","Professional","Promoted twice. Skills directly applicable.")],
+            "testi": [("Rohan M.","Student","Got my dream job 3 months after completing."),("Priya T.","Graduate","Best investment in my career. Life-changing."),("Amit S.","Professional","Promoted twice. Skills directly applicable.")],
         },
         "realestate": {
-            "colors": {"bg":"#020617","primary":"#2563EB","accent":"#F59E0B","text":"#EFF6FF","muted":"rgba(239,246,255,0.55)","card":"rgba(37,99,235,0.08)","border":"rgba(37,99,235,0.2)"},
-            "font_heading": "Playfair Display",
+            "dark": False,
+            "colors": {"bg":"#EFF6FF","primary":"#2563EB","accent":"#F59E0B","text":"#020617","muted":"#6B7280","card":"#DBEAFE","border":"#BFDBFE","navbg":"rgba(239,246,255,0.95)","navtext":"#1E3A8A"},
+            "font": "Playfair Display",
             "tagline": "Find Your Perfect Home",
             "sub": f"{name} makes finding your dream property effortless. Premium listings, trusted agents, transparent process.",
             "cta1": "Browse Properties", "cta2": "Talk to an Agent",
-            "services": [("🏠","Buy","Premium residential properties in top locations."),("🔑","Rent","Verified rentals with transparent pricing."),("💼","Invest","High-yield commercial and residential opportunities."),("📋","Manage","Complete property management services.")],
-            "stats": [("5K+","Properties"),("2K+","Happy Clients"),("₹500Cr+","Sold"),("4.9★","Rating")],
-            "testimonials": [("Suresh P.","Buyer","Found perfect home in 2 weeks. Seamless."),("Kavita M.","Investor","Best ROI properties. Expert guidance."),("Arun K.","Seller","Sold above asking price. Outstanding service.")],
+            "services": [("🏠","Buy","Premium residential in top locations."),("🔑","Rent","Verified rentals with transparent pricing."),("💼","Invest","High-yield commercial opportunities."),("📋","Manage","Complete property management services.")],
+            "stats": [("5K+","Properties"),("2K+","Clients"),("₹500Cr+","Sold"),("4.9★","Rating")],
+            "testi": [("Suresh P.","Buyer","Found perfect home in 2 weeks. Seamless."),("Kavita M.","Investor","Best ROI properties. Expert guidance."),("Arun K.","Seller","Sold above asking price. Outstanding.")],
         },
         "business": {
-            "colors": {"bg":"#020617","primary":"#2563EB","accent":"#F59E0B","text":"#EFF6FF","muted":"rgba(239,246,255,0.55)","card":"rgba(37,99,235,0.08)","border":"rgba(37,99,235,0.2)"},
-            "font_heading": "Inter",
+            "dark": False,
+            "colors": {"bg":"#F8FAFC","primary":"#2563EB","accent":"#F59E0B","text":"#020617","muted":"#6B7280","card":"#EFF6FF","border":"#BFDBFE","navbg":"rgba(248,250,252,0.95)","navtext":"#1E3A8A"},
+            "font": "Inter",
             "tagline": "Excellence Delivered Every Time",
             "sub": f"{name} combines deep expertise and bold execution to deliver results that transform businesses.",
             "cta1": "Get Started", "cta2": "Learn More",
-            "services": [("⚡","Fast Results","Exceptional outcomes delivered ahead of schedule."),("🎯","Results First","Every action tied to your measurable goals."),("🤝","True Partners","We are invested in your success as deeply as you are."),("🛡️","Reliable","100+ clients trust us with their most critical work.")],
+            "services": [("⚡","Fast Results","Exceptional outcomes delivered ahead of schedule."),("🎯","Results First","Every action tied to your measurable goals."),("🤝","True Partners","Invested in your success as deeply as you are."),("🛡️","Reliable","100+ clients trust us with their most critical work.")],
             "stats": [("100+","Projects"),("50+","Clients"),("4.9★","Rating"),("5+","Years")],
-            "testimonials": [("Rohit K.","MD","Delivered exactly as promised. Exceptional."),("Nisha A.","COO","Best vendor relationship we have. Reliable."),("Amit S.","Founder","Game-changer for our business growth.")],
+            "testi": [("Rohit K.","MD","Delivered exactly as promised. Exceptional."),("Nisha A.","COO","Best vendor relationship we have. Reliable."),("Amit S.","Founder","Game-changer for our business growth.")],
         },
     }
 
     c = configs.get(cat, configs["business"])
-    colors = c["colors"]
-    font = c["font_heading"]
+    cl = c["colors"]
+    font = c["font"]
+    is_dark = c["dark"]
+
+    hero_text_color = cl["text"]
+    hero_overlay = f"linear-gradient(135deg,{cl['bg']}F5 0%,{cl['bg']}CC 60%,{cl['primary']}22 100%)" if is_dark else f"linear-gradient(135deg,{cl['bg']}EE 0%,{cl['bg']}BB 60%,{cl['primary']}11 100%)"
+    stat_bg = "rgba(0,0,0,0.4)" if is_dark else cl["card"]
+    stat_border = cl["border"]
 
     imgs = {
-        "hero": f"https://image.pollinations.ai/prompt/ultra_realistic_cinematic_{enc}_dramatic_professional_4k_hero?width=1400&height=800&seed={seed}&nologo=true&model=flux",
-        "about": f"https://image.pollinations.ai/prompt/professional_premium_{enc}_team_modern?width=900&height=700&seed={seed+1}&nologo=true&model=flux",
-        "g1": f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_1?width=700&height=500&seed={seed+2}&nologo=true&model=flux",
-        "g2": f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_2?width=700&height=500&seed={seed+3}&nologo=true&model=flux",
-        "g3": f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_3?width=700&height=500&seed={seed+4}&nologo=true&model=flux",
-        "g4": f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_4?width=700&height=500&seed={seed+5}&nologo=true&model=flux",
+        "hero": f"https://image.pollinations.ai/prompt/ultra_realistic_cinematic_{enc}_dramatic_professional_4k?width=1400&height=800&seed={seed}&nologo=true&model=flux",
+        "about": f"https://image.pollinations.ai/prompt/professional_{enc}_premium_team?width=900&height=700&seed={seed+1}&nologo=true&model=flux",
+        "g1": f"https://image.pollinations.ai/prompt/{enc}_premium_1?width=700&height=500&seed={seed+2}&nologo=true&model=flux",
+        "g2": f"https://image.pollinations.ai/prompt/{enc}_premium_2?width=700&height=500&seed={seed+3}&nologo=true&model=flux",
+        "g3": f"https://image.pollinations.ai/prompt/{enc}_premium_3?width=700&height=500&seed={seed+4}&nologo=true&model=flux",
+        "g4": f"https://image.pollinations.ai/prompt/{enc}_premium_4?width=700&height=500&seed={seed+5}&nologo=true&model=flux",
     }
 
-    svcs_html = "".join([f\'\'\'<div class="sc"><div class="si">{ic}</div><h3>{t}</h3><p>{d}</p></div>\'\'\' for ic,t,d in c["services"]])
+    svcs_html = "".join([f\'<div class="sc"><div class="si">{ic}</div><h3>{t}</h3><p>{d}</p></div>\' for ic,t,d in c["services"]])
     stats_html = "".join([f\'<div class="stat"><div class="sn">{n}</div><div class="sl">{l}</div></div>\' for n,l in c["stats"]])
-    testi_html = "".join([f\'\'\'<div class="tc"><div class="ts">★★★★★</div><p class="tt">"{t}"</p><div class="ta"><div class="av">{a[0]}</div><div><div class="an">{a}</div><div class="ar">{r}</div></div></div></div>\'\'\' for a,r,t in c["testimonials"]])
+    testi_html = "".join([f\'<div class="tc"><div class="ts">★★★★★</div><p class="tt">"{t}"</p><div class="ta"><div class="av">{a[0]}</div><div><div class="an">{a}</div><div class="ar">{r}</div></div></div></div>\' for a,r,t in c["testi"]])
     gal_html = "".join([f\'<div class="gi"><img src="{imgs[k]}" loading="lazy" alt=""/></div>\' for k in ["g1","g2","g3","g4"]])
 
     return f"""<!DOCTYPE html>
@@ -750,111 +764,112 @@ def build_template(prompt: str) -> str:
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,700;0,800;0,900;1,700&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-:root{{--bg:{colors["bg"]};--pr:{colors["primary"]};--ac:{colors["accent"]};--tx:{colors["text"]};--mu:{colors["muted"]};--ca:{colors["card"]};--br:{colors["border"]}}}
+:root{{
+  --bg:{cl["bg"]};--pr:{cl["primary"]};--ac:{cl["accent"]};
+  --tx:{cl["text"]};--mu:{cl["muted"]};--ca:{cl["card"]};
+  --br:{cl["border"]};--nb:{cl["navbg"]};--nt:{cl["navtext"]};
+}}
 html{{scroll-behavior:smooth}}
 body{{font-family:"Inter",sans-serif;background:var(--bg);color:var(--tx);overflow-x:hidden;line-height:1.6}}
 
-/* NAV */
 nav{{position:fixed;top:0;width:100%;z-index:1000;transition:all 0.4s;padding:0 5%}}
-nav.sc{{background:rgba(0,0,0,0.85);backdrop-filter:blur(24px);border-bottom:1px solid var(--br);box-shadow:0 4px 30px rgba(0,0,0,0.3)}}
+nav.sc{{background:var(--nb);backdrop-filter:blur(24px);border-bottom:1px solid var(--br);box-shadow:0 4px 30px rgba(0,0,0,0.08)}}
 .ni{{max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:72px}}
-.nl{{font-family:"{font}",serif;font-size:1.8rem;font-weight:900;color:var(--tx);text-decoration:none;letter-spacing:-0.5px}}
+.nl{{font-family:"{font}",serif;font-size:1.8rem;font-weight:900;color:{"#fff" if is_dark else cl["primary"]};text-decoration:none;letter-spacing:-0.5px;transition:color 0.3s}}
+nav.sc .nl{{color:var(--pr)}}
 .nm{{display:flex;align-items:center;gap:36px;list-style:none}}
-.nm a{{color:var(--mu);text-decoration:none;font-weight:500;font-size:0.9rem;transition:color 0.2s}}
-.nm a:hover{{color:var(--tx)}}
-.nc{{background:var(--pr)!important;color:#fff!important;padding:11px 26px;border-radius:100px;font-weight:700!important;transition:all 0.3s!important;box-shadow:0 4px 20px rgba(0,0,0,0.3)}}
-.nc:hover{{transform:translateY(-2px)!important;box-shadow:0 8px 30px rgba(0,0,0,0.4)!important}}
+.nm a{{color:{"rgba(255,255,255,0.8)" if is_dark else "var(--mu)"};text-decoration:none;font-weight:500;font-size:0.9rem;transition:color 0.2s}}
+nav.sc .nm a{{color:var(--nt)}}
+.nm a:hover{{color:{"#fff" if is_dark else "var(--pr)"}}}
+nav.sc .nm a:hover{{color:var(--pr)}}
+.nc{{background:var(--pr)!important;color:#fff!important;padding:11px 26px;border-radius:100px;font-weight:700!important;transition:all 0.3s!important;box-shadow:0 4px 20px rgba(0,0,0,0.15)}}
+.nc:hover{{transform:translateY(-2px)!important;box-shadow:0 8px 30px rgba(0,0,0,0.25)!important}}
 .nhb{{display:none;background:none;border:none;cursor:pointer;flex-direction:column;gap:5px;padding:4px}}
-.nhb span{{width:24px;height:2px;background:var(--tx);border-radius:2px;display:block;transition:all 0.3s}}
-.nmob{{display:none;position:fixed;top:72px;left:0;right:0;padding:20px 5%;flex-direction:column;gap:16px;background:rgba(0,0,0,0.95);backdrop-filter:blur(20px);border-bottom:1px solid var(--br)}}
+.nhb span{{width:24px;height:2px;background:{"#fff" if is_dark else "var(--tx)"};border-radius:2px;display:block;transition:all 0.3s}}
+nav.sc .nhb span{{background:var(--tx)}}
+.nmob{{display:none;position:fixed;top:72px;left:0;right:0;padding:20px 5%;flex-direction:column;gap:16px;background:var(--nb);backdrop-filter:blur(20px);border-bottom:1px solid var(--br);box-shadow:0 10px 40px rgba(0,0,0,0.1)}}
 .nmob.open{{display:flex}}
 .nmob a{{color:var(--mu);text-decoration:none;font-weight:600;font-size:0.95rem;padding:8px 0;border-bottom:1px solid var(--br)}}
 .nmob .mc{{background:var(--pr);color:#fff!important;text-align:center;padding:14px;border-radius:12px;border:none!important;margin-top:4px}}
 
-/* HERO */
 .hero{{min-height:100vh;display:flex;align-items:center;padding:100px 5% 80px;position:relative;overflow:hidden;background:var(--bg)}}
-.hbg{{position:absolute;inset:0;background:url("{imgs["hero"]}") center/cover no-repeat;opacity:0.15;filter:blur(2px);transform:scale(1.05)}}
-.hov{{position:absolute;inset:0;background:linear-gradient(135deg,{colors["bg"]}F8 0%,{colors["bg"]}CC 50%,{colors["primary"]}22 100%)}}
+.hbg{{position:absolute;inset:0;background:url("{imgs["hero"]}") center/cover no-repeat;opacity:{"0.12" if is_dark else "0.08"};filter:blur(2px);transform:scale(1.05)}}
+.hov{{position:absolute;inset:0;background:{hero_overlay}}}
 .hsh{{position:absolute;inset:0;overflow:hidden;pointer-events:none}}
-.hsh::before{{content:"";position:absolute;top:-30%;right:-10%;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,{colors["primary"]}18 0%,transparent 70%)}}
-.hsh::after{{content:"";position:absolute;bottom:-20%;left:-5%;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,{colors["accent"]}12 0%,transparent 70%)}}
+.hsh::before{{content:"";position:absolute;top:-30%;right:-10%;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,{cl["primary"]}{"18" if is_dark else "0D"} 0%,transparent 70%)}}
+.hsh::after{{content:"";position:absolute;bottom:-20%;left:-5%;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,{cl["accent"]}{"12" if is_dark else "0A"} 0%,transparent 70%)}}
 .hi{{position:relative;z-index:2;max-width:1280px;margin:0 auto;width:100%;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
-.hbadge{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);backdrop-filter:blur(10px);border:1px solid var(--br);color:var(--tx);padding:9px 20px;border-radius:100px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:24px}}
+.hbadge{{display:inline-flex;align-items:center;gap:8px;background:{"rgba(255,255,255,0.1)" if is_dark else cl["card"]};backdrop-filter:blur(10px);border:1px solid var(--br);color:var(--tx);padding:9px 20px;border-radius:100px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:24px}}
 .bdot{{width:8px;height:8px;border-radius:50%;background:var(--ac);animation:pulse 2s infinite;box-shadow:0 0 10px var(--ac)}}
 @keyframes pulse{{0%,100%{{opacity:1;transform:scale(1)}}50%{{opacity:0.6;transform:scale(1.4)}}}}
 .ht{{font-family:"{font}",serif;font-size:clamp(2.8rem,4.5vw,4.5rem);font-weight:900;line-height:1.05;letter-spacing:-2px;margin-bottom:16px;color:var(--tx)}}
-.hta{{color:var(--ac);display:block;font-style:italic}}
+.hta{{color:var(--pr);display:block;font-style:italic}}
 .hs{{font-size:1.05rem;color:var(--mu);line-height:1.75;margin-bottom:36px;max-width:480px}}
 .hbtns{{display:flex;gap:14px;flex-wrap:wrap}}
-.bp{{display:inline-flex;align-items:center;gap:8px;background:var(--pr);color:#fff;font-weight:800;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.3)}}
-.bp:hover{{transform:translateY(-3px);filter:brightness(1.1);box-shadow:0 16px 40px rgba(0,0,0,0.4)}}
-.bs{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);backdrop-filter:blur(10px);color:var(--tx);font-weight:700;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;border:1px solid var(--br);transition:all 0.3s}}
-.bs:hover{{background:rgba(255,255,255,0.08);transform:translateY(-3px)}}
+.bp{{display:inline-flex;align-items:center;gap:8px;background:var(--pr);color:#fff;font-weight:800;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.2)}}
+.bp:hover{{transform:translateY(-3px);filter:brightness(1.1);box-shadow:0 16px 40px rgba(0,0,0,0.3)}}
+.bs{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);color:var(--tx);font-weight:700;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;border:1px solid var(--br);transition:all 0.3s}}
+.bs:hover{{background:var(--br);transform:translateY(-3px)}}
 .hiw{{position:relative;perspective:1000px}}
-.hic{{border-radius:24px;overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,0.6),0 0 0 1px var(--br);transform:rotateY(-5deg) rotateX(3deg);transition:transform 0.5s ease;position:relative}}
+.hic{{border-radius:24px;overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,{"0.6" if is_dark else "0.2"}),0 0 0 1px var(--br);transform:rotateY(-5deg) rotateX(3deg);transition:transform 0.5s ease}}
 .hic:hover{{transform:rotateY(0deg) rotateX(0deg)}}
 .hic img{{width:100%;height:420px;object-fit:cover;display:block}}
-.hib{{position:absolute;bottom:20px;left:20px;background:rgba(0,0,0,0.75);backdrop-filter:blur(20px);border:1px solid var(--br);padding:12px 18px;border-radius:14px;display:flex;align-items:center;gap:10px}}
+.hib{{position:absolute;bottom:20px;left:20px;background:rgba(0,0,0,0.7);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.15);padding:12px 18px;border-radius:14px;display:flex;align-items:center;gap:10px}}
 .ld{{width:8px;height:8px;border-radius:50%;background:#22C55E;box-shadow:0 0 12px #22C55E;animation:pulse 2s infinite}}
-.lt{{color:var(--tx);font-size:0.78rem;font-weight:600}}
+.lt{{color:#fff;font-size:0.78rem;font-weight:600}}
 
-/* STATS */
-.stbar{{background:rgba(0,0,0,0.4);border-top:1px solid var(--br);border-bottom:1px solid var(--br);padding:0 5%}}
+.stbar{{background:{stat_bg};border-top:1px solid {stat_border};border-bottom:1px solid {stat_border};padding:0 5%}}
 .sti{{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}}
 .stat{{padding:32px 24px;text-align:center;border-right:1px solid var(--br);transition:background 0.3s}}
 .stat:last-child{{border-right:none}}
 .stat:hover{{background:var(--ca)}}
-.sn{{font-family:"{font}",serif;font-size:2.4rem;font-weight:900;color:var(--ac);margin-bottom:4px}}
+.sn{{font-family:"{font}",serif;font-size:2.4rem;font-weight:900;color:var(--pr);margin-bottom:4px}}
 .sl{{font-size:0.72rem;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:1.2px}}
 
-/* ABOUT */
 .about{{padding:120px 5%;background:var(--bg)}}
 .abi{{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
-.abimg{{border-radius:24px;overflow:hidden;position:relative;box-shadow:0 40px 80px rgba(0,0,0,0.4)}}
+.abimg{{border-radius:24px;overflow:hidden;position:relative;box-shadow:0 40px 80px rgba(0,0,0,{"0.4" if is_dark else "0.12"})}}
 .abimg img{{width:100%;height:480px;object-fit:cover;display:block;transition:transform 0.6s}}
 .abimg:hover img{{transform:scale(1.04)}}
 .abtag{{position:absolute;top:20px;left:20px;background:var(--pr);color:#fff;font-size:0.72rem;font-weight:800;padding:8px 16px;border-radius:100px;text-transform:uppercase;letter-spacing:1px}}
-.sl2{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);color:var(--ac);font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid var(--br)}}
+.sl2{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);color:var(--pr);font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid var(--br)}}
 .sh{{font-family:"{font}",serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:var(--tx);line-height:1.15;letter-spacing:-1px;margin-bottom:20px}}
 .sh span{{color:var(--pr)}}
 .ss{{font-size:0.95rem;color:var(--mu);line-height:1.8;margin-bottom:36px}}
 .aff{{display:flex;flex-direction:column;gap:14px}}
 .af{{display:flex;align-items:flex-start;gap:14px;padding:16px;background:var(--ca);border-radius:16px;border:1px solid var(--br);transition:all 0.3s}}
-.af:hover{{border-color:var(--pr);transform:translateX(4px)}}
-.afi{{width:42px;height:42px;border-radius:12px;background:var(--ca);border:1px solid var(--br);display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}}
+.af:hover{{border-color:var(--pr);transform:translateX(4px);box-shadow:0 8px 24px rgba(0,0,0,0.06)}}
+.afi{{width:42px;height:42px;border-radius:12px;background:var(--bg);border:1px solid var(--br);display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}}
 .aft h4{{font-weight:700;font-size:0.88rem;color:var(--tx);margin-bottom:3px}}
 .aft p{{font-size:0.8rem;color:var(--mu)}}
 
-/* SERVICES */
-.services{{padding:120px 5%}}
+.services{{padding:120px 5%;background:var(--ca)}}
 .svi{{max-width:1280px;margin:0 auto}}
 .sh2{{text-align:center;margin-bottom:60px}}
 .sg{{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}}
-.sc{{background:var(--ca);border:1px solid var(--br);border-radius:24px;padding:36px;transition:all 0.4s;position:relative;overflow:hidden}}
+.sc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:36px;transition:all 0.4s;position:relative;overflow:hidden}}
 .sc::before{{content:"";position:absolute;inset:0;background:linear-gradient(135deg,var(--pr) 0%,transparent 60%);opacity:0;transition:opacity 0.4s}}
-.sc:hover{{border-color:var(--pr);transform:translateY(-6px);box-shadow:0 20px 60px rgba(0,0,0,0.3)}}
-.sc:hover::before{{opacity:0.05}}
+.sc:hover{{border-color:var(--pr);transform:translateY(-6px);box-shadow:0 20px 60px rgba(0,0,0,{"0.3" if is_dark else "0.1"})}}
+.sc:hover::before{{opacity:0.04}}
 .si{{font-size:2.4rem;margin-bottom:20px;display:block}}
 .sc h3{{font-family:"{font}",serif;font-size:1.25rem;font-weight:800;color:var(--tx);margin-bottom:12px}}
 .sc p{{font-size:0.88rem;color:var(--mu);line-height:1.7}}
 
-/* GALLERY */
-.gallery{{padding:80px 5%;background:rgba(0,0,0,0.3)}}
+.gallery{{padding:80px 5%;background:var(--bg)}}
 .gli{{max-width:1280px;margin:0 auto}}
 .gg{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:48px}}
-.gi{{border-radius:20px;overflow:hidden;aspect-ratio:4/3;cursor:pointer;position:relative}}
+.gi{{border-radius:20px;overflow:hidden;aspect-ratio:4/3;cursor:pointer;position:relative;box-shadow:0 8px 24px rgba(0,0,0,0.1)}}
 .gi img{{width:100%;height:100%;object-fit:cover;display:block;transition:transform 0.6s}}
 .gi:hover img{{transform:scale(1.08)}}
-.gi::after{{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.5),transparent);opacity:0;transition:opacity 0.3s}}
+.gi::after{{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.4),transparent);opacity:0;transition:opacity 0.3s}}
 .gi:hover::after{{opacity:1}}
 
-/* TESTIMONIALS */
-.testi{{padding:120px 5%}}
+.testi{{padding:120px 5%;background:var(--ca)}}
 .tti{{max-width:1280px;margin:0 auto}}
 .tg{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:48px}}
-.tc{{background:var(--ca);border:1px solid var(--br);border-radius:24px;padding:32px;transition:all 0.3s;position:relative;overflow:hidden}}
-.tc::before{{content:"\\201C";position:absolute;top:-20px;right:16px;font-size:8rem;color:var(--pr);opacity:0.08;font-family:serif;line-height:1}}
-.tc:hover{{border-color:var(--pr);transform:translateY(-4px);box-shadow:0 20px 50px rgba(0,0,0,0.3)}}
+.tc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:32px;transition:all 0.3s;position:relative;overflow:hidden}}
+.tc::before{{content:"\\201C";position:absolute;top:-20px;right:16px;font-size:8rem;color:var(--pr);opacity:0.06;font-family:serif;line-height:1}}
+.tc:hover{{border-color:var(--pr);transform:translateY(-4px);box-shadow:0 20px 50px rgba(0,0,0,{"0.3" if is_dark else "0.08"})}}
 .ts{{color:var(--ac);font-size:1rem;letter-spacing:2px;margin-bottom:16px}}
 .tt{{font-size:0.9rem;color:var(--mu);line-height:1.75;margin-bottom:24px;font-style:italic}}
 .ta{{display:flex;align-items:center;gap:12px}}
@@ -862,32 +877,28 @@ nav.sc{{background:rgba(0,0,0,0.85);backdrop-filter:blur(24px);border-bottom:1px
 .an{{font-weight:700;font-size:0.85rem;color:var(--tx)}}
 .ar{{font-size:0.72rem;color:var(--mu)}}
 
-/* CTA */
-.cta{{padding:120px 5%}}
-.ctai{{max-width:1000px;margin:0 auto;border-radius:32px;padding:80px 60px;text-align:center;position:relative;overflow:hidden;border:1px solid var(--br);background:linear-gradient(135deg,var(--ca) 0%,rgba(0,0,0,0.3) 100%);box-shadow:0 40px 80px rgba(0,0,0,0.3)}}
-.ctai::before{{content:"";position:absolute;top:-50%;right:-10%;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,var(--pr) 0%,transparent 60%);opacity:0.08;pointer-events:none}}
-.ctai::after{{content:"";position:absolute;bottom:-30%;left:-5%;width:350px;height:350px;border-radius:50%;background:radial-gradient(circle,var(--ac) 0%,transparent 60%);opacity:0.06;pointer-events:none}}
-.ctai h2{{font-family:"{font}",serif;font-size:clamp(2rem,4vw,3rem);font-weight:900;color:var(--tx);margin-bottom:16px;position:relative;z-index:1;letter-spacing:-1px}}
-.ctai p{{font-size:1rem;color:var(--mu);margin-bottom:40px;position:relative;z-index:1;max-width:500px;margin-left:auto;margin-right:auto}}
+.cta{{padding:120px 5%;background:var(--bg)}}
+.ctai{{max-width:1000px;margin:0 auto;border-radius:32px;padding:80px 60px;text-align:center;position:relative;overflow:hidden;background:linear-gradient(135deg,var(--pr) 0%,var(--ac) 100%);box-shadow:0 40px 80px rgba(0,0,0,0.2)}}
+.ctai::before{{content:"";position:absolute;top:-50%;right:-10%;width:500px;height:500px;border-radius:50%;background:rgba(255,255,255,0.08);pointer-events:none}}
+.ctai h2{{font-family:"{font}",serif;font-size:clamp(2rem,4vw,3rem);font-weight:900;color:#fff;margin-bottom:16px;position:relative;z-index:1;letter-spacing:-1px}}
+.ctai p{{font-size:1rem;color:rgba(255,255,255,0.85);margin-bottom:40px;position:relative;z-index:1;max-width:500px;margin-left:auto;margin-right:auto}}
 .cbtns{{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative;z-index:1}}
-.cb1{{display:inline-flex;align-items:center;gap:8px;background:var(--pr);color:#fff;font-weight:800;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.3)}}
-.cb1:hover{{transform:translateY(-3px);filter:brightness(1.1)}}
-.cb2{{display:inline-flex;align-items:center;gap:8px;background:transparent;color:var(--tx);font-weight:700;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;border:1px solid var(--br);transition:all 0.3s}}
-.cb2:hover{{background:var(--ca);transform:translateY(-3px)}}
+.cb1{{display:inline-flex;align-items:center;gap:8px;background:#fff;color:var(--pr);font-weight:800;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.15)}}
+.cb1:hover{{transform:translateY(-3px);box-shadow:0 16px 40px rgba(0,0,0,0.2)}}
+.cb2{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.15);color:#fff;font-weight:700;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;border:1px solid rgba(255,255,255,0.3);transition:all 0.3s}}
+.cb2:hover{{background:rgba(255,255,255,0.25);transform:translateY(-3px)}}
 
-/* FOOTER */
-footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,0,0.4)}}
+footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:var(--ca)}}
 .fi{{max-width:1280px;margin:0 auto}}
 .ft{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:48px;margin-bottom:48px}}
 .fb p{{font-size:0.82rem;color:var(--mu);margin-top:12px;line-height:1.7;max-width:240px}}
-.flogo{{font-family:"{font}",serif;font-size:1.6rem;font-weight:900;color:var(--tx)}}
+.flogo{{font-family:"{font}",serif;font-size:1.6rem;font-weight:900;color:var(--pr)}}
 .fc h4{{font-weight:700;font-size:0.75rem;color:var(--mu);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:16px}}
 .fc a{{display:block;color:var(--mu);text-decoration:none;font-size:0.82rem;margin-bottom:10px;transition:color 0.2s}}
-.fc a:hover{{color:var(--tx)}}
+.fc a:hover{{color:var(--pr)}}
 .fbot{{border-top:1px solid var(--br);padding-top:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}}
-.fbot p{{font-size:0.75rem;color:rgba(255,255,255,0.2)}}
+.fbot p{{font-size:0.75rem;color:var(--mu)}}
 
-/* RESPONSIVE */
 @media(max-width:900px){{
   .hi,.abi{{grid-template-columns:1fr;gap:48px;text-align:center}}
   .hiw{{order:-1}}.hs{{max-width:100%}}.hbtns{{justify-content:center}}
@@ -906,7 +917,6 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
 </style>
 </head>
 <body>
-
 <nav id="nav">
   <div class="ni">
     <a href="#" class="nl">{name}</a>
@@ -919,17 +929,13 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
     <button class="nhb" id="hb"><span></span><span></span><span></span></button>
   </div>
 </nav>
-<div class="nmob" id="nm">
-  <a href="#about">About</a>
-  <a href="#services">Services</a>
-  <a href="#gallery">Gallery</a>
-  <a href="#contact" class="mc">{c["cta1"]}</a>
+<div class="nmob" id="nmo">
+  <a href="#about">About</a><a href="#services">Services</a>
+  <a href="#gallery">Gallery</a><a href="#contact" class="mc">{c["cta1"]}</a>
 </div>
 
 <section class="hero" id="home">
-  <div class="hbg"></div>
-  <div class="hov"></div>
-  <div class="hsh"></div>
+  <div class="hbg"></div><div class="hov"></div><div class="hsh"></div>
   <div class="hi">
     <div>
       <div class="hbadge"><span class="bdot"></span>✦ {name} · {cat.title()}</div>
@@ -960,11 +966,11 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
     <div>
       <div class="sl2">✦ About Us</div>
       <h2 class="sh">Built for <span>Excellence</span>.</h2>
-      <p class="ss">We started with a single mission — to deliver the best possible experience for every client. Today, {name} is trusted by thousands and recognised for quality that never compromises.</p>
+      <p class="ss">We started with one mission — to deliver the best possible experience. Today, {name} is trusted by thousands and recognised for quality that never compromises.</p>
       <div class="aff">
-        <div class="af"><div class="afi">🏆</div><div class="aft"><h4>Award-Winning</h4><p>Recognised by industry leaders for consistent excellence.</p></div></div>
-        <div class="af"><div class="afi">🌍</div><div class="aft"><h4>Trusted Globally</h4><p>Clients across India and beyond rely on us every day.</p></div></div>
-        <div class="af"><div class="afi">💡</div><div class="aft"><h4>Always Innovating</h4><p>We never stop improving. Better every single day.</p></div></div>
+        <div class="af"><div class="afi">🏆</div><div class="aft"><h4>Award-Winning</h4><p>Recognised by industry leaders for excellence.</p></div></div>
+        <div class="af"><div class="afi">🌍</div><div class="aft"><h4>Trusted Globally</h4><p>Clients across India and beyond rely on us daily.</p></div></div>
+        <div class="af"><div class="afi">💡</div><div class="aft"><h4>Always Innovating</h4><p>We never stop improving. Better every day.</p></div></div>
       </div>
     </div>
   </div>
@@ -974,7 +980,7 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
   <div class="svi">
     <div class="sh2">
       <div class="sl2">✦ What We Offer</div>
-      <h2 class="sh" style="text-align:center">Why Choose <span>{name}</span></h2>
+      <h2 class="sh">Why Choose <span>{name}</span></h2>
     </div>
     <div class="sg">{svcs_html}</div>
   </div>
@@ -984,7 +990,7 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
   <div class="gli">
     <div class="sh2">
       <div class="sl2">✦ Gallery</div>
-      <h2 class="sh" style="text-align:center">See It For <span>Yourself</span></h2>
+      <h2 class="sh">See It For <span>Yourself</span></h2>
     </div>
     <div class="gg">{gal_html}</div>
   </div>
@@ -994,7 +1000,7 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
   <div class="tti">
     <div class="sh2">
       <div class="sl2">✦ Reviews</div>
-      <h2 class="sh" style="text-align:center">What Our <span>Clients Say</span></h2>
+      <h2 class="sh">What Our <span>Clients Say</span></h2>
     </div>
     <div class="tg">{testi_html}</div>
   </div>
@@ -1003,7 +1009,7 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
 <section class="cta" id="contact">
   <div class="ctai">
     <h2>Ready to Get Started?</h2>
-    <p>Join thousands who already trust {name}. Take the first step today — no commitment needed.</p>
+    <p>Join thousands who already trust {name}. Take the first step today.</p>
     <div class="cbtns">
       <a href="mailto:hello@{name.lower().replace(" ","")}.com" class="cb1">{c["cta1"]} →</a>
       <a href="tel:+919999999999" class="cb2">📞 Contact Us</a>
@@ -1014,13 +1020,10 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
 <footer>
   <div class="fi">
     <div class="ft">
-      <div class="fb">
-        <div class="flogo">{name}</div>
-        <p>{c["sub"][:90]}...</p>
-      </div>
+      <div class="fb"><div class="flogo">{name}</div><p>{c["sub"][:90]}...</p></div>
       <div class="fc"><h4>Company</h4><a href="#about">About</a><a href="#services">Services</a><a href="#gallery">Gallery</a><a href="#contact">Contact</a></div>
       <div class="fc"><h4>Services</h4>{"".join([f\'<a href="#services">{s[1]}</a>\' for s in c["services"]])}</div>
-      <div class="fc"><h4>Connect</h4><a href="#">Instagram</a><a href="#">LinkedIn</a><a href="#">Twitter</a><a href="mailto:hello@{name.lower().replace(" ","")}.com">Email Us</a></div>
+      <div class="fc"><h4>Connect</h4><a href="#">Instagram</a><a href="#">LinkedIn</a><a href="#">Twitter</a><a href="mailto:hello@{name.lower().replace(" ","")}.com">Email</a></div>
     </div>
     <div class="fbot"><p>© 2024 {name}. All rights reserved.</p><p>Built with Dacexy AI</p></div>
   </div>
@@ -1029,9 +1032,9 @@ footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:rgba(0,0,
 <script>
 const nav=document.getElementById("nav");
 window.addEventListener("scroll",()=>nav.classList.toggle("sc",scrollY>60));
-const hb=document.getElementById("hb"),nm=document.getElementById("nm");
-hb.addEventListener("click",()=>nm.classList.toggle("open"));
-nm.querySelectorAll("a").forEach(a=>a.addEventListener("click",()=>nm.classList.remove("open")));
+const hb=document.getElementById("hb"),nmo=document.getElementById("nmo");
+hb.addEventListener("click",()=>nmo.classList.toggle("open"));
+nmo.querySelectorAll("a").forEach(a=>a.addEventListener("click",()=>nmo.classList.remove("open")));
 const obs=new IntersectionObserver(entries=>entries.forEach(e=>{{if(e.isIntersecting){{e.target.style.opacity="1";e.target.style.transform="translateY(0) scale(1)"}}}}),{{threshold:0.1}});
 document.querySelectorAll(".sc,.tc,.af,.gi,.stat").forEach(el=>{{el.style.opacity="0";el.style.transform="translateY(40px) scale(0.97)";el.style.transition="opacity 0.7s ease,transform 0.7s ease";obs.observe(el)}});
 </script>
@@ -1042,7 +1045,7 @@ async def generate_website(prompt: str, ai=None) -> str:
     try:
         return build_template(prompt)
     except Exception as e:
-        log.error(f"Website generation error: {e}")
+        log.error(f"Website error: {e}")
         raise
 ''')
 
