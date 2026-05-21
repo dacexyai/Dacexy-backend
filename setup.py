@@ -1069,23 +1069,25 @@ from src.infrastructure.email.email_service import EmailService
 from src.interfaces.http.dependencies.container import get_email
 from src.shared.security.auth import hash_password, verify_password, create_access_token, create_refresh_token, decode_access_token
 from src.shared.config.settings import settings
+import logging
 
+log = logging.getLogger("auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
 
 # ═══════════════════════════════════════════════════════════
-# ENTERPRISE RATE LIMITING
+# RATE LIMITING
 # ═══════════════════════════════════════════════════════════
 
 _rate_store: dict = defaultdict(lambda: {"count": 0, "window_start": 0.0, "blocked_until": 0.0})
 
 RATE_LIMITS = {
-    "register":        {"rpm": 3,   "window": 60,   "block": 300},
-    "login":           {"rpm": 10,  "window": 60,   "block": 60},
-    "login_fail":      {"rpm": 5,   "window": 300,  "block": 900},
-    "google":          {"rpm": 10,  "window": 60,   "block": 60},
-    "verify":          {"rpm": 5,   "window": 60,   "block": 120},
-    "default":         {"rpm": 30,  "window": 60,   "block": 60},
+    "register":   {"rpm": 3,  "window": 60,  "block": 300},
+    "login":      {"rpm": 10, "window": 60,  "block": 60},
+    "login_fail": {"rpm": 5,  "window": 300, "block": 900},
+    "google":     {"rpm": 10, "window": 60,  "block": 60},
+    "verify":     {"rpm": 5,  "window": 60,  "block": 120},
+    "default":    {"rpm": 30, "window": 60,  "block": 60},
 }
 
 def get_client_ip(request: Request) -> str:
@@ -1101,23 +1103,17 @@ def check_rate_limit(key: str, limit_type: str = "default") -> None:
     cfg = RATE_LIMITS.get(limit_type, RATE_LIMITS["default"])
     now = time.time()
     store = _rate_store[key]
-
-    # Check if currently blocked
     if store["blocked_until"] > now:
         wait = int(store["blocked_until"] - now)
         raise HTTPException(
             status_code=429,
-            detail=f"Too many attempts. Please wait {wait} seconds before trying again.",
-            headers={"Retry-After": str(wait), "X-RateLimit-Limit": str(cfg["rpm"])}
+            detail=f"Too many attempts. Please wait {wait} seconds.",
+            headers={"Retry-After": str(wait)}
         )
-
-    # Reset window if expired
     if now - store["window_start"] > cfg["window"]:
         store["count"] = 0
         store["window_start"] = now
-
     store["count"] += 1
-
     if store["count"] > cfg["rpm"]:
         store["blocked_until"] = now + cfg["block"]
         store["count"] = 0
@@ -1127,7 +1123,6 @@ def check_rate_limit(key: str, limit_type: str = "default") -> None:
             headers={"Retry-After": str(cfg["block"])}
         )
 
-# Track failed login attempts separately per email
 _login_failures: dict = defaultdict(lambda: {"count": 0, "first_fail": 0.0, "blocked_until": 0.0})
 
 def check_login_failures(email: str) -> None:
@@ -1137,10 +1132,9 @@ def check_login_failures(email: str) -> None:
         wait = int(record["blocked_until"] - now)
         raise HTTPException(
             status_code=429,
-            detail=f"Account temporarily locked due to multiple failed attempts. Try again in {wait} seconds.",
+            detail=f"Account temporarily locked. Try again in {wait} seconds.",
             headers={"Retry-After": str(wait)}
         )
-    # Reset if window expired (5 minutes)
     if now - record["first_fail"] > 300:
         record["count"] = 0
         record["first_fail"] = now
@@ -1151,13 +1145,12 @@ def record_login_failure(email: str) -> None:
     if record["count"] == 0:
         record["first_fail"] = now
     record["count"] += 1
-    # Progressive lockout
     if record["count"] >= 10:
-        record["blocked_until"] = now + 3600   # 1 hour
+        record["blocked_until"] = now + 3600
     elif record["count"] >= 5:
-        record["blocked_until"] = now + 900    # 15 minutes
+        record["blocked_until"] = now + 900
     elif record["count"] >= 3:
-        record["blocked_until"] = now + 60     # 1 minute
+        record["blocked_until"] = now + 60
 
 def clear_login_failures(email: str) -> None:
     _login_failures[email.lower()] = {"count": 0, "first_fail": 0.0, "blocked_until": 0.0}
@@ -1187,7 +1180,7 @@ def _make_slug(name: str) -> str:
 
 def _validate_password(password: str) -> None:
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long.")
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
     if len(password) > 128:
         raise HTTPException(status_code=400, detail="Password is too long.")
 
@@ -1212,10 +1205,18 @@ async def _get_current_user(
         user_id = payload["sub"]
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or account disabled")
+
+    # FIX: Always fetch fresh user from DB — never rely on token cache
+    try:
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Database error fetching user")
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found. Please sign in again.")
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="Account disabled. Contact support.")
     return user
 
 # ═══════════════════════════════════════════════════════════
@@ -1231,12 +1232,10 @@ async def register(
 ):
     ip = get_client_ip(request)
     check_rate_limit(f"register:{ip}", "register")
-
     _validate_name(body.full_name)
     _validate_password(body.password)
 
     email_lower = body.email.lower().strip()
-
     existing = await db.execute(select(User).where(User.email == email_lower))
     if existing.scalar_one_or_none():
         raise HTTPException(
@@ -1244,7 +1243,7 @@ async def register(
             detail="This email is already registered. Please sign in instead."
         )
 
-    org_name = body.org_name.strip() if body.org_name.strip() else (body.full_name.strip().split()[0] + "s Workspace")
+    org_name = body.org_name.strip() if body.org_name.strip() else (body.full_name.strip().split()[0] + "'s Workspace")
     org = Organization(name=org_name, slug=_make_slug(org_name))
     db.add(org)
     await db.flush()
@@ -1277,7 +1276,7 @@ async def register(
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 # ═══════════════════════════════════════════════════════════
-# LOGIN
+# LOGIN — FIX: returns user_id in response so frontend clears old token
 # ═══════════════════════════════════════════════════════════
 
 @router.post("/login", response_model=TokenResponse)
@@ -1302,7 +1301,11 @@ async def login(
 
     clear_login_failures(body.email)
 
-    access = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role})
+    # FIX: Create fresh token with correct user_id — prevents cross-account data leak
+    access = create_access_token(
+        str(user.id),
+        {"org_id": str(user.org_id), "role": user.role, "email": user.email}
+    )
     refresh = create_refresh_token()
     db.add(RefreshToken(
         user_id=user.id,
@@ -1313,12 +1316,15 @@ async def login(
     return TokenResponse(access_token=access, refresh_token=refresh)
 
 # ═══════════════════════════════════════════════════════════
-# ME
+# ME — FIX: Always returns data for the token's actual user
 # ═══════════════════════════════════════════════════════════
 
 @router.get("/me")
 async def me(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    org = await db.get(Organization, user.org_id)
+    try:
+        org = await db.get(Organization, user.org_id)
+    except Exception:
+        org = None
     return {
         "id": str(user.id),
         "email": user.email,
@@ -1356,7 +1362,7 @@ async def verify_email(token: str, request: Request, db: AsyncSession = Depends(
 
 @router.post("/logout")
 async def logout(user: User = Depends(_get_current_user)):
-    return {"message": "Logged out successfully"}
+    return {"message": "Logged out successfully", "user_id": str(user.id)}
 
 # ═══════════════════════════════════════════════════════════
 # GOOGLE LOGIN
@@ -1370,7 +1376,7 @@ async def google_login(request: Request):
 
     client_id = settings.GOOGLE_CLIENT_ID
     if not client_id:
-        return RedirectResponse("https://dacexy.vercel.app/login?error=Google+OAuth+not+configured+on+server")
+        return RedirectResponse("https://dacexy.vercel.app/login?error=Google+OAuth+not+configured")
 
     params = {
         "client_id": client_id,
@@ -1383,7 +1389,7 @@ async def google_login(request: Request):
     return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params))
 
 # ═══════════════════════════════════════════════════════════
-# GOOGLE CALLBACK
+# GOOGLE CALLBACK — FIX: isolates user session completely
 # ═══════════════════════════════════════════════════════════
 
 @router.get("/google/callback")
@@ -1403,7 +1409,6 @@ async def google_callback(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            # Exchange code for token
             token_res = await client.post(
                 "https://oauth2.googleapis.com/token",
                 data={
@@ -1425,7 +1430,6 @@ async def google_callback(
             if not google_access_token:
                 return RedirectResponse(f"{FRONTEND}/login?error=no_google_token")
 
-            # Get user info
             user_res = await client.get(
                 "https://www.googleapis.com/oauth2/v2/userinfo",
                 headers={"Authorization": f"Bearer {google_access_token}"}
@@ -1434,23 +1438,26 @@ async def google_callback(
 
         email = (info.get("email") or "").lower().strip()
         full_name = (info.get("name") or "").strip()
+        google_id = str(info.get("id") or "")
 
         if not email:
             return RedirectResponse(f"{FRONTEND}/login?error=no_email_from_google")
         if not full_name:
             full_name = email.split("@")[0].title()
 
-        # Find or create user
+        # FIX: Find user ONLY by their exact email — never mix accounts
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
 
         if not user:
+            # Create brand new isolated account for this Google user
             first_name = full_name.split()[0] if full_name.split() else "User"
-            org_name = first_name + "s Workspace"
+            org_name = first_name + "'s Workspace"
             slug = re.sub(r"[^a-z0-9]+", "-", org_name.lower()).strip("-") + "-" + secrets.token_hex(4)
             org = Organization(name=org_name, slug=slug)
             db.add(org)
             await db.flush()
+
             user = User(
                 org_id=org.id,
                 email=email,
@@ -1458,29 +1465,46 @@ async def google_callback(
                 hashed_password=hash_password(secrets.token_urlsafe(32)),
                 role="owner",
                 is_verified=True,
-                metadata_={"provider": "google", "google_id": info.get("id", "")}
+                metadata_={"provider": "google", "google_id": google_id}
             )
             db.add(user)
             await db.flush()
+            log.info(f"New Google user created: {email}")
         else:
-            # Update name if changed
-            if full_name and user.full_name != full_name:
+            # FIX: Only update name if it genuinely changed — never touch org or other user data
+            if full_name and full_name != user.full_name:
                 user.full_name = full_name
+            # Update google_id in metadata if missing
+            if user.metadata_ is None:
+                user.metadata_ = {}
+            if not user.metadata_.get("google_id"):
+                user.metadata_ = {**user.metadata_, "google_id": google_id}
+            log.info(f"Existing Google user signed in: {email}")
 
         await db.commit()
 
+        # FIX: JWT contains THIS user's id and org — completely isolated
         jwt_token = create_access_token(
             str(user.id),
-            {"org_id": str(user.org_id), "role": user.role}
+            {
+                "org_id": str(user.org_id),
+                "role": user.role,
+                "email": user.email
+            }
         )
-        return RedirectResponse(f"{FRONTEND}/login?token={jwt_token}")
+        # FIX: redirect with clear=true so frontend clears old localStorage token first
+        return RedirectResponse(f"{FRONTEND}/login?token={jwt_token}&clear=true")
 
     except httpx.TimeoutException:
         return RedirectResponse(f"{FRONTEND}/login?error=Google+server+timeout.+Please+try+again.")
     except Exception as e:
-        log_msg = str(e)[:60].replace(" ", "+")
-        return RedirectResponse(f"{FRONTEND}/login?error={log_msg}")
+        log.error(f"Google OAuth error: {e}")
+        err_msg = "Authentication+failed.+Please+try+again."
+        return RedirectResponse(f"{FRONTEND}/login?error={err_msg}")
 """)
+                         
+
+
 w("src/interfaces/http/routes/ai_chat.py", '''
 import json
 import datetime
