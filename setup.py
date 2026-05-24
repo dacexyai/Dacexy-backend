@@ -585,8 +585,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
-
-   w("src/application/use_cases/website/website_engine.py", '''
+            
+w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import urllib.parse
 import re
@@ -1377,7 +1377,7 @@ section{{padding:100px 5%}}
       <div class="cc"><div class="cci">💬</div><h4>WhatsApp</h4><a href="https://wa.me/{wa}" target="_blank">Chat Now →</a></div>
     </div>
     <div class="cf rev">
-      <h3 style="font-family:'{f1}',serif;font-size:1.25rem;font-weight:800;color:var(--tx);margin-bottom:22px">Send Us a Message</h3>
+      <h3 style="font-family:\'{f1}\',serif;font-size:1.25rem;font-weight:800;color:var(--tx);margin-bottom:22px">Send Us a Message</h3>
       <form onsubmit="hf(event)">
         <div class="fg" style="margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div class="fg2"><label>Full Name *</label><input type="text" placeholder="Your full name" required/></div>
@@ -1465,11 +1465,11 @@ section{{padding:100px 5%}}
   <div class="scta-t"><p>Ready to work with {name}?</p><p>Free consultation — contact us today.</p></div>
   <div class="scta-b">
     <a href="tel:{phone}" class="scta-b sb1">📞 Call</a>
-    <a href="#contact" class="scta-b sb2" onclick="document.getElementById('scta').style.transform='translateY(100%)'">Get Started →</a>
+    <a href="#contact" class="scta-b sb2" onclick="document.getElementById(\'scta\').style.transform=\'translateY(100%)\'">Get Started →</a>
   </div>
 </div>
 
-<button id="btt" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
+<button id="btt" onclick="window.scrollTo({{top:0,behavior:\'smooth\'}})">↑</button>
 
 <div class="ckb" id="ckb">
   <p>🍪 We use cookies to enhance your browsing experience. By continuing, you agree to our <a href="#" style="color:var(--pr)">Privacy Policy</a>.</p>
@@ -1480,31 +1480,31 @@ section{{padding:100px 5%}}
 </div>
 
 <script>
-window.addEventListener('load',()=>setTimeout(()=>document.getElementById('ldr').classList.add('out'),700));
-const nav=document.getElementById('nav'),scta=document.getElementById('scta'),btt=document.getElementById('btt');
-window.addEventListener('scroll',()=>{{
+window.addEventListener(\'load\',()=>setTimeout(()=>document.getElementById(\'ldr\').classList.add(\'out\'),700));
+const nav=document.getElementById(\'nav\'),scta=document.getElementById(\'scta\'),btt=document.getElementById(\'btt\');
+window.addEventListener(\'scroll\',()=>{{
   const y=scrollY;
-  nav.classList.toggle('solid',y>60);
-  scta.style.transform=y>400?'translateY(0)':'translateY(100%)';
-  btt.style.display=y>500?'flex':'none';
-  document.querySelectorAll('.lks a').forEach(a=>{{
-    const s=document.querySelector(a.getAttribute('href'));
-    if(s){{const r=s.getBoundingClientRect();a.classList.toggle('active',r.top<=100&&r.bottom>100);}}
+  nav.classList.toggle(\'solid\',y>60);
+  scta.style.transform=y>400?\'translateY(0)\':\'translateY(100%)\';
+  btt.style.display=y>500?\'flex\':\'none\';
+  document.querySelectorAll(\'.lks a\').forEach(a=>{{
+    const s=document.querySelector(a.getAttribute(\'href\'));
+    if(s){{const r=s.getBoundingClientRect();a.classList.toggle(\'active\',r.top<=100&&r.bottom>100);}}
   }});
-  const pb=document.getElementById('pbg');
+  const pb=document.getElementById(\'pbg\');
   if(pb)pb.style.transform=`scale(1.08) translateY(${{y*0.28}}px)`;
 }});
-function tm(){{const m=document.getElementById('mob'),h=document.getElementById('hb');m.classList.toggle('o');h.classList.toggle('o');document.body.style.overflow=m.classList.contains('o')?'hidden':'';}}
-function cm(){{document.getElementById('mob').classList.remove('o');document.getElementById('hb').classList.remove('o');document.body.style.overflow='';}}
-const ro=new IntersectionObserver(e=>e.forEach(x=>{{if(x.isIntersecting){{x.target.classList.add('vis');ro.unobserve(x.target)}}}}),{{threshold:0.08,rootMargin:'0px 0px -40px 0px'}});
-document.querySelectorAll('.rev').forEach(el=>ro.observe(el));
-function fq(b){{const a=b.nextElementSibling,i=b.querySelector('.fqi2'),op=a.style.display==='block';document.querySelectorAll('.fqa').forEach(x=>x.style.display='none');document.querySelectorAll('.fqi2').forEach(x=>{{x.textContent='+';x.style.transform=''}});if(!op){{a.style.display='block';i.textContent='−';i.style.transform='rotate(45deg)';}}}}
-function hf(e){{e.preventDefault();const b=e.target.querySelector('button[type="submit"]');b.innerHTML='⏳ Sending...';b.disabled=true;setTimeout(()=>{{b.innerHTML='✅ Sent!';document.getElementById('fs').style.display='block';e.target.reset();setTimeout(()=>{{b.innerHTML='Send Message →';b.disabled=false;document.getElementById('fs').style.display='none';}},4000);}},1500);}}
-function hnl(e){{e.preventDefault();document.getElementById('nls').style.display='block';e.target.reset();}}
-function acc(){{document.getElementById('ckb').classList.add('h');localStorage.setItem('ck','1');}}
-if(localStorage.getItem('ck'))document.getElementById('ckb').classList.add('h');
-document.querySelectorAll('input,textarea').forEach(el=>{{el.addEventListener('focus',()=>el.style.borderColor='var(--pr)');el.addEventListener('blur',()=>el.style.borderColor='');}});
-document.querySelectorAll('img[loading="lazy"]').forEach(img=>{{img.style.opacity='0';img.style.transition='opacity 0.5s ease';img.addEventListener('load',()=>img.style.opacity='1');if(img.complete)img.style.opacity='1';}});
+function tm(){{const m=document.getElementById(\'mob\'),h=document.getElementById(\'hb\');m.classList.toggle(\'o\');h.classList.toggle(\'o\');document.body.style.overflow=m.classList.contains(\'o\')?\'hidden\':\'\';}}
+function cm(){{document.getElementById(\'mob\').classList.remove(\'o\');document.getElementById(\'hb\').classList.remove(\'o\');document.body.style.overflow=\'\';}}
+const ro=new IntersectionObserver(e=>e.forEach(x=>{{if(x.isIntersecting){{x.target.classList.add(\'vis\');ro.unobserve(x.target)}}}}),{{threshold:0.08,rootMargin:\'0px 0px -40px 0px\'}});
+document.querySelectorAll(\'.rev\').forEach(el=>ro.observe(el));
+function fq(b){{const a=b.nextElementSibling,i=b.querySelector(\'.fqi2\'),op=a.style.display===\'block\';document.querySelectorAll(\'.fqa\').forEach(x=>x.style.display=\'none\');document.querySelectorAll(\'.fqi2\').forEach(x=>{{x.textContent=\'+\';x.style.transform=\'\'}});if(!op){{a.style.display=\'block\';i.textContent=\'−\';i.style.transform=\'rotate(45deg)\';}}}}
+function hf(e){{e.preventDefault();const b=e.target.querySelector(\'button[type="submit"]\');b.innerHTML=\'⏳ Sending...\';b.disabled=true;setTimeout(()=>{{b.innerHTML=\'✅ Sent!\';document.getElementById(\'fs\').style.display=\'block\';e.target.reset();setTimeout(()=>{{b.innerHTML=\'Send Message →\';b.disabled=false;document.getElementById(\'fs\').style.display=\'none\';}},4000);}},1500);}}
+function hnl(e){{e.preventDefault();document.getElementById(\'nls\').style.display=\'block\';e.target.reset();}}
+function acc(){{document.getElementById(\'ckb\').classList.add(\'h\');localStorage.setItem(\'ck\',\'1\');}}
+if(localStorage.getItem(\'ck\'))document.getElementById(\'ckb\').classList.add(\'h\');
+document.querySelectorAll(\'input,textarea\').forEach(el=>{{el.addEventListener(\'focus\',()=>el.style.borderColor=\'var(--pr)\');el.addEventListener(\'blur\',()=>el.style.borderColor=\'\');}});
+document.querySelectorAll(\'img[loading="lazy"]\').forEach(img=>{{img.style.opacity=\'0\';img.style.transition=\'opacity 0.5s ease\';img.addEventListener(\'load\',()=>img.style.opacity=\'1\');if(img.complete)img.style.opacity=\'1\';}});
 </script>
 </body>
 </html>"""
@@ -1540,8 +1540,8 @@ async def generate_website(prompt: str, ai=None) -> str:
     # Use premium template system (zero API cost) for all standard requests
     log.info(f"Using premium template for: {prompt[:60]}")
     return build_template(prompt, name, ud)
-''')                
-     
+''')
+
 
 w("src/interfaces/http/routes/auth.py", """
 import secrets
