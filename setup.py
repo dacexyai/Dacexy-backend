@@ -586,8 +586,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 """)
 
-                   
-    w("src/application/use_cases/website/website_engine.py", '''
+   w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import urllib.parse
 import re
@@ -1541,8 +1540,8 @@ async def generate_website(prompt: str, ai=None) -> str:
     # Use premium template system (zero API cost) for all standard requests
     log.info(f"Using premium template for: {prompt[:60]}")
     return build_template(prompt, name, ud)
-''')
-
+''')                
+     
 
 w("src/interfaces/http/routes/auth.py", """
 import secrets
