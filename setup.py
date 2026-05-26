@@ -627,8 +627,11 @@ def extract_user_data(prompt):
     em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
     if em:
         data["email"] = em.group(0)
-        am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', text, re.I)
-        if am:
+
+am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', text, re.I)
+
+if am:
+    data["address"] = am.group(1)
         data["address"] = am.group(1).strip()
     ig = re.search(r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
     if ig:
