@@ -614,54 +614,122 @@ def extract_name(prompt):
     return words[0].title() if words else "Nexus"
 
 def extract_user_data(prompt):
-    data = {"phone":None,"email":None,"address":None,"whatsapp":None,
-            "instagram":None,"facebook":None,"twitter":None,"linkedin":None,
-            "youtube":None,"opening_hours":None,"tagline_custom":None,"about_text":None}
+    data = {
+        "phone": None,
+        "email": None,
+        "address": None,
+        "whatsapp": None,
+        "instagram": None,
+        "facebook": None,
+        "twitter": None,
+        "linkedin": None,
+        "youtube": None,
+        "opening_hours": None,
+        "tagline_custom": None,
+        "about_text": None
+    }
+
     p = prompt
-pm = re.search(r'(?:phone|mobile|call|contact|tel|ph)[:\s#]*([+\d][\d\s\-().+]{7,15})', p, re.IGNORECASE)
 
-if not pm:
-    pm = re.search(r'(?<![\w])([+]?[0-9]{10,13})(?![\w])', p)
+    pm = re.search(
+        r'(?:phone|mobile|call|contact|tel|ph)[:\s#]*([+\d][\d\s\-().+]{7,15})',
+        p,
+        re.IGNORECASE
+    )
 
-if pm:
-    data["phone"] = pm.group(1).strip()
-    data["whatsapp"] = data["phone"]
+    if not pm:
+        pm = re.search(r'(?<![\w])([+]?[0-9]{10,13})(?![\w])', p)
 
-em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
+    if pm:
+        data["phone"] = pm.group(1).strip()
+        data["whatsapp"] = data["phone"]
 
-if em:
-    data["email"] = em.group(0)
+    em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
 
-am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', p, re.I)
+    if em:
+        data["email"] = em.group(0)
 
-if am:
-    data["address"] = am.group(1).strip()
+    am = re.search(
+        r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)',
+        p,
+        re.I
+    )
 
-ig = re.search(r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
+    if am:
+        data["address"] = am.group(1).strip()
 
-if ig:
-    data["instagram"] = ig.group(1).strip()
+    ig = re.search(
+        r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)',
+        p,
+        re.IGNORECASE
+    )
 
-fb = re.search(r'(?:facebook|fb)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
+    if ig:
+        data["instagram"] = ig.group(1).strip()
+
+    fb = re.search(
+        r'(?:facebook|fb)[:\s@/]*([\w.]+)',
+        p,
+        re.IGNORECASE
+    )
+
+    if fb:
         data["facebook"] = fb.group(1).strip()
-    tw = re.search(r'(?:twitter|x\.com)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
+
+    tw = re.search(
+        r'(?:twitter|x\.com)[:\s@/]*([\w.]+)',
+        p,
+        re.IGNORECASE
+    )
+
     if tw:
         data["twitter"] = tw.group(1).strip()
-    li = re.search(r'(?:linkedin)[:\s@/]*([\w.-]+)', p, re.IGNORECASE)
+
+    li = re.search(
+        r'(?:linkedin)[:\s@/]*([\w.-]+)',
+        p,
+        re.IGNORECASE
+    )
+
     if li:
         data["linkedin"] = li.group(1).strip()
-    hm = re.search(r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})', p, re.IGNORECASE)
+
+    hm = re.search(
+        r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})',
+        p,
+        re.IGNORECASE
+    )
+
     if hm:
         data["opening_hours"] = hm.group(1).strip()
-    wa = re.search(r'(?:whatsapp)[:\s#]*([+\d][\d\s\-+]{7,15})', p, re.IGNORECASE)
+
+    wa = re.search(
+        r'(?:whatsapp)[:\s#]*([+\d][\d\s\-+]{7,15})',
+        p,
+        re.IGNORECASE
+    )
+
     if wa:
         data["whatsapp"] = wa.group(1).strip()
-    tg = re.search(r'(?:tagline|slogan|headline)[:\s"]+([^"\n]{5,80})', p, re.IGNORECASE)
+
+    tg = re.search(
+        r'(?:tagline|slogan|headline)[:\s"]+([^"\n]{5,80})',
+        p,
+        re.IGNORECASE
+    )
+
     if tg:
         data["tagline_custom"] = tg.group(1).strip()
-    ab = re.search(r'(?:about us|about|description)[:\s]+([^.\n]{20,300})', p, re.IGNORECASE)
+
+    ab = re.search(
+        r'(?:about us|about|description)[:\s]+([^.\n]{20,300})',
+        p,
+        re.IGNORECASE
+    )
+
     if ab:
         data["about_text"] = ab.group(1).strip()
+
     return data
 
 def needs_ai_generation(prompt):
