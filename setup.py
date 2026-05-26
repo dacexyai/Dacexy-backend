@@ -875,20 +875,26 @@ def build_ai_prompt(prompt, name, ud):
     h1 = "https://image.pollinations.ai/prompt/ultra_realistic_" + enc + "_hero_4k?width=1400&height=800&seed=" + str(seed) + "&nologo=true&model=flux"
     h2 = "https://image.pollinations.ai/prompt/professional_" + enc + "?width=900&height=700&seed=" + str(seed+1) + "&nologo=true&model=flux"
     map_q = urllib.parse.quote(address)
-    return ("You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.\n\n"
-        "USER REQUEST: " + prompt + "\n"
-        "BUSINESS NAME: " + name + "\n"
-        "PHONE: " + phone + " | EMAIL: " + email + " | ADDRESS: " + address + " | WHATSAPP: " + wa + " | HOURS: " + hours + "\n\n"
-        "IMAGES (use these exact URLs):\n"
-        "Hero: " + h1 + "\n"
-        "About: " + h2 + "\n\n"
-        "RULES:\n"
-        "1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.\n"
-        "2. Match quality of Stripe, Linear, Apple.\n"
-        "3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q=" + map_q + "&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.\n"
-        "4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.\n"
-        "5. Contact form success message on submit.\n"
-        "6. WhatsApp: https://wa.me/" + wa)
+    parts = [
+        "You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.",
+        "",
+        "USER REQUEST: " + prompt,
+        "BUSINESS NAME: " + name,
+        "PHONE: " + phone + " | EMAIL: " + email + " | ADDRESS: " + address + " | WHATSAPP: " + wa + " | HOURS: " + hours,
+        "",
+        "IMAGES (use these exact URLs):",
+        "Hero: " + h1,
+        "About: " + h2,
+        "",
+        "RULES:",
+        "1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.",
+        "2. Match quality of Stripe, Linear, Apple.",
+        "3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q=" + map_q + "&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.",
+        "4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.",
+        "5. Contact form success message on submit.",
+        "6. WhatsApp: https://wa.me/" + wa,
+    ]
+    return "\n".join(parts)
 
 def build_template(prompt, name, ud):
     cat = get_category(prompt)
