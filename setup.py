@@ -588,7 +588,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             
                     
 w("src/application/use_cases/website/website_engine.py", '''
-import logging
+ import logging
 import urllib.parse
 import re
 
@@ -597,8 +597,8 @@ log = logging.getLogger("website")
 def extract_name(prompt):
     p = prompt.strip()
     patterns = [
-        r"(?:named?|called?|for)\\s+([A-Z][a-zA-Z0-9\\s]{1,30}?)(?:\\s+(?:with|that|which|website|app|platform|startup|business|restaurant|store|shop|company)|\\.|,|$)",
-        r"^([A-Z][a-zA-Z0-9]{1,20})\\s+",
+        r"(?:named?|called?|for)\s+([A-Z][a-zA-Z0-9\s]{1,30}?)(?:\s+(?:with|that|which|website|app|platform|startup|business|restaurant|store|shop|company)|\.|,|$)",
+        r"^([A-Z][a-zA-Z0-9]{1,20})\s+",
     ]
     for pat in patterns:
         m = re.search(pat, p, re.IGNORECASE)
@@ -609,7 +609,7 @@ def extract_name(prompt):
     skip = {"for","the","with","that","this","and","build","make","create","generate",
             "website","page","site","app","landing","platform","startup","business",
             "a","an","my","our","me","i","want","need","please","just","can","you"}
-    words = [x for x in re.sub(r\'[^a-zA-Z0-9 ]\', \'\', p).split()
+    words = [x for x in re.sub(r'[^a-zA-Z0-9 ]', '', p).split()
              if len(x) > 2 and x.lower() not in skip]
     return words[0].title() if words else "Nexus"
 
@@ -618,40 +618,40 @@ def extract_user_data(prompt):
             "instagram":None,"facebook":None,"twitter":None,"linkedin":None,
             "youtube":None,"opening_hours":None,"tagline_custom":None,"about_text":None}
     p = prompt
-    pm = re.search(r\'(?:phone|mobile|call|contact|tel|ph)[:\\s#]*([+\\d][\\d\\s\\-().+]{7,15})\', p, re.IGNORECASE)
+    pm = re.search(r'(?:phone|mobile|call|contact|tel|ph)[:\s#]*([+\d][\d\s\-().+]{7,15})', p, re.IGNORECASE)
     if not pm:
-        pm = re.search(r\'(?<![\\w])([+]?[0-9]{10,13})(?![\\w])\', p)
+        pm = re.search(r'(?<![\w])([+]?[0-9]{10,13})(?![\w])', p)
     if pm:
         data["phone"] = pm.group(1).strip()
         data["whatsapp"] = data["phone"]
-    em = re.search(r\'[\\w.+-]+@[\\w-]+\\.[\\w.]+\', p)
+    em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
     if em:
         data["email"] = em.group(0)
-    am = re.search(r\'(?:address|location|located at|find us at|visit us at)[:\\s]+([^,\\n.]{10,100})\', p, re.IGNORECASE)
+    am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n.]{10,100})', p, re.IGNORECASE)
     if am:
         data["address"] = am.group(1).strip()
-    ig = re.search(r\'(?:instagram|ig|insta)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
+    ig = re.search(r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
     if ig:
         data["instagram"] = ig.group(1).strip()
-    fb = re.search(r\'(?:facebook|fb)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
+    fb = re.search(r'(?:facebook|fb)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
     if fb:
         data["facebook"] = fb.group(1).strip()
-    tw = re.search(r\'(?:twitter|x\\.com)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
+    tw = re.search(r'(?:twitter|x\.com)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
     if tw:
         data["twitter"] = tw.group(1).strip()
-    li = re.search(r\'(?:linkedin)[:\\s@/]*([\\w.-]+)\', p, re.IGNORECASE)
+    li = re.search(r'(?:linkedin)[:\s@/]*([\w.-]+)', p, re.IGNORECASE)
     if li:
         data["linkedin"] = li.group(1).strip()
-    hm = re.search(r\'(?:open|hours|timing)[:\\s]+([^.\\n]{5,60})\', p, re.IGNORECASE)
+    hm = re.search(r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})', p, re.IGNORECASE)
     if hm:
         data["opening_hours"] = hm.group(1).strip()
-    wa = re.search(r\'(?:whatsapp)[:\\s#]*([+\\d][\\d\\s\\-+]{7,15})\', p, re.IGNORECASE)
+    wa = re.search(r'(?:whatsapp)[:\s#]*([+\d][\d\s\-+]{7,15})', p, re.IGNORECASE)
     if wa:
         data["whatsapp"] = wa.group(1).strip()
-    tg = re.search(r\'(?:tagline|slogan|headline)[:\\s"]+([^"\\n]{5,80})\', p, re.IGNORECASE)
+    tg = re.search(r'(?:tagline|slogan|headline)[:\s"]+([^"\n]{5,80})', p, re.IGNORECASE)
     if tg:
         data["tagline_custom"] = tg.group(1).strip()
-    ab = re.search(r\'(?:about us|about|description)[:\\s]+([^.\\n]{20,300})\', p, re.IGNORECASE)
+    ab = re.search(r'(?:about us|about|description)[:\s]+([^.\n]{20,300})', p, re.IGNORECASE)
     if ab:
         data["about_text"] = ab.group(1).strip()
     return data
@@ -762,7 +762,7 @@ def get_category(prompt):
              "images","photos","logo","color","colour","theme","dark","light"]
     clean = p
     for n in noise:
-        clean = re.sub(r"\\b" + re.escape(n) + r"\\b", " ", clean)
+        clean = re.sub(r"\b" + re.escape(n) + r"\b", " ", clean)
     clean = clean.strip()
     scores = {}
     for cat, keywords in CATEGORY_KEYWORDS.items():
@@ -866,7 +866,7 @@ def get_content(cat):
 
 def build_ai_prompt(prompt, name, ud):
     phone = ud.get("phone") or "+91 99999 99999"
-    email = ud.get("email") or ("hello@" + re.sub(r\'[^a-z0-9]\', \'\', name.lower()) + ".com")
+    email = ud.get("email") or ("hello@" + re.sub(r'[^a-z0-9]', '', name.lower()) + ".com")
     address = ud.get("address") or "Mumbai, India"
     wa = (ud.get("whatsapp") or phone).replace("+","").replace(" ","").replace("-","")
     hours = ud.get("opening_hours") or "Mon-Sat 9AM-8PM"
@@ -875,24 +875,22 @@ def build_ai_prompt(prompt, name, ud):
     h1 = "https://image.pollinations.ai/prompt/ultra_realistic_" + enc + "_hero_4k?width=1400&height=800&seed=" + str(seed) + "&nologo=true&model=flux"
     h2 = "https://image.pollinations.ai/prompt/professional_" + enc + "?width=900&height=700&seed=" + str(seed+1) + "&nologo=true&model=flux"
     map_q = urllib.parse.quote(address)
-    parts = [
-        return (
-    f"You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.\n\n"
-    f"USER REQUEST: {prompt}\n"
-    f"BUSINESS NAME: {name}\n"
-    f"PHONE: {phone} | EMAIL: {email} | ADDRESS: {address} | WHATSAPP: {wa} | HOURS: {hours}\n\n"
-    f"IMAGES (use these exact URLs):\n"
-    f"Hero: {h1}\n"
-    f"About: {h2}\n\n"
-    f"RULES:\n"
-    f"1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.\n"
-    f"2. Match quality of Stripe, Linear, Apple.\n"
-    f"3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q={map_q}&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.\n"
-    f"4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.\n"
-    f"5. Contact form success message on submit.\n"
-    f"6. WhatsApp: https://wa.me/{wa}"
-)
-    return "\n".join(parts)
+    return (
+        "You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.\n\n"
+        "USER REQUEST: " + prompt + "\n"
+        "BUSINESS NAME: " + name + "\n"
+        "PHONE: " + phone + " | EMAIL: " + email + " | ADDRESS: " + address + " | WHATSAPP: " + wa + " | HOURS: " + hours + "\n\n"
+        "IMAGES (use these exact URLs):\n"
+        "Hero: " + h1 + "\n"
+        "About: " + h2 + "\n\n"
+        "RULES:\n"
+        "1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.\n"
+        "2. Match quality of Stripe, Linear, Apple.\n"
+        "3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q=" + map_q + "&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.\n"
+        "4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.\n"
+        "5. Contact form success message on submit.\n"
+        "6. WhatsApp: https://wa.me/" + wa
+    )
 
 def build_template(prompt, name, ud):
     cat = get_category(prompt)
@@ -902,7 +900,7 @@ def build_template(prompt, name, ud):
     enc = urllib.parse.quote(prompt[:80])
 
     phone = ud.get("phone") or "+91 99999 99999"
-    email_addr = ud.get("email") or ("hello@" + re.sub(r\'[^a-z0-9]\', \'\', name.lower()) + ".com")
+    email_addr = ud.get("email") or ("hello@" + re.sub(r'[^a-z0-9]', '', name.lower()) + ".com")
     address = ud.get("address") or "Mumbai, India"
     wa = (ud.get("whatsapp") or phone).replace("+","").replace(" ","").replace("-","")
     hours = ud.get("opening_hours") or "Mon-Sat 9AM-8PM"
@@ -944,8 +942,8 @@ def build_template(prompt, name, ud):
 
     svcs = ""
     for ic, t, d in con["sv"]:
-        svcs += ("<div class=\"sc\" onmouseover=\"this.style.transform=\'translateY(-8px)\';this.style.borderColor=\'" + ds["pr"] + "\'\" "
-                 "onmouseout=\"this.style.transform=\'\';this.style.borderColor=\'" + ds["br"] + "\'\">"
+        svcs += ("<div class=\"sc\" onmouseover=\"this.style.transform='translateY(-8px)';this.style.borderColor='" + ds["pr"] + "'\" "
+                 "onmouseout=\"this.style.transform='';this.style.borderColor='" + ds["br"] + "'\">"
                  "<span class=\"si\">" + ic + "</span><h3>" + t + "</h3><p>" + d + "</p></div>")
 
     stats = ""
@@ -954,23 +952,23 @@ def build_template(prompt, name, ud):
 
     testis = ""
     for a, r, t in con["testi"]:
-        testis += ("<div class=\"tc\" onmouseover=\"this.style.transform=\'translateY(-6px)\';this.style.borderColor=\'" + ds["pr"] + "\'\" "
-                   "onmouseout=\"this.style.transform=\'\';this.style.borderColor=\'" + ds["br"] + "\'\">"
+        testis += ("<div class=\"tc\" onmouseover=\"this.style.transform='translateY(-6px)';this.style.borderColor='" + ds["pr"] + "'\" "
+                   "onmouseout=\"this.style.transform='';this.style.borderColor='" + ds["br"] + "'\">"
                    "<div class=\"ts\">★★★★★</div><p class=\"tt\">&ldquo;" + t + "&rdquo;</p>"
                    "<div class=\"ta\"><div class=\"av\">" + a[0] + "</div>"
                    "<div><div class=\"an\">" + a + "</div><div class=\"ar\">" + r + "</div></div></div></div>")
 
     gals = ""
     for gimg in [g1_img, g2_img, g3_img, g4_img]:
-        gals += ("<div class=\"gi\" onmouseover=\"this.querySelector(\'img\').style.transform=\'scale(1.1)\'\" "
-                 "onmouseout=\"this.querySelector(\'img\').style.transform=\'\'\">"
+        gals += ("<div class=\"gi\" onmouseover=\"this.querySelector('img').style.transform='scale(1.1)'\" "
+                 "onmouseout=\"this.querySelector('img').style.transform=''\">"
                  "<img src=\"" + gimg + "\" loading=\"lazy\" alt=\"Gallery\"/>"
                  "<div class=\"go\"><span>View &rarr;</span></div></div>")
 
     afs = ""
     for ic, t, d in con["af"]:
-        afs += ("<div class=\"af\" onmouseover=\"this.style.borderColor=\'" + ds["pr"] + "\';this.style.transform=\'translateX(5px)\'\" "
-                "onmouseout=\"this.style.borderColor=\'" + ds["br"] + "\';this.style.transform=\'\'\">"
+        afs += ("<div class=\"af\" onmouseover=\"this.style.borderColor='" + ds["pr"] + "';this.style.transform='translateX(5px)'\" "
+                "onmouseout=\"this.style.borderColor='" + ds["br"] + "';this.style.transform=''\">"
                 "<div class=\"afi\">" + ic + "</div><div class=\"aft\"><h4>" + t + "</h4><p>" + d + "</p></div></div>")
 
     soc_ig = "<a href=\"" + ("https://instagram.com/" + ig if ig else "#") + "\" target=\"_blank\" title=\"Instagram\">📸</a>"
@@ -1006,12 +1004,12 @@ def build_template(prompt, name, ud):
 "<head>\n"
 "<meta charset=\"UTF-8\">\n"
 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-"<meta name=\"description\" content=\"" + name + " — " + tagline + ". " + con["sub"][:120] + "\">\n"
+"<meta name=\"description\" content=\"" + name + " \u2014 " + tagline + ". " + con["sub"][:120] + "\">\n"
 "<meta property=\"og:title\" content=\"" + name + "\">\n"
 "<meta property=\"og:description\" content=\"" + con["sub"][:160] + "\">\n"
 "<meta property=\"og:image\" content=\"" + h_img + "\">\n"
 "<meta name=\"twitter:card\" content=\"summary_large_image\">\n"
-"<title>" + name + " — " + tagline + "</title>\n"
+"<title>" + name + " \u2014 " + tagline + "</title>\n"
 "<link href=\"https://fonts.googleapis.com/css2?family=" + gf1 + ":ital,wght@0,700;0,800;0,900;1,700&family=" + gf2 + ":wght@300;400;500;600;700;800&display=swap\" rel=\"stylesheet\">\n"
 "<style>\n"
 "*{margin:0;padding:0;box-sizing:border-box}\n"
@@ -1117,7 +1115,7 @@ def build_template(prompt, name, ud):
 ".gi:hover .go{opacity:1}\n"
 ".tg{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:40px}\n"
 ".tc{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:32px;transition:all 0.3s;position:relative;overflow:hidden;cursor:default}\n"
-".tc::before{content:\"\\201C\";position:absolute;top:-18px;right:14px;font-size:7.5rem;color:var(--pr);opacity:0.06;font-family:serif;line-height:1}\n"
+".tc::before{content:'\\201C';position:absolute;top:-18px;right:14px;font-size:7.5rem;color:var(--pr);opacity:0.06;font-family:serif;line-height:1}\n"
 ".ts{color:var(--ac);font-size:0.9rem;letter-spacing:3px;margin-bottom:14px}\n"
 ".tt{font-size:0.87rem;color:var(--mu);line-height:1.75;margin-bottom:20px;font-style:italic}\n"
 ".ta{display:flex;align-items:center;gap:12px}\n"
@@ -1411,11 +1409,11 @@ def build_template(prompt, name, ud):
 "  <div class=\"scta-t\"><p>Ready to work with " + name + "?</p><p>Free consultation &mdash; contact us today.</p></div>\n"
 "  <div class=\"scta-b\">\n"
 "    <a href=\"tel:" + phone + "\" class=\"scta-b sb1\">&#128222; Call</a>\n"
-"    <a href=\"#contact\" class=\"scta-b sb2\" onclick=\"document.getElementById(\'scta\').style.transform=\'translateY(100%)\'\">Get Started &rarr;</a>\n"
+"    <a href=\"#contact\" class=\"scta-b sb2\" onclick=\"document.getElementById('scta').style.transform='translateY(100%)'\">Get Started &rarr;</a>\n"
 "  </div>\n"
 "</div>\n"
 "\n"
-"<button id=\"btt\" onclick=\"window.scrollTo({top:0,behavior:\'smooth\'})\">&#x2191;</button>\n"
+"<button id=\"btt\" onclick=\"window.scrollTo({top:0,behavior:'smooth'})\">&#x2191;</button>\n"
 "\n"
 "<div class=\"ckb\" id=\"ckb\">\n"
 "  <p>&#127850; We use cookies to enhance your experience. By continuing, you agree to our <a href=\"#\" style=\"color:var(--pr)\">Privacy Policy</a>.</p>\n"
@@ -1470,7 +1468,7 @@ async def generate_website(prompt, ai=None):
             if isinstance(result, str):
                 html = result.strip()
                 if html.startswith("```"):
-                    html = re.sub(r\'```[a-z]*\\n?\', \'\', html).strip().rstrip(\'`\').strip()
+                    html = re.sub(r'```[a-z]*\n?', '', html).strip().rstrip('`').strip()
                 if "<!DOCTYPE" in html or "<html" in html:
                     start = html.find("<!DOCTYPE")
                     if start == -1:
@@ -1479,7 +1477,7 @@ async def generate_website(prompt, ai=None):
         except Exception as e:
             log.warning("AI generation failed, using premium template: " + str(e))
     log.info("Using premium template for: " + prompt[:60])
-    return build_template(prompt, name, ud)
+    return build_template(prompt, name, ud)              
 ''')  
 
 
