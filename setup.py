@@ -876,24 +876,22 @@ def build_ai_prompt(prompt, name, ud):
     h2 = "https://image.pollinations.ai/prompt/professional_" + enc + "?width=900&height=700&seed=" + str(seed+1) + "&nologo=true&model=flux"
     map_q = urllib.parse.quote(address)
     parts = [
-        "You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.",
-        "",
-        "USER REQUEST: " + prompt,
-        "BUSINESS NAME: " + name,
-        "PHONE: " + phone + " | EMAIL: " + email + " | ADDRESS: " + address + " | WHATSAPP: " + wa + " | HOURS: " + hours,
-        "",
-        "IMAGES (use these exact URLs):",
-        "Hero: " + h1,
-        "About: " + h2,
-        "",
-        "RULES:",
-        "1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.",
-        "2. Match quality of Stripe, Linear, Apple.",
-        "3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q=" + map_q + "&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.",
-        "4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.",
-        "5. Contact form success message on submit.",
-        "6. WhatsApp: https://wa.me/" + wa,
-    ]
+        return (
+    f"You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.\n\n"
+    f"USER REQUEST: {prompt}\n"
+    f"BUSINESS NAME: {name}\n"
+    f"PHONE: {phone} | EMAIL: {email} | ADDRESS: {address} | WHATSAPP: {wa} | HOURS: {hours}\n\n"
+    f"IMAGES (use these exact URLs):\n"
+    f"Hero: {h1}\n"
+    f"About: {h2}\n\n"
+    f"RULES:\n"
+    f"1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown.\n"
+    f"2. Match quality of Stripe, Linear, Apple.\n"
+    f"3. Include: sticky nav, hamburger, hero 3D tilt, stats bar, about, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps (https://maps.google.com/maps?q={map_q}&output=embed), WhatsApp float, sticky CTA, newsletter, footer, loading screen, scroll reveal, counters, back to top, cookie banner.\n"
+    f"4. Google Fonts. CSS variables. Smooth animations. Mobile responsive.\n"
+    f"5. Contact form success message on submit.\n"
+    f"6. WhatsApp: https://wa.me/{wa}"
+)
     return "\n".join(parts)
 
 def build_template(prompt, name, ud):
