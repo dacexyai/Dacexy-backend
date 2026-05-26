@@ -618,28 +618,31 @@ def extract_user_data(prompt):
             "instagram":None,"facebook":None,"twitter":None,"linkedin":None,
             "youtube":None,"opening_hours":None,"tagline_custom":None,"about_text":None}
     p = prompt
-    pm = re.search(r'(?:phone|mobile|call|contact|tel|ph)[:\s#]*([+\d][\d\s\-().+]{7,15})', p, re.IGNORECASE)
-    if not pm:
-        pm = re.search(r'(?<![\w])([+]?[0-9]{10,13})(?![\w])', p)
-    if pm:
-        data["phone"] = pm.group(1).strip()
-        data["whatsapp"] = data["phone"]
-    em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
-    if em:
-        data["email"] = em.group(0)
+pm = re.search(r'(?:phone|mobile|call|contact|tel|ph)[:\s#]*([+\d][\d\s\-().+]{7,15})', p, re.IGNORECASE)
 
-am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,
+if not pm:
+    pm = re.search(r'(?<![\w])([+]?[0-9]{10,13})(?![\w])', p)
 
-am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', text, re.I)
+if pm:
+    data["phone"] = pm.group(1).strip()
+    data["whatsapp"] = data["phone"]
+
+em = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', p)
+
+if em:
+    data["email"] = em.group(0)
+
+am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', p, re.I)
 
 if am:
-    data["address"] = am.group(1)
-        data["address"] = am.group(1).strip()
-    ig = re.search(r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
-    if ig:
-        data["instagram"] = ig.group(1).strip()
-    fb = re.search(r'(?:facebook|fb)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
-    if fb:
+    data["address"] = am.group(1).strip()
+
+ig = re.search(r'(?:instagram|ig|insta)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
+
+if ig:
+    data["instagram"] = ig.group(1).strip()
+
+fb = re.search(r'(?:facebook|fb)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
         data["facebook"] = fb.group(1).strip()
     tw = re.search(r'(?:twitter|x\.com)[:\s@/]*([\w.]+)', p, re.IGNORECASE)
     if tw:
