@@ -690,14 +690,10 @@ def extract_user_data(prompt):
     if li:
         data["linkedin"] = li.group(1).strip()
 
-    hm = re.search(
-        r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})',
-        p,
-        re.IGNORECASE
-    )
+    hm = re.search(r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})', p, re.IGNORECASE)
 
-    if hm:
-        data["opening_hours"] = hm.group(1).strip()
+if hm:
+    data["opening_hours"] = hm.group(1).strip()
 
     wa = re.search(
         r'(?:whatsapp)[:\s#]*([+\d][\d\s\-+]{7,15})',
