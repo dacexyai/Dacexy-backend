@@ -628,6 +628,8 @@ def extract_user_data(prompt):
     if em:
         data["email"] = em.group(0)
 
+am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,
+
 am = re.search(r'(?:address|location|located at|find us at|visit us at)[:\s]+([^,\n]+)', text, re.I)
 
 if am:
