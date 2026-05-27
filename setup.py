@@ -586,7 +586,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 """)
 
-w("src/application/use_cases/website/website_engine.py", '''import logging
+w("src/application/use_cases/website/website_engine.py", '''
+import logging
 import urllib.parse
 import re
 import random
@@ -945,25 +946,27 @@ def build_ai_prompt(prompt: str, name: str, ud: dict) -> str:
     enc = urllib.parse.quote(prompt[:60])
     h1 = f"https://image.pollinations.ai/prompt/ultra_realistic_{enc}_hero_4k?width=1400&height=800&seed={seed}&nologo=true&model=flux"
     h2 = f"https://image.pollinations.ai/prompt/professional_{enc}?width=900&height=700&seed={seed+1}&nologo=true&model=flux"
-    return f"""You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.
-
-USER REQUEST: {prompt}
-BUSINESS NAME: {name}
-PHONE: {phone} | EMAIL: {email} | ADDRESS: {address} | WHATSAPP: {wa} | HOURS: {hours}
-
-IMAGES (use these exact URLs):
-Hero: {h1}
-About: {h2}
-
-CRITICAL RULES:
-1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown, zero explanation.
-2. Make it as beautiful as Stripe, Linear, or Apple — world-class design quality.
-3. Include: sticky nav with hamburger, full hero with 3D tilt image, stats bar, about section, services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps embed, WhatsApp float button, sticky CTA bar, newsletter, footer with social links, loading screen, scroll reveal animations, counter animations, back to top button, cookie banner.
-4. Use beautiful Google Fonts. CSS custom properties. Smooth animations. Mobile responsive.
-5. Contact form must show success message on submit (no backend).
-6. Include phone/email/address/hours prominently throughout.
-7. WhatsApp link: https://wa.me/{wa}
-8. Google Maps: https://maps.google.com/maps?q={urllib.parse.quote(address)}&output=embed"""
+    return (
+        f"You are an expert web developer. Generate a COMPLETE, STUNNING single HTML file website.\n\n"
+        f"USER REQUEST: {prompt}\n"
+        f"BUSINESS NAME: {name}\n"
+        f"PHONE: {phone} | EMAIL: {email} | ADDRESS: {address} | WHATSAPP: {wa} | HOURS: {hours}\n\n"
+        f"IMAGES (use these exact URLs):\n"
+        f"Hero: {h1}\n"
+        f"About: {h2}\n\n"
+        f"CRITICAL RULES:\n"
+        f"1. Output ONLY raw HTML starting with <!DOCTYPE html>. Zero markdown, zero explanation.\n"
+        f"2. Make it as beautiful as Stripe, Linear, or Apple — world-class design quality.\n"
+        f"3. Include: sticky nav with hamburger, full hero with 3D tilt image, stats bar, about section, "
+        f"services grid, gallery, testimonials, FAQ accordion, contact form with validation, Google Maps embed, "
+        f"WhatsApp float button, sticky CTA bar, newsletter, footer with social links, loading screen, "
+        f"scroll reveal animations, counter animations, back to top button, cookie banner.\n"
+        f"4. Use beautiful Google Fonts. CSS custom properties. Smooth animations. Mobile responsive.\n"
+        f"5. Contact form must show success message on submit (no backend).\n"
+        f"6. Include phone/email/address/hours prominently throughout.\n"
+        f"7. WhatsApp link: https://wa.me/{wa}\n"
+        f"8. Google Maps: https://maps.google.com/maps?q={urllib.parse.quote(address)}&output=embed"
+    )
 
 # ── MAIN TEMPLATE BUILDER ─────────────────────────────────────────────────────
 def build_template(prompt: str, name: str, ud: dict) -> str:
@@ -977,7 +980,7 @@ def build_template(prompt: str, name: str, ud: dict) -> str:
     email_addr = ud.get("email") or "hello@" + re.sub(r'[^a-z0-9]', '', name.lower()) + ".com"
     address = ud.get("address") or "Mumbai, India"
     wa = (ud.get("whatsapp") or phone).replace("+","").replace(" ","").replace("-","")
-    hours = ud.get("opening_hours") or "Mon–Sat: 9 AM – 8 PM"
+    hours = ud.get("opening_hours") or "Mon-Sat: 9 AM - 8 PM"
     tagline = ud.get("tagline_custom") or con["tagline"]
     about_text = ud.get("about_text") or con["sub"]
     ig = ud.get("instagram") or ""
@@ -1071,12 +1074,12 @@ def build_template(prompt: str, name: str, ud: dict) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="{name} — {tagline}. {con['sub'][:120]}">
+<meta name="description" content="{name} - {tagline}. {con['sub'][:120]}">
 <meta property="og:title" content="{name}">
 <meta property="og:description" content="{con['sub'][:160]}">
 <meta property="og:image" content="{imgs['h']}">
 <meta name="twitter:card" content="summary_large_image">
-<title>{name} — {tagline}</title>
+<title>{name} - {tagline}</title>
 <link href="https://fonts.googleapis.com/css2?family={gf1}:ital,wght@0,700;0,800;0,900;1,700&family={gf2}:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -1389,7 +1392,7 @@ section{{padding:100px 5%}}
     </div>
     <div class="rev">
       <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">How do I get started with {name}?</span><span class="fqi2">+</span></button><div class="fqa"><p>Simply contact us through the form below, call us, or send a WhatsApp message. We respond within 24 hours and set up a free initial consultation to understand exactly what you need.</p></div></div>
-      <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">What is your pricing and how does it work?</span><span class="fqi2">+</span></button><div class="fqa"><p>Our pricing is completely transparent and competitive, always tailored to your specific requirements. Contact us for a personalised quote — no hidden fees, no surprises, ever.</p></div></div>
+      <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">What is your pricing and how does it work?</span><span class="fqi2">+</span></button><div class="fqa"><p>Our pricing is completely transparent and competitive, always tailored to your specific requirements. Contact us for a personalised quote - no hidden fees, no surprises, ever.</p></div></div>
       <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">How long does the process typically take?</span><span class="fqi2">+</span></button><div class="fqa"><p>Timelines depend entirely on the scope of your project. We are known throughout the industry for fast, reliable delivery and will give you a completely clear timeline upfront before any work begins.</p></div></div>
       <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">Do you offer ongoing support after completion?</span><span class="fqi2">+</span></button><div class="fqa"><p>Absolutely, and we pride ourselves on building long-term relationships with every client. Ongoing support, maintenance, and continued assistance are always available to you.</p></div></div>
       <div class="fqi"><button class="fqb" onclick="fq(this)"><span class="fqq">What areas and regions do you serve?</span><span class="fqi2">+</span></button><div class="fqa"><p>We proudly serve clients across all of India and internationally. Whether in-person or fully remote, we adapt completely and seamlessly to your location and needs.</p></div></div>
@@ -1498,7 +1501,7 @@ section{{padding:100px 5%}}
 </a>
 
 <div class="scta" id="scta">
-  <div class="scta-t"><p>Ready to work with {name}?</p><p>Free consultation — contact us today.</p></div>
+  <div class="scta-t"><p>Ready to work with {name}?</p><p>Free consultation - contact us today.</p></div>
   <div class="scta-b">
     <a href="tel:{phone}" class="scta-b sb1">&#128222; Call</a>
     <a href="#contact" class="scta-b sb2" onclick="document.getElementById('scta').style.transform='translateY(100%)'">Get Started &#8594;</a>
@@ -1573,7 +1576,7 @@ async def generate_website(prompt: str, ai=None) -> str:
 
     log.info(f"Using premium template for: {prompt[:60]}")
     return build_template(prompt, name, ud)
-    ''')
+''')
 
 
 w("src/interfaces/http/routes/auth.py", """
