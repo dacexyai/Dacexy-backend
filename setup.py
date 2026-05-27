@@ -704,11 +704,7 @@ def extract_user_data(prompt):
     if wa:
         data["whatsapp"] = wa.group(1).strip()
 
-    tg = re.search(
-        r'(?:tagline|slogan|headline)[:\s"]+([^"\n]{5,80})',
-        p,
-        re.IGNORECASE
-    )
+    tg = re.search(r'(?:tagline|slogan|headline)[:\s"]+([^"\n]{5,80})', p, re.IGNORECASE)
 
     if tg:
         data["tagline_custom"] = tg.group(1).strip()
