@@ -585,16 +585,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
         return await call_next(request)
 """)
-            
+
 w("src/application/use_cases/website/website_engine.py", '''
 import logging
 import urllib.parse
 import re
-import json
+import random
 
 log = logging.getLogger("website")
 
-# ── NAME EXTRACTION ──────────────────────────────────────────────────────────
 def extract_name(prompt: str) -> str:
     p = prompt.strip()
     patterns = [
@@ -610,820 +609,300 @@ def extract_name(prompt: str) -> str:
     skip = {"for","the","with","that","this","and","build","make","create","generate",
             "website","page","site","app","landing","platform","startup","business",
             "restaurant","store","shop","company","portfolio","a","an","my","our",
-            "me","i","want","need","please","just","can","you","give","type","good",
-            "great","best","professional","beautiful","modern","awesome","nice","add",
-            "include","put","use","have","my","their","its"}
+            "me","i","want","need","please","just","can","you","give","type"}
     words = [w for w in re.sub(r\'[^a-zA-Z0-9 ]\', \'\', p).split()
              if len(w) > 2 and w.lower() not in skip]
     return words[0].title() if words else "Nexus"
 
-# ── USER DATA EXTRACTION — phone, email, address, social, images, etc ────────
-def extract_user_data(prompt: str) -> dict:
-    data = {
-        "phone": None, "email": None, "address": None,
-        "whatsapp": None, "instagram": None, "facebook": None,
-        "twitter": None, "linkedin": None, "youtube": None,
-        "map_location": None, "tagline_custom": None,
-        "custom_colors": [], "custom_services": [],
-        "opening_hours": None, "price_range": None,
-        "custom_cta": None, "hero_text": None,
-        "about_text": None, "logo_url": None,
-    }
-    p = prompt
-
-    # Phone number — various formats
-    phone_match = re.search(r\'(?:phone|mobile|call|contact|tel|ph)[:\\s#]*([+\\d][\\d\\s\\-().+]{7,15})\', p, re.IGNORECASE)
-    if not phone_match:
-        phone_match = re.search(r\'(?<![\\w])([+]?[0-9]{10,13})(?![\\w])\', p)
-    if phone_match:
-        data["phone"] = phone_match.group(1).strip()
-        data["whatsapp"] = data["phone"]
-
-    # Email
-    email_match = re.search(r\'[\\w.+-]+@[\\w-]+\\.[\\w.]+\', p)
-    if email_match:
-        data["email"] = email_match.group(0)
-
-    # Address
-    addr_match = re.search(r\'(?:address|location|located at|find us at|visit us at)[:\\s]+([^,\\n.]{10,100})\', p, re.IGNORECASE)
-    if addr_match:
-        data["address"] = addr_match.group(1).strip()
-
-    # WhatsApp
-    wa_match = re.search(r\'(?:whatsapp)[:\\s#]*([+\\d][\\d\\s\\-+]{7,15})\', p, re.IGNORECASE)
-    if wa_match:
-        data["whatsapp"] = wa_match.group(1).strip()
-
-    # Instagram
-    ig_match = re.search(r\'(?:instagram|ig|insta)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
-    if ig_match:
-        data["instagram"] = ig_match.group(1).strip()
-
-    # Facebook
-    fb_match = re.search(r\'(?:facebook|fb)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
-    if fb_match:
-        data["facebook"] = fb_match.group(1).strip()
-
-    # Twitter/X
-    tw_match = re.search(r\'(?:twitter|x\\.com)[:\\s@/]*([\\w.]+)\', p, re.IGNORECASE)
-    if tw_match:
-        data["twitter"] = tw_match.group(1).strip()
-
-    # LinkedIn
-    li_match = re.search(r\'(?:linkedin)[:\\s@/]*([\\w.-]+)\', p, re.IGNORECASE)
-    if li_match:
-        data["linkedin"] = li_match.group(1).strip()
-
-    # YouTube
-    yt_match = re.search(r\'(?:youtube|yt)[:\\s@/]*([\\w.-]+)\', p, re.IGNORECASE)
-    if yt_match:
-        data["youtube"] = yt_match.group(1).strip()
-
-    # Opening hours
-    hours_match = re.search(r\'(?:open|hours|timing)[:\\s]+([^.\\n]{5,60})\', p, re.IGNORECASE)
-    if hours_match:
-        data["opening_hours"] = hours_match.group(1).strip()
-
-    # Price range
-    price_match = re.search(r\'(?:price|pricing|cost|rate|starting from|from)[:\\s]+([^.\\n]{3,50})\', p, re.IGNORECASE)
-    if price_match:
-        data["price_range"] = price_match.group(1).strip()
-
-    # Custom tagline/hero text
-    tagline_match = re.search(r\'(?:tagline|slogan|headline)[:\\s"]+([^"\\n]{5,80})\', p, re.IGNORECASE)
-    if tagline_match:
-        data["tagline_custom"] = tagline_match.group(1).strip()
-
-    # About text
-    about_match = re.search(r\'(?:about us|about|description)[:\\s]+([^.\\n]{20,300})\', p, re.IGNORECASE)
-    if about_match:
-        data["about_text"] = about_match.group(1).strip()
-
-    # Map/location for embed
-    map_match = re.search(r\'(?:map|google maps|location)[:\\s]+([^.\\n]{5,100})\', p, re.IGNORECASE)
-    if map_match:
-        data["map_location"] = urllib.parse.quote(map_match.group(1).strip())
-    elif data["address"]:
-        data["map_location"] = urllib.parse.quote(data["address"])
-
-    return data
-
-# ── FEATURE DETECTION — what sections/features the user wants ────────────────
-def detect_features(prompt: str) -> dict:
-    p = prompt.lower()
-    return {
-        "contact_form":     any(x in p for x in ["contact form","contact us","enquiry form","inquiry","get in touch","form"]),
-        "booking_form":     any(x in p for x in ["booking","book","reservation","reserve","appointment","schedule","slot"]),
-        "newsletter":       any(x in p for x in ["newsletter","subscribe","email list","mailing","updates"]),
-        "gallery":          any(x in p for x in ["gallery","photos","images","portfolio","showcase","pictures","album"]),
-        "video":            any(x in p for x in ["video","youtube","watch","reel","demo"]),
-        "map":              any(x in p for x in ["map","location","directions","find us","address","where"]),
-        "whatsapp_btn":     any(x in p for x in ["whatsapp","wa.me","chat now","whatsapp button"]),
-        "pricing_table":    any(x in p for x in ["pricing","plans","packages","rates","cost","fees","price list"]),
-        "faq":              any(x in p for x in ["faq","frequently asked","questions","q&a","queries"]),
-        "team":             any(x in p for x in ["team","staff","our people","meet the","doctors","lawyers","coaches","trainers"]),
-        "counter":          any(x in p for x in ["years","clients","projects","students","members","count","numbers","statistics"]),
-        "social_feed":      any(x in p for x in ["instagram feed","social media","follow us"]),
-        "chat_widget":      any(x in p for x in ["chat","live chat","chatbot","support chat"]),
-        "testimonial_slider": True,
-        "sticky_cta":       True,
-        "back_to_top":      True,
-        "cookie_banner":    any(x in p for x in ["cookie","gdpr","privacy"]),
-        "popup":            any(x in p for x in ["popup","pop-up","offer popup","discount popup"]),
-        "countdown":        any(x in p for x in ["countdown","launch","days left","offer ends","limited time"]),
-        "progress_bar":     any(x in p for x in ["skills","expertise","proficiency","progress"]),
-        "portfolio_grid":   any(x in p for x in ["portfolio","work","projects","case study","case studies"]),
-        "services_tabs":    any(x in p for x in ["services","offerings","what we do","what i do"]),
-        "comparison_table": any(x in p for x in ["compare","comparison","vs","versus","difference"]),
-        "before_after":     any(x in p for x in ["before after","transformation","results","before and after"]),
-        "menu_section":     any(x in p for x in ["menu","food menu","drink menu","dish","dishes","items"]),
-        "shop":             any(x in p for x in ["shop","store","buy","cart","product","order","purchase"]),
-        "blog":             any(x in p for x in ["blog","articles","posts","news","updates","insights"]),
-        "timeline":         any(x in p for x in ["timeline","history","journey","milestone","story","founded","established"]),
-        "cta_float":        True,
-        "loading_screen":   True,
-        "smooth_scroll":    True,
-        "dark_mode_toggle": any(x in p for x in ["dark mode","light mode","theme toggle"]),
-    }
-
-# ── CATEGORY DETECTION ───────────────────────────────────────────────────────
 CATEGORY_KEYWORDS = {
-    "restaurant":    ["restaurant","cafe","bistro","dhaba","tiffin","biryani","pizzeria","steakhouse","sushi","diner","eatery","food truck","bakery","catering","fine dining","cuisine","chef","menu items","reservations","table booking","takeaway"],
-    "saas":          ["saas","software as a service","b2b software","crm","erp","api platform","devtool","productivity tool","project management tool","workflow automation","no-code","low-code","subscription software","cloud software","analytics platform"],
-    "car":           ["car dealer","automobile dealer","vehicle dealer","car showroom","cars for sale","used cars","new cars","auto dealer","car rental","automotive dealership","test drive"],
-    "portfolio":     ["portfolio","my work","my projects","personal website","freelancer","designer portfolio","developer portfolio","photographer portfolio","artist portfolio","resume site","cv website"],
-    "ecommerce":     ["ecommerce","online store","online shop","products for sale","buy online","shopping cart","checkout","merchandise","dropship","retail online","fashion store","clothing store","jewelry store"],
-    "agency":        ["marketing agency","digital agency","creative agency","advertising agency","branding agency","seo agency","web agency","design studio","growth agency"],
-    "fitness":       ["gym","fitness center","workout studio","personal trainer","yoga studio","crossfit","pilates studio","health club","wellness center","martial arts","boxing gym"],
-    "education":     ["school","college","university","online course","e-learning","edtech","tutoring","coaching center","training institute","certification course","bootcamp","learning platform"],
-    "realestate":    ["real estate","property listing","homes for sale","apartments for rent","flat","villa for sale","plot","realtor","real estate agent","property dealer","rent property"],
-    "hospital":      ["hospital","clinic","doctor","medical center","healthcare","dental clinic","dentist","pharmacy","health center","diagnostic center","physiotherapy","telemedicine"],
-    "hotel":         ["hotel","resort","motel","bed and breakfast","bnb","accommodation","lodging","rooms","suite","vacation rental","boutique hotel","hospitality"],
-    "law":           ["law firm","lawyer","attorney","legal services","advocate","solicitor","corporate law","criminal defense","family law","legal aid"],
-    "startup":       ["startup","mvp","seed stage","series a","venture","founder","product launch","early stage","tech startup","fintech startup"],
-    "finance":       ["finance","fintech","banking","investment","wealth management","mutual fund","insurance","accounting","tax","chartered accountant","financial advisor","stock trading"],
-    "construction":  ["construction","builder","contractor","architect","interior design","renovation","remodeling","civil engineering","infrastructure","building company","landscaping"],
-    "ngo":           ["ngo","nonprofit","charity","foundation","social cause","donation","volunteer","social impact","fundraising","advocacy"],
-    "photography":   ["photography","photographer","photo studio","wedding photography","portrait photography","commercial photography","fashion photography","event photography","videography"],
-    "music":         ["music","band","musician","singer","dj","music studio","record label","music producer","concert","album","music lessons","music school"],
-    "salon":         ["salon","beauty parlor","hair salon","barbershop","spa","nail salon","makeup artist","beauty studio","hair stylist","grooming"],
-    "travel":        ["travel agency","tour operator","tours","vacation packages","holiday packages","adventure travel","safari","cruise","backpacking"],
-    "food_delivery": ["food delivery","cloud kitchen","ghost kitchen","meal prep","meal delivery","tiffin service","home chef","online food","meal kit"],
-    "tech_company":  ["tech company","software company","it company","technology company","it services","software development","app development","web development company","cybersecurity"],
-    "event":         ["event management","event planner","wedding planner","corporate events","conference organizer","event venue","party planner","event decorator"],
-    "consulting":    ["consulting","management consulting","business consulting","strategy consulting","hr consulting","operations consulting","advisory services"],
-    "fashion":       ["fashion","clothing brand","fashion designer","apparel brand","streetwear","luxury fashion","sustainable fashion","fashion label","couture"],
-    "interior":      ["interior design","interior designer","home decor","furniture","home furnishing","space planning","interior styling","commercial interior"],
-    "bakery":        ["bakery","cake shop","pastry","dessert shop","confectionery","wedding cake","custom cake","sourdough","cookie shop","donut shop","macaron"],
-    "coffee":        ["coffee shop","specialty coffee","third wave coffee","coffee bar","espresso bar","coffee subscription","coffee brand","tea house"],
-    "yoga":          ["yoga","meditation","mindfulness","wellness retreat","yoga teacher","breathwork","sound healing","spiritual wellness","holistic health"],
-    "pet":           ["pet shop","pet clinic","veterinary","pet grooming","pet boarding","dog trainer","pet care","animal shelter","veterinarian"],
-    "gaming":        ["gaming","esports","game studio","game developer","gaming cafe","mobile game","gaming community","game coaching"],
-    "crypto":        ["crypto","blockchain","web3","nft","defi","cryptocurrency","token","dao","metaverse","digital assets","crypto exchange"],
-    "wedding":       ["wedding planner","bridal","wedding venue","wedding photography","wedding catering","wedding dress","bridal boutique","wedding decor"],
-    "children":      ["children","kids","daycare","kindergarten","preschool","child care","baby products","kids clothing","children entertainment","toy store"],
-    "dental":        ["dental","dentist","dental clinic","oral health","teeth whitening","braces","orthodontist","dental implants","root canal"],
-    "cleaning":      ["cleaning service","house cleaning","commercial cleaning","janitorial","maid service","deep cleaning","carpet cleaning","sanitization"],
-    "solar":         ["solar","solar energy","solar panel","renewable energy","green energy","solar installation","wind energy","clean energy"],
-    "automobile_service": ["car service","auto repair","car workshop","mechanic","car wash","auto detailing","tire shop","car accessories","auto parts"],
-    "logistics":     ["logistics","courier","shipping","freight","supply chain","warehouse","last mile delivery","trucking","cargo","fulfillment"],
-    "agriculture":   ["agriculture","farm","farming","organic farm","agritech","crop","fertilizer","seeds","dairy farm","poultry","greenhouse"],
-    "security":      ["security agency","cctv","surveillance","guard service","cybersecurity","private security","access control","fire safety","alarm system"],
-    "mental_health": ["mental health","therapist","psychologist","counseling","therapy","anxiety","depression treatment","psychiatrist","emotional wellness"],
-    "pharmacy":      ["pharmacy","medical store","chemist","drug store","online pharmacy","medicine delivery","health products","supplements"],
-    "accounting":    ["accounting","bookkeeping","ca firm","tax filing","gst","audit","payroll","financial reporting","tax consultant"],
-    "printing":      ["printing","print shop","graphic design","branding","logo design","stationery","packaging design","banner printing","signage"],
-    "florist":       ["florist","flower shop","flower delivery","floral design","wedding flowers","bouquet","floral arrangement","flower subscription","plant nursery"],
-    "catering":      ["catering","caterer","food catering","wedding catering","corporate catering","event catering","buffet","canteen"],
-    "dance":         ["dance academy","dance studio","dance school","ballet","hip hop dance","classical dance","bharatanatyam","dance teacher"],
-    "language":      ["language school","english classes","foreign language","translation","interpretation","language learning","spoken english","ielts","toefl"],
-    "coaching":      ["life coach","business coach","executive coach","career coach","mindset coach","leadership coaching","coaching program"],
-    "insurance":     ["insurance","life insurance","health insurance","car insurance","home insurance","insurance broker","insurance agent","risk management"],
-    "sports":        ["sports","sports club","sports academy","cricket","football","basketball","tennis","swimming","athletics","sports equipment"],
-    "media":         ["media production","film production","video production","documentary","short film","music video","animation studio","vfx studio"],
-    "astrology":     ["astrology","horoscope","numerology","tarot","vastu","palmistry","vedic astrology","psychic reading","spiritual guidance"],
-    "jewelry":       ["jewelry","jeweler","gold jewelry","diamond jewelry","custom jewelry","engagement ring","wedding jewelry","silver jewelry"],
-    "furniture":     ["furniture","furniture store","custom furniture","wood furniture","modular furniture","office furniture","sofa","wardrobe"],
-    "electronics":   ["electronics store","gadgets","mobile phone shop","laptop store","electronics repair","consumer electronics","home appliances"],
-    "swimming":      ["swimming pool","swim school","swimming academy","swim coach","aqua fitness","swimming lessons","competitive swimming"],
-    "laundry":       ["laundry","dry cleaning","laundry service","wash and fold","ironing service","garment care","laundromat"],
-    "plumber":       ["plumber","plumbing","plumbing services","pipe fitting","bathroom fitting","water tank","drainage","sanitation"],
-    "electrician":   ["electrician","electrical services","wiring","electrical contractor","power backup","generator","home automation","electrical repair"],
-    "tutor":         ["tutor","tutoring","home tuition","online tutor","math tutor","science tutor","test prep","competitive exam","jee","neet","upsc"],
-    "dietitian":     ["dietitian","nutritionist","diet plan","weight loss","nutrition counseling","meal planning","sports nutrition","diabetic diet"],
-    "car_rental":    ["car rental","self drive","vehicle rental","cab service","taxi","chauffeur","limousine","bus rental","outstation cab"],
-    "bike":          ["bike shop","bicycle store","cycling","mountain bike","electric bike","bike rental","cycling academy","bike accessories"],
-    "optical":       ["optical store","spectacle shop","sunglasses","contact lens store","eyeglass frame","prescription glasses","optometry"],
-    "coworking":     ["coworking","shared workspace","hot desk","serviced office","business center","virtual office","meeting room"],
+    "restaurant":    ["restaurant","cafe","bistro","dhaba","tiffin","biryani","pizzeria","steakhouse","sushi","diner","eatery","food truck","bakery","patisserie","catering","fine dining","cuisine","chef","menu items","reservations","table booking","takeaway"],
+    "saas":          ["saas","software as a service","b2b software","crm","erp","dashboard","api platform","devtool","developer tool","productivity tool","project management tool","workflow automation","no-code","low-code","subscription software","cloud software","enterprise software","analytics platform"],
+    "car":           ["car dealer","automobile dealer","vehicle dealer","car showroom","cars for sale","used cars","new cars","auto dealer","car rental","fleet management","automotive dealership","test drive","car lot"],
+    "portfolio":     ["portfolio","my work","my projects","personal website","freelancer","designer portfolio","developer portfolio","photographer portfolio","artist portfolio","creative portfolio","resume site","cv website","showcase my work"],
+    "ecommerce":     ["ecommerce","online store","online shop","shopify store","products for sale","buy online","shopping cart","checkout","merchandise","dropship","retail online","fashion store","clothing store","jewelry store","electronics store"],
+    "agency":        ["marketing agency","digital agency","creative agency","advertising agency","branding agency","pr agency","seo agency","web agency","design studio","growth agency","media agency","consulting agency"],
+    "fitness":       ["gym","fitness center","workout studio","personal trainer","yoga studio","crossfit","pilates studio","health club","wellness center","martial arts","boxing gym","bodybuilding","weight loss program"],
+    "education":     ["school","college","university","online course","e-learning","edtech","tutoring","coaching center","training institute","certification course","bootcamp","learning platform","educational institute"],
+    "realestate":    ["real estate","property listing","homes for sale","apartments for rent","flat","villa for sale","plot","realtor","real estate agent","property dealer","mortgage","rent property","commercial property","residential property"],
+    "hospital":      ["hospital","clinic","doctor","medical center","healthcare","dental clinic","dentist","pharmacy","health center","diagnostic center","specialist doctor","physiotherapy","ayurveda","telemedicine"],
+    "hotel":         ["hotel","resort","motel","bed and breakfast","bnb","accommodation","lodging","rooms","suite","vacation rental","boutique hotel","hospitality","spa resort"],
+    "law":           ["law firm","lawyer","attorney","legal services","advocate","solicitor","barrister","legal counsel","litigation","corporate law","criminal defense","family law","immigration law","legal aid"],
+    "startup":       ["startup","mvp","seed stage","series a","venture","founder","product launch","early stage","tech startup","fintech startup","healthtech startup","saas startup","ai startup"],
+    "finance":       ["finance","fintech","banking","investment","wealth management","mutual fund","insurance","accounting","tax","chartered accountant","financial advisor","stock trading","crypto","neobank","lending","payment gateway"],
+    "construction":  ["construction","builder","contractor","architect","interior design","renovation","remodeling","civil engineering","infrastructure","building company","real estate developer","landscaping","masonry"],
+    "ngo":           ["ngo","nonprofit","charity","foundation","social cause","donation","volunteer","social impact","csr","humanitarian","welfare","fundraising","advocacy"],
+    "photography":   ["photography","photographer","photo studio","wedding photography","portrait photography","commercial photography","fashion photography","event photography","photo editing","videography"],
+    "music":         ["music","band","musician","singer","dj","music studio","record label","music producer","concert","album","music lessons","guitar teacher","piano teacher","music school"],
+    "salon":         ["salon","beauty parlor","hair salon","barbershop","spa","nail salon","makeup artist","beauty studio","hair stylist","grooming","waxing","threading","beauty services"],
+    "travel":        ["travel agency","travel","tour operator","tours","vacation packages","holiday packages","destination wedding","adventure travel","travel blog","safari","cruise","backpacking"],
+    "food_delivery": ["food delivery","cloud kitchen","ghost kitchen","meal prep","meal delivery","tiffin service","home chef","online food","meal kit","meal subscription"],
+    "tech_company":  ["tech company","software company","it company","technology company","digital transformation","it services","software development","app development","web development company","it consulting","cybersecurity company"],
+    "event":         ["event management","event planner","wedding planner","corporate events","conference organizer","event venue","party planner","event decorator","wedding coordinator","exhibition organizer"],
+    "consulting":    ["consulting","management consulting","business consulting","strategy consulting","hr consulting","operations consulting","supply chain consulting","change management","advisory services"],
+    "fashion":       ["fashion","clothing brand","fashion designer","apparel brand","streetwear","luxury fashion","sustainable fashion","fashion label","couture","ready to wear","accessories brand"],
+    "interior":      ["interior design","interior designer","home decor","furniture","home furnishing","space planning","interior styling","commercial interior","residential interior","interior architect"],
+    "bakery":        ["bakery","cake shop","pastry","dessert shop","confectionery","wedding cake","custom cake","bread bakery","cookie shop","donut shop","macaron","chocolate shop"],
+    "coffee":        ["coffee shop","cafe","coffee roaster","specialty coffee","third wave coffee","coffee bar","espresso bar","coffee subscription","coffee brand","tea house","tea cafe"],
+    "yoga":          ["yoga","meditation","mindfulness","wellness retreat","yoga teacher","yoga studio","breathwork","sound healing","spiritual wellness","holistic health","chakra","ayurvedic wellness"],
+    "pet":           ["pet shop","pet clinic","veterinary","pet grooming","pet boarding","dog trainer","pet care","animal shelter","pet food","pet accessories","veterinarian"],
+    "book":          ["bookstore","library","book club","publishing","author website","book review","literary","writing coaching","poetry","book publishing house"],
+    "gaming":        ["gaming","esports","game studio","game developer","gaming cafe","mobile game","pc game","gaming community","game streaming","twitch","youtube gaming","game coaching"],
+    "crypto":        ["crypto","blockchain","web3","nft","defi","cryptocurrency","token","dao","metaverse","digital assets","crypto exchange","crypto wallet","smart contract"],
+    "podcast":       ["podcast","podcaster","podcast studio","podcast network","audio content","podcast hosting","podcast production","radio show","audio storytelling"],
+    "newspaper":     ["newspaper","news portal","news website","journalism","media house","online news","digital magazine","blog","content platform","newsletter"],
+    "church":        ["church","temple","mosque","gurdwara","religious organization","faith community","ministry","spiritual center","place of worship","religious services","prayer group"],
+    "wedding":       ["wedding","wedding planner","bridal","wedding venue","wedding photography","wedding catering","wedding dress","bridal boutique","wedding invitation","wedding decor"],
+    "children":      ["children","kids","daycare","kindergarten","preschool","child care","baby products","kids clothing","children entertainment","toy store","children academy"],
+    "senior":        ["senior care","elderly care","retirement home","assisted living","nursing home","senior services","elder care","home care for seniors","geriatric care"],
+    "insurance":     ["insurance","life insurance","health insurance","car insurance","home insurance","insurance broker","insurance agent","risk management","insurance company"],
+    "hr":            ["hr","human resources","recruitment","staffing agency","talent acquisition","executive search","headhunting","job portal","employment agency","workforce solutions"],
+    "logistics":     ["logistics","courier","shipping","freight","supply chain","warehouse","last mile delivery","trucking","cargo","3pl","fulfillment center","delivery service"],
+    "agriculture":   ["agriculture","farm","farming","organic farm","agritech","crop","fertilizer","seeds","dairy farm","poultry","aquaculture","greenhouse","agricultural machinery"],
+    "solar":         ["solar","solar energy","solar panel","renewable energy","green energy","solar installation","wind energy","ev charging","sustainable energy","clean energy"],
+    "cleaning":      ["cleaning service","house cleaning","commercial cleaning","janitorial","maid service","deep cleaning","carpet cleaning","sanitization","facility management"],
+    "printing":      ["printing","print shop","graphic design","branding","logo design","stationery","packaging design","banner printing","signage","merchandise printing"],
+    "pharmacy":      ["pharmacy","medical store","chemist","drug store","online pharmacy","medicine delivery","health products","nutraceuticals","supplements"],
+    "automobile_service": ["car service","auto repair","car workshop","mechanic","car wash","auto detailing","tire shop","car accessories","auto parts","battery service","car ac service"],
+    "dentist":       ["dental","dentist","dental clinic","oral health","teeth whitening","braces","orthodontist","dental implants","root canal","dental surgery","smile makeover"],
+    "optician":      ["optician","eye care","eyewear","spectacles","contact lens","optometry","eye hospital","laser eye surgery","vision care","ophthalmologist"],
+    "accounting":    ["accounting","bookkeeping","ca firm","tax filing","gst","audit","payroll","financial reporting","tax consultant","chartered accountant firm"],
+    "security":      ["security","security agency","cctv","surveillance","guard service","cybersecurity","private security","access control","fire safety","alarm system"],
+    "mining":        ["mining","coal mine","gold mine","mineral extraction","quarry","ore processing","mining equipment","geological survey","mining company"],
+    "textile":       ["textile","fabric","garment factory","clothing manufacturer","weaving","embroidery","knitting","textile mill","yarn","denim","silk","cotton"],
+    "pharma":        ["pharmaceutical","pharma company","drug manufacturer","medicine","clinical research","biotech","life sciences","medical device","diagnostics company"],
+    "airline":       ["airline","aviation","flight booking","charter flight","private jet","helicopter service","air cargo","airport services","aviation training"],
+    "shipping":      ["shipping company","maritime","port","vessel","cargo ship","container shipping","freight forwarding","import export","customs clearance","sea freight"],
+    "sports":        ["sports","sports club","sports academy","cricket","football","basketball","tennis","swimming","athletics","sports equipment","sports management"],
+    "art_gallery":   ["art gallery","art museum","art exhibition","contemporary art","fine art","sculpture","art dealer","art auction","art collection","artist studio"],
+    "architect":     ["architect","architecture firm","architectural design","urban planning","landscape architecture","structural engineering","building design","architectural firm"],
+    "coworking":     ["coworking","shared workspace","hot desk","serviced office","business center","virtual office","meeting room","collaborative workspace"],
+    "mental_health": ["mental health","therapist","psychologist","counseling","therapy","anxiety","depression treatment","psychiatrist","behavioral health","emotional wellness"],
+    "recruitment":   ["recruitment","job portal","career","employment","job board","talent platform","hiring platform","job search","career counseling","resume service"],
+    "charity":       ["charity","donation","fundraising","social service","community service","homeless shelter","food bank","blood bank","disaster relief","orphanage"],
+    "media":         ["media production","film production","video production","documentary","short film","music video","animation studio","vfx studio","post production"],
+    "influencer":    ["influencer","content creator","youtuber","instagrammer","social media","personal brand","creator economy","brand deals","sponsorship","merchandise"],
+    "coaching":      ["life coach","business coach","executive coach","career coach","mindset coach","success coach","performance coach","leadership coaching","coaching program"],
+    "dance":         ["dance academy","dance studio","dance school","ballet","hip hop dance","contemporary dance","classical dance","bharatanatyam","dance teacher","dance classes"],
+    "language":      ["language school","english classes","foreign language","translation","interpretation","language learning","spoken english","ielts","toefl","language institute"],
+    "astrology":     ["astrology","horoscope","numerology","tarot","vastu","palmistry","vedic astrology","psychic reading","spiritual guidance","jyotish"],
+    "florist":       ["florist","flower shop","flower delivery","floral design","wedding flowers","bouquet","floral arrangement","flower subscription","plant nursery","garden center"],
+    "catering":      ["catering","caterer","food catering","wedding catering","corporate catering","event catering","buffet","canteen","meal service","tiffin catering"],
+    "laundry":       ["laundry","dry cleaning","laundry service","wash and fold","ironing service","garment care","laundromat","express laundry"],
+    "plumber":       ["plumber","plumbing","plumbing services","pipe fitting","bathroom fitting","water tank","drainage","sanitation","plumbing contractor"],
+    "electrician":   ["electrician","electrical services","wiring","electrical contractor","power backup","generator","ups","solar installation","home automation","electrical repair"],
+    "tutor":         ["tutor","tutoring","home tuition","online tutor","math tutor","science tutor","test prep","ielts tutor","competitive exam","jee","neet","upsc coaching"],
+    "dietitian":     ["dietitian","nutritionist","diet plan","weight loss","nutrition counseling","meal planning","sports nutrition","diabetic diet","clinical nutrition"],
+    "mortgage":      ["mortgage","home loan","property loan","loan broker","loan advisor","refinancing","home financing","mortgage calculator","loan eligibility"],
+    "car_rental":    ["car rental","self drive","vehicle rental","cab service","taxi","chauffeur","limousine","bus rental","tempo traveller","outstation cab"],
+    "bike":          ["bike shop","bicycle store","cycling","mountain bike","electric bike","bike rental","cycling academy","bike accessories","bike service"],
+    "jewelry":       ["jewelry","jeweler","gold jewelry","diamond jewelry","custom jewelry","engagement ring","wedding jewelry","silver jewelry","gemstone","jewelry store"],
+    "furniture":     ["furniture","furniture store","custom furniture","wood furniture","modular furniture","office furniture","home furniture","sofa","wardrobe","bed"],
+    "electronics":   ["electronics store","gadgets","mobile phone shop","laptop store","electronics repair","consumer electronics","home appliances","tv","camera shop"],
+    "hardware":      ["hardware store","tools","building materials","plywood","cement","paint","pipe","hardware shop","construction material","electrical hardware"],
+    "optical":       ["optical store","spectacle shop","sunglasses","contact lens store","eyeglass frame","prescription glasses","reading glasses","optical accessories"],
+    "swimming":      ["swimming pool","swim school","swimming academy","swim coach","aqua fitness","swimming lessons","competitive swimming","triathlon training"],
+    "golf":          ["golf club","golf course","golf academy","golf lessons","golf equipment","mini golf","golf resort","golf tournament","golf instructor"],
+    "horse":         ["equestrian","horse riding","horse stable","polo","equestrian club","horse farm","riding lessons","horse training","show jumping","dressage"],
+    "diving":        ["scuba diving","snorkeling","diving center","underwater photography","dive resort","freediving","marine biology","ocean adventure","water sports"],
+    "climbing":      ["rock climbing","bouldering","climbing gym","mountaineering","trekking","hiking","adventure sports","rappelling","zip line","outdoor adventure"],
+    "cannabis":      ["dispensary","cannabis","cbd","hemp","wellness products","herbal supplements","natural remedies","holistic health products"],
     "tattoo":        ["tattoo studio","tattoo artist","body piercing","tattoo parlor","custom tattoo","temporary tattoo","henna","body art"],
-    "escape":        ["escape room","puzzle room","team building","entertainment center","gaming lounge","board game cafe","vr arcade"],
-    "amusement":     ["amusement park","theme park","water park","adventure park","rides","roller coaster","family park"],
+    "escape":        ["escape room","puzzle room","team building","entertainment center","gaming lounge","board game cafe","vr arcade","family entertainment"],
+    "bowling":       ["bowling alley","sports entertainment","bowling club","family fun","bowling league","cosmic bowling","glow bowling"],
+    "cinema":        ["movie theater","cinema hall","multiplex","film screening","drive-in theater","independent cinema","arthouse cinema","film club"],
+    "museum":        ["museum","heritage site","cultural center","exhibition hall","science museum","history museum","children museum","virtual museum"],
+    "zoo":           ["zoo","wildlife sanctuary","animal park","safari","aquarium","nature reserve","bird park","reptile house","marine park"],
+    "amusement":     ["amusement park","theme park","water park","adventure park","rides","roller coaster","family park","kids entertainment"],
     "nightclub":     ["nightclub","bar","lounge","pub","rooftop bar","cocktail bar","sports bar","live music venue","jazz club","comedy club"],
-    "museum":        ["museum","heritage site","cultural center","exhibition hall","science museum","history museum","virtual museum"],
-    "church":        ["church","temple","mosque","gurdwara","religious organization","faith community","ministry","spiritual center","place of worship"],
-    "book":          ["bookstore","library","book club","publishing","author website","book review","literary","writing coaching","poetry"],
-    "podcast":       ["podcast","podcaster","podcast studio","podcast network","audio content","podcast hosting","radio show"],
-    "influencer":    ["influencer","content creator","youtuber","instagrammer","social media","personal brand","creator economy"],
-    "senior":        ["senior care","elderly care","retirement home","assisted living","nursing home","senior services","elder care","geriatric"],
-    "mortgage":      ["mortgage","home loan","property loan","loan broker","loan advisor","refinancing","home financing","loan eligibility"],
-    "mining":        ["mining","coal mine","gold mine","mineral extraction","quarry","ore processing","mining equipment"],
-    "textile":       ["textile","fabric","garment factory","clothing manufacturer","weaving","embroidery","knitting","textile mill"],
-    "pharma":        ["pharmaceutical","pharma company","drug manufacturer","medicine","clinical research","biotech","life sciences","medical device"],
-    "airline":       ["airline","aviation","flight booking","charter flight","private jet","helicopter service","air cargo","aviation training"],
-    "shipping_co":   ["shipping company","maritime","port","vessel","cargo ship","container shipping","freight forwarding","customs clearance"],
-    "architect":     ["architect","architecture firm","architectural design","urban planning","landscape architecture","structural engineering"],
-    "charity":       ["charity","donation","fundraising","social service","community service","homeless shelter","food bank","orphanage"],
-    "golf":          ["golf club","golf course","golf academy","golf lessons","golf equipment","mini golf","golf resort","golf instructor"],
-    "recruitment":   ["recruitment","job portal","career","employment","job board","talent platform","hiring platform","job search","resume service"],
-    "business":      ["company","business","service","professional","firm","enterprise","solutions","services","management"],
+    "coworking":     ["coworking","shared workspace","hot desk","serviced office","business center","virtual office","meeting room","collaborative workspace"],
+    "business":      ["company","business","service","professional","firm","enterprise","solutions","services","consulting","management"],
 }
+
+# 100+ unique design systems
+DESIGN_SYSTEMS = [
+    # Dark dramatic
+    {"dark":True,"bg":"#0A0A0A","pr":"#E11D48","ac":"#F59E0B","tx":"#FFFFFF","mu":"rgba(255,255,255,0.6)","ca":"rgba(255,255,255,0.05)","br":"rgba(225,29,72,0.25)","nb":"rgba(10,10,10,0.95)","nt":"rgba(255,255,255,0.8)","font":"Playfair Display","hero_style":"split","layout":"bold"},
+    {"dark":True,"bg":"#050010","pr":"#8B5CF6","ac":"#06B6D4","tx":"#F5F3FF","mu":"rgba(245,243,255,0.55)","ca":"rgba(139,92,246,0.08)","br":"rgba(139,92,246,0.2)","nb":"rgba(5,0,16,0.95)","nt":"rgba(245,243,255,0.8)","font":"Inter","hero_style":"centered","layout":"tech"},
+    {"dark":True,"bg":"#0D0500","pr":"#C8102E","ac":"#FFD700","tx":"#FFF8F0","mu":"rgba(255,248,240,0.55)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,215,0,0.15)","nb":"rgba(13,5,0,0.95)","nt":"rgba(255,248,240,0.8)","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+    {"dark":True,"bg":"#0C0500","pr":"#EA580C","ac":"#22C55E","tx":"#FFF7ED","mu":"rgba(255,247,237,0.55)","ca":"rgba(234,88,12,0.08)","br":"rgba(234,88,12,0.2)","nb":"rgba(12,5,0,0.95)","nt":"rgba(255,247,237,0.8)","font":"Inter","hero_style":"split","layout":"energy"},
+    {"dark":True,"bg":"#060A14","pr":"#3B82F6","ac":"#10B981","tx":"#EFF6FF","mu":"rgba(239,246,255,0.55)","ca":"rgba(59,130,246,0.08)","br":"rgba(59,130,246,0.2)","nb":"rgba(6,10,20,0.95)","nt":"rgba(239,246,255,0.8)","font":"Inter","hero_style":"centered","layout":"corporate"},
+    {"dark":True,"bg":"#0A0800","pr":"#B45309","ac":"#FCD34D","tx":"#FFFBEB","mu":"rgba(255,251,235,0.55)","ca":"rgba(180,83,9,0.08)","br":"rgba(252,211,77,0.15)","nb":"rgba(10,8,0,0.95)","nt":"rgba(255,251,235,0.8)","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+    {"dark":True,"bg":"#030712","pr":"#06B6D4","ac":"#8B5CF6","tx":"#F0FDFE","mu":"rgba(240,253,254,0.55)","ca":"rgba(6,182,212,0.08)","br":"rgba(6,182,212,0.2)","nb":"rgba(3,7,18,0.95)","nt":"rgba(240,253,254,0.8)","font":"Inter","hero_style":"centered","layout":"tech"},
+    {"dark":True,"bg":"#0A0A1A","pr":"#F43F5E","ac":"#A78BFA","tx":"#FFF1F2","mu":"rgba(255,241,242,0.55)","ca":"rgba(244,63,94,0.08)","br":"rgba(244,63,94,0.2)","nb":"rgba(10,10,26,0.95)","nt":"rgba(255,241,242,0.8)","font":"Inter","hero_style":"split","layout":"bold"},
+    {"dark":True,"bg":"#071A0E","pr":"#16A34A","ac":"#FCD34D","tx":"#F0FDF4","mu":"rgba(240,253,244,0.55)","ca":"rgba(22,163,74,0.08)","br":"rgba(22,163,74,0.2)","nb":"rgba(7,26,14,0.95)","nt":"rgba(240,253,244,0.8)","font":"Inter","hero_style":"split","layout":"natural"},
+    {"dark":True,"bg":"#14000A","pr":"#DB2777","ac":"#FB923C","tx":"#FDF2F8","mu":"rgba(253,242,248,0.55)","ca":"rgba(219,39,119,0.08)","br":"rgba(219,39,119,0.2)","nb":"rgba(20,0,10,0.95)","nt":"rgba(253,242,248,0.8)","font":"Playfair Display","hero_style":"centered","layout":"luxury"},
+    # Light vibrant
+    {"dark":False,"bg":"#FFFFFF","pr":"#6366F1","ac":"#06B6D4","tx":"#0F0F1A","mu":"#6B7280","ca":"#F8F7FF","br":"#E5E7EB","nb":"rgba(255,255,255,0.97)","nt":"#374151","font":"Inter","hero_style":"split","layout":"clean"},
+    {"dark":False,"bg":"#FFFBF0","pr":"#D97706","ac":"#EF4444","tx":"#1C1917","mu":"#78716C","ca":"#FEF3C7","br":"#FDE68A","nb":"rgba(255,251,240,0.97)","nt":"#44403C","font":"Playfair Display","hero_style":"split","layout":"warm"},
+    {"dark":False,"bg":"#F0FDF4","pr":"#059669","ac":"#F97316","tx":"#022C22","mu":"#6B7280","ca":"#DCFCE7","br":"#A7F3D0","nb":"rgba(240,253,244,0.97)","nt":"#065F46","font":"Inter","hero_style":"split","layout":"fresh"},
+    {"dark":False,"bg":"#FFF5F5","pr":"#DC2626","ac":"#F59E0B","tx":"#1A0000","mu":"#6B7280","ca":"#FEE2E2","br":"#FECACA","nb":"rgba(255,245,245,0.97)","nt":"#7F1D1D","font":"Playfair Display","hero_style":"centered","layout":"bold"},
+    {"dark":False,"bg":"#FAF5FF","pr":"#7C3AED","ac":"#F59E0B","tx":"#1A0A3E","mu":"#6B7280","ca":"#EDE9FE","br":"#DDD6FE","nb":"rgba(250,245,255,0.97)","nt":"#4C1D95","font":"Playfair Display","hero_style":"split","layout":"creative"},
+    {"dark":False,"bg":"#EFF6FF","pr":"#2563EB","ac":"#F59E0B","tx":"#020617","mu":"#6B7280","ca":"#DBEAFE","br":"#BFDBFE","nb":"rgba(239,246,255,0.97)","nt":"#1E3A8A","font":"Inter","hero_style":"split","layout":"corporate"},
+    {"dark":False,"bg":"#FFF7ED","pr":"#EA580C","ac":"#22C55E","tx":"#1C0A00","mu":"#6B7280","ca":"#FFEDD5","br":"#FED7AA","nb":"rgba(255,247,237,0.97)","nt":"#7C2D12","font":"Inter","hero_style":"centered","layout":"energy"},
+    {"dark":False,"bg":"#F0FFFE","pr":"#0891B2","ac":"#10B981","tx":"#042F2E","mu":"#6B7280","ca":"#CCFBF1","br":"#99F6E4","nb":"rgba(240,255,254,0.97)","nt":"#134E4A","font":"Inter","hero_style":"split","layout":"clean"},
+    {"dark":False,"bg":"#FAFAF8","pr":"#0F0F0F","ac":"#F59E0B","tx":"#0F0F0F","mu":"#6B7280","ca":"#F5F5F0","br":"#E5E5E0","nb":"rgba(250,250,248,0.97)","nt":"#0F0F0F","font":"Playfair Display","hero_style":"centered","layout":"minimal"},
+    {"dark":False,"bg":"#FDF4FF","pr":"#A21CAF","ac":"#F59E0B","tx":"#2E1065","mu":"#6B7280","ca":"#FAE8FF","br":"#F0ABFC","nb":"rgba(253,244,255,0.97)","nt":"#6B21A8","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+    # Gradient/special
+    {"dark":True,"bg":"#0F0F23","pr":"#F97316","ac":"#FACC15","tx":"#FFFBEB","mu":"rgba(255,251,235,0.6)","ca":"rgba(249,115,22,0.08)","br":"rgba(249,115,22,0.2)","nb":"rgba(15,15,35,0.95)","nt":"rgba(255,251,235,0.8)","font":"Inter","hero_style":"centered","layout":"bold"},
+    {"dark":True,"bg":"#0A1628","pr":"#0EA5E9","ac":"#38BDF8","tx":"#F0F9FF","mu":"rgba(240,249,255,0.55)","ca":"rgba(14,165,233,0.08)","br":"rgba(14,165,233,0.2)","nb":"rgba(10,22,40,0.95)","nt":"rgba(240,249,255,0.8)","font":"Inter","hero_style":"split","layout":"tech"},
+    {"dark":False,"bg":"#FEFCE8","pr":"#CA8A04","ac":"#DC2626","tx":"#1C1400","mu":"#78716C","ca":"#FEF9C3","br":"#FEF08A","nb":"rgba(254,252,232,0.97)","nt":"#92400E","font":"Playfair Display","hero_style":"centered","layout":"warm"},
+    {"dark":False,"bg":"#F8FAFC","pr":"#334155","ac":"#3B82F6","tx":"#0F172A","mu":"#64748B","ca":"#F1F5F9","br":"#CBD5E1","nb":"rgba(248,250,252,0.97)","nt":"#1E293B","font":"Inter","hero_style":"split","layout":"minimal"},
+    {"dark":True,"bg":"#0D1117","pr":"#58A6FF","ac":"#3FB950","tx":"#C9D1D9","mu":"rgba(201,209,217,0.6)","ca":"rgba(88,166,255,0.08)","br":"rgba(88,166,255,0.15)","nb":"rgba(13,17,23,0.95)","nt":"rgba(201,209,217,0.8)","font":"Inter","hero_style":"centered","layout":"tech"},
+    {"dark":False,"bg":"#FFF1F2","pr":"#E11D48","ac":"#F59E0B","tx":"#881337","mu":"#6B7280","ca":"#FFE4E6","br":"#FECDD3","nb":"rgba(255,241,242,0.97)","nt":"#9F1239","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+    {"dark":True,"bg":"#1A0533","pr":"#C084FC","ac":"#F472B6","tx":"#FAF5FF","mu":"rgba(250,245,255,0.6)","ca":"rgba(192,132,252,0.08)","br":"rgba(192,132,252,0.2)","nb":"rgba(26,5,51,0.95)","nt":"rgba(250,245,255,0.8)","font":"Playfair Display","hero_style":"centered","layout":"creative"},
+    {"dark":False,"bg":"#ECFDF5","pr":"#10B981","ac":"#3B82F6","tx":"#022C22","mu":"#6B7280","ca":"#D1FAE5","br":"#6EE7B7","nb":"rgba(236,253,245,0.97)","nt":"#065F46","font":"Inter","hero_style":"split","layout":"fresh"},
+    {"dark":True,"bg":"#18181B","pr":"#A1A1AA","ac":"#FACC15","tx":"#FAFAFA","mu":"rgba(250,250,250,0.5)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,255,255,0.1)","nb":"rgba(24,24,27,0.97)","nt":"rgba(250,250,250,0.8)","font":"Inter","hero_style":"centered","layout":"minimal"},
+    {"dark":False,"bg":"#FEF9EE","pr":"#B45309","ac":"#059669","tx":"#1C1200","mu":"#78716C","ca":"#FEF3C7","br":"#FDE68A","nb":"rgba(254,249,238,0.97)","nt":"#78350F","font":"Playfair Display","hero_style":"split","layout":"natural"},
+    {"dark":True,"bg":"#020617","pr":"#6366F1","ac":"#A5F3FC","tx":"#E0F2FE","mu":"rgba(224,242,254,0.55)","ca":"rgba(99,102,241,0.08)","br":"rgba(99,102,241,0.2)","nb":"rgba(2,6,23,0.97)","nt":"rgba(224,242,254,0.8)","font":"Inter","hero_style":"split","layout":"tech"},
+    {"dark":False,"bg":"#F5F3FF","pr":"#4F46E5","ac":"#EC4899","tx":"#1E1B4B","mu":"#6B7280","ca":"#EDE9FE","br":"#C4B5FD","nb":"rgba(245,243,255,0.97)","nt":"#3730A3","font":"Inter","hero_style":"centered","layout":"creative"},
+    {"dark":True,"bg":"#0C1A0C","pr":"#22C55E","ac":"#FACC15","tx":"#F0FDF4","mu":"rgba(240,253,244,0.55)","ca":"rgba(34,197,94,0.08)","br":"rgba(34,197,94,0.15)","nb":"rgba(12,26,12,0.97)","nt":"rgba(240,253,244,0.8)","font":"Inter","hero_style":"split","layout":"natural"},
+    {"dark":False,"bg":"#FFF8F0","pr":"#C2410C","ac":"#FBBF24","tx":"#431407","mu":"#78716C","ca":"#FEE2D5","br":"#FCA27B","nb":"rgba(255,248,240,0.97)","nt":"#7C2D12","font":"Playfair Display","hero_style":"centered","layout":"warm"},
+    {"dark":True,"bg":"#08080F","pr":"#E879F9","ac":"#22D3EE","tx":"#FAF5FF","mu":"rgba(250,245,255,0.55)","ca":"rgba(232,121,249,0.06)","br":"rgba(232,121,249,0.15)","nb":"rgba(8,8,15,0.97)","nt":"rgba(250,245,255,0.8)","font":"Inter","hero_style":"centered","layout":"bold"},
+    {"dark":False,"bg":"#F8F9FA","pr":"#212529","ac":"#E63946","tx":"#212529","mu":"#6C757D","ca":"#E9ECEF","br":"#CED4DA","nb":"rgba(248,249,250,0.97)","nt":"#495057","font":"Inter","hero_style":"split","layout":"minimal"},
+    {"dark":True,"bg":"#0A0A0A","pr":"#FFFFFF","ac":"#F59E0B","tx":"#FFFFFF","mu":"rgba(255,255,255,0.5)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,255,255,0.1)","nb":"rgba(10,10,10,0.97)","nt":"rgba(255,255,255,0.8)","font":"Playfair Display","hero_style":"centered","layout":"minimal"},
+    {"dark":False,"bg":"#FFF0F3","pr":"#FF4D6D","ac":"#FF9F1C","tx":"#590D22","mu":"#6B7280","ca":"#FFD6E0","br":"#FFAFC5","nb":"rgba(255,240,243,0.97)","nt":"#A4133C","font":"Playfair Display","hero_style":"split","layout":"bold"},
+    {"dark":True,"bg":"#061014","pr":"#34D399","ac":"#60A5FA","tx":"#ECFDF5","mu":"rgba(236,253,245,0.55)","ca":"rgba(52,211,153,0.08)","br":"rgba(52,211,153,0.15)","nb":"rgba(6,16,20,0.97)","nt":"rgba(236,253,245,0.8)","font":"Inter","hero_style":"split","layout":"tech"},
+    {"dark":False,"bg":"#FFFAF0","pr":"#F97316","ac":"#14B8A6","tx":"#1C0A00","mu":"#78716C","ca":"#FFF1E0","br":"#FED7AA","nb":"rgba(255,250,240,0.97)","nt":"#7C2D12","font":"Playfair Display","hero_style":"centered","layout":"warm"},
+    {"dark":True,"bg":"#140028","pr":"#A855F7","ac":"#EC4899","tx":"#FAF5FF","mu":"rgba(250,245,255,0.55)","ca":"rgba(168,85,247,0.08)","br":"rgba(168,85,247,0.2)","nb":"rgba(20,0,40,0.97)","nt":"rgba(250,245,255,0.8)","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+    {"dark":False,"bg":"#F0F9FF","pr":"#0284C7","ac":"#F59E0B","tx":"#0C4A6E","mu":"#6B7280","ca":"#E0F2FE","br":"#BAE6FD","nb":"rgba(240,249,255,0.97)","nt":"#075985","font":"Inter","hero_style":"split","layout":"corporate"},
+    {"dark":True,"bg":"#0F1923","pr":"#FB923C","ac":"#34D399","tx":"#FFF7ED","mu":"rgba(255,247,237,0.55)","ca":"rgba(251,146,60,0.08)","br":"rgba(251,146,60,0.2)","nb":"rgba(15,25,35,0.97)","nt":"rgba(255,247,237,0.8)","font":"Inter","hero_style":"centered","layout":"bold"},
+    {"dark":False,"bg":"#F9FAFB","pr":"#111827","ac":"#6366F1","tx":"#111827","mu":"#6B7280","ca":"#F3F4F6","br":"#D1D5DB","nb":"rgba(249,250,251,0.97)","nt":"#374151","font":"Inter","hero_style":"split","layout":"minimal"},
+    {"dark":True,"bg":"#180A00","pr":"#F97316","ac":"#FCD34D","tx":"#FFF7ED","mu":"rgba(255,247,237,0.6)","ca":"rgba(249,115,22,0.1)","br":"rgba(252,211,77,0.2)","nb":"rgba(24,10,0,0.97)","nt":"rgba(255,247,237,0.8)","font":"Playfair Display","hero_style":"centered","layout":"warm"},
+    {"dark":False,"bg":"#FAFFFE","pr":"#0D9488","ac":"#F59E0B","tx":"#042F2E","mu":"#6B7280","ca":"#CCFBF1","br":"#99F6E4","nb":"rgba(250,255,254,0.97)","nt":"#0F766E","font":"Inter","hero_style":"split","layout":"fresh"},
+    {"dark":True,"bg":"#09090B","pr":"#D97706","ac":"#A78BFA","tx":"#FFFBEB","mu":"rgba(255,251,235,0.55)","ca":"rgba(217,119,6,0.08)","br":"rgba(217,119,6,0.2)","nb":"rgba(9,9,11,0.97)","nt":"rgba(255,251,235,0.8)","font":"Playfair Display","hero_style":"split","layout":"luxury"},
+]
+
+def get_design(prompt: str) -> dict:
+    # Use prompt hash for consistent but varied design selection
+    idx = abs(hash(prompt + "design")) % len(DESIGN_SYSTEMS)
+    return DESIGN_SYSTEMS[idx]
 
 def get_category(prompt: str) -> str:
     p = prompt.lower()
     noise = ["make","build","create","generate","design","need","want","please","just",
              "website","site","page","landing page","web app","online presence","for",
              "me","a","an","the","i","can","you","give","type","good","great","best",
-             "professional","beautiful","modern","awesome","nice","add","include","put",
-             "use","have","their","its","with","mobile","number","phone","email","address",
-             "contact","social","media","map","gallery","images","photos","logo","color",
-             "colour","theme","dark","light","white","black","blue","red","green"]
+             "professional","beautiful","modern","awesome","nice"]
     clean = p
     for n in noise:
-        clean = re.sub(r"\\b" + re.escape(n) + r"\\b", " ", clean)
+        clean = re.sub(r"\\b" + n + r"\\b", " ", clean)
     clean = clean.strip()
+
     scores = {}
     for cat, keywords in CATEGORY_KEYWORDS.items():
         score = 0
         for kw in keywords:
             if kw in clean:
-                score += len(kw.split()) * 3
-            elif any(word in clean for word in kw.split() if len(word) > 5):
+                score += len(kw.split()) * 2
+            elif any(word in clean for word in kw.split() if len(word) > 4):
                 score += 1
         scores[cat] = score
-    best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else "business"
 
-# ── 100+ DESIGN SYSTEMS ──────────────────────────────────────────────────────
-DESIGN_SYSTEMS = [
-    {"dark":True,"bg":"#0A0A0A","pr":"#E11D48","ac":"#F59E0B","tx":"#FFFFFF","mu":"rgba(255,255,255,0.6)","ca":"rgba(255,255,255,0.05)","br":"rgba(225,29,72,0.25)","nb":"rgba(10,10,10,0.95)","nt":"rgba(255,255,255,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#0A0A0A,#1a0010)"},
-    {"dark":True,"bg":"#050010","pr":"#8B5CF6","ac":"#06B6D4","tx":"#F5F3FF","mu":"rgba(245,243,255,0.55)","ca":"rgba(139,92,246,0.08)","br":"rgba(139,92,246,0.2)","nb":"rgba(5,0,16,0.95)","nt":"rgba(245,243,255,0.8)","font":"Inter","grad":"linear-gradient(135deg,#050010,#1a0030)"},
-    {"dark":True,"bg":"#0D0500","pr":"#C8102E","ac":"#FFD700","tx":"#FFF8F0","mu":"rgba(255,248,240,0.55)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,215,0,0.15)","nb":"rgba(13,5,0,0.95)","nt":"rgba(255,248,240,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#0D0500,#2a0a00)"},
-    {"dark":True,"bg":"#0C0500","pr":"#EA580C","ac":"#22C55E","tx":"#FFF7ED","mu":"rgba(255,247,237,0.55)","ca":"rgba(234,88,12,0.08)","br":"rgba(234,88,12,0.2)","nb":"rgba(12,5,0,0.95)","nt":"rgba(255,247,237,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0C0500,#1a0800)"},
-    {"dark":True,"bg":"#060A14","pr":"#3B82F6","ac":"#10B981","tx":"#EFF6FF","mu":"rgba(239,246,255,0.55)","ca":"rgba(59,130,246,0.08)","br":"rgba(59,130,246,0.2)","nb":"rgba(6,10,20,0.95)","nt":"rgba(239,246,255,0.8)","font":"Inter","grad":"linear-gradient(135deg,#060A14,#0a1628)"},
-    {"dark":True,"bg":"#0A0800","pr":"#B45309","ac":"#FCD34D","tx":"#FFFBEB","mu":"rgba(255,251,235,0.55)","ca":"rgba(180,83,9,0.08)","br":"rgba(252,211,77,0.15)","nb":"rgba(10,8,0,0.95)","nt":"rgba(255,251,235,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#0A0800,#1a1200)"},
-    {"dark":True,"bg":"#030712","pr":"#06B6D4","ac":"#8B5CF6","tx":"#F0FDFE","mu":"rgba(240,253,254,0.55)","ca":"rgba(6,182,212,0.08)","br":"rgba(6,182,212,0.2)","nb":"rgba(3,7,18,0.95)","nt":"rgba(240,253,254,0.8)","font":"Inter","grad":"linear-gradient(135deg,#030712,#050f20)"},
-    {"dark":True,"bg":"#0A0A1A","pr":"#F43F5E","ac":"#A78BFA","tx":"#FFF1F2","mu":"rgba(255,241,242,0.55)","ca":"rgba(244,63,94,0.08)","br":"rgba(244,63,94,0.2)","nb":"rgba(10,10,26,0.95)","nt":"rgba(255,241,242,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0A0A1A,#14142e)"},
-    {"dark":True,"bg":"#071A0E","pr":"#16A34A","ac":"#FCD34D","tx":"#F0FDF4","mu":"rgba(240,253,244,0.55)","ca":"rgba(22,163,74,0.08)","br":"rgba(22,163,74,0.2)","nb":"rgba(7,26,14,0.95)","nt":"rgba(240,253,244,0.8)","font":"Inter","grad":"linear-gradient(135deg,#071A0E,#0a2a14)"},
-    {"dark":True,"bg":"#14000A","pr":"#DB2777","ac":"#FB923C","tx":"#FDF2F8","mu":"rgba(253,242,248,0.55)","ca":"rgba(219,39,119,0.08)","br":"rgba(219,39,119,0.2)","nb":"rgba(20,0,10,0.95)","nt":"rgba(253,242,248,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#14000A,#280014)"},
-    {"dark":False,"bg":"#FFFFFF","pr":"#6366F1","ac":"#06B6D4","tx":"#0F0F1A","mu":"#6B7280","ca":"#F8F7FF","br":"#E5E7EB","nb":"rgba(255,255,255,0.97)","nt":"#374151","font":"Inter","grad":"linear-gradient(135deg,#f8f7ff,#ffffff)"},
-    {"dark":False,"bg":"#FFFBF0","pr":"#D97706","ac":"#EF4444","tx":"#1C1917","mu":"#78716C","ca":"#FEF3C7","br":"#FDE68A","nb":"rgba(255,251,240,0.97)","nt":"#44403C","font":"Playfair Display","grad":"linear-gradient(135deg,#fffbf0,#fef9e0)"},
-    {"dark":False,"bg":"#F0FDF4","pr":"#059669","ac":"#F97316","tx":"#022C22","mu":"#6B7280","ca":"#DCFCE7","br":"#A7F3D0","nb":"rgba(240,253,244,0.97)","nt":"#065F46","font":"Inter","grad":"linear-gradient(135deg,#f0fdf4,#dcfce7)"},
-    {"dark":False,"bg":"#FFF5F5","pr":"#DC2626","ac":"#F59E0B","tx":"#1A0000","mu":"#6B7280","ca":"#FEE2E2","br":"#FECACA","nb":"rgba(255,245,245,0.97)","nt":"#7F1D1D","font":"Playfair Display","grad":"linear-gradient(135deg,#fff5f5,#fee2e2)"},
-    {"dark":False,"bg":"#FAF5FF","pr":"#7C3AED","ac":"#F59E0B","tx":"#1A0A3E","mu":"#6B7280","ca":"#EDE9FE","br":"#DDD6FE","nb":"rgba(250,245,255,0.97)","nt":"#4C1D95","font":"Playfair Display","grad":"linear-gradient(135deg,#faf5ff,#ede9fe)"},
-    {"dark":False,"bg":"#EFF6FF","pr":"#2563EB","ac":"#F59E0B","tx":"#020617","mu":"#6B7280","ca":"#DBEAFE","br":"#BFDBFE","nb":"rgba(239,246,255,0.97)","nt":"#1E3A8A","font":"Inter","grad":"linear-gradient(135deg,#eff6ff,#dbeafe)"},
-    {"dark":False,"bg":"#FFF7ED","pr":"#EA580C","ac":"#22C55E","tx":"#1C0A00","mu":"#6B7280","ca":"#FFEDD5","br":"#FED7AA","nb":"rgba(255,247,237,0.97)","nt":"#7C2D12","font":"Inter","grad":"linear-gradient(135deg,#fff7ed,#ffedd5)"},
-    {"dark":False,"bg":"#F0FFFE","pr":"#0891B2","ac":"#10B981","tx":"#042F2E","mu":"#6B7280","ca":"#CCFBF1","br":"#99F6E4","nb":"rgba(240,255,254,0.97)","nt":"#134E4A","font":"Inter","grad":"linear-gradient(135deg,#f0fffe,#ccfbf1)"},
-    {"dark":False,"bg":"#FAFAF8","pr":"#0F0F0F","ac":"#F59E0B","tx":"#0F0F0F","mu":"#6B7280","ca":"#F5F5F0","br":"#E5E5E0","nb":"rgba(250,250,248,0.97)","nt":"#0F0F0F","font":"Playfair Display","grad":"linear-gradient(135deg,#fafaf8,#f0f0ee)"},
-    {"dark":False,"bg":"#FDF4FF","pr":"#A21CAF","ac":"#F59E0B","tx":"#2E1065","mu":"#6B7280","ca":"#FAE8FF","br":"#F0ABFC","nb":"rgba(253,244,255,0.97)","nt":"#6B21A8","font":"Playfair Display","grad":"linear-gradient(135deg,#fdf4ff,#fae8ff)"},
-    {"dark":True,"bg":"#0F0F23","pr":"#F97316","ac":"#FACC15","tx":"#FFFBEB","mu":"rgba(255,251,235,0.6)","ca":"rgba(249,115,22,0.08)","br":"rgba(249,115,22,0.2)","nb":"rgba(15,15,35,0.95)","nt":"rgba(255,251,235,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0F0F23,#1a1a38)"},
-    {"dark":True,"bg":"#0A1628","pr":"#0EA5E9","ac":"#38BDF8","tx":"#F0F9FF","mu":"rgba(240,249,255,0.55)","ca":"rgba(14,165,233,0.08)","br":"rgba(14,165,233,0.2)","nb":"rgba(10,22,40,0.95)","nt":"rgba(240,249,255,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0A1628,#0f2040)"},
-    {"dark":False,"bg":"#FEFCE8","pr":"#CA8A04","ac":"#DC2626","tx":"#1C1400","mu":"#78716C","ca":"#FEF9C3","br":"#FEF08A","nb":"rgba(254,252,232,0.97)","nt":"#92400E","font":"Playfair Display","grad":"linear-gradient(135deg,#fefce8,#fef9c3)"},
-    {"dark":False,"bg":"#F8FAFC","pr":"#334155","ac":"#3B82F6","tx":"#0F172A","mu":"#64748B","ca":"#F1F5F9","br":"#CBD5E1","nb":"rgba(248,250,252,0.97)","nt":"#1E293B","font":"Inter","grad":"linear-gradient(135deg,#f8fafc,#f1f5f9)"},
-    {"dark":True,"bg":"#0D1117","pr":"#58A6FF","ac":"#3FB950","tx":"#C9D1D9","mu":"rgba(201,209,217,0.6)","ca":"rgba(88,166,255,0.08)","br":"rgba(88,166,255,0.15)","nb":"rgba(13,17,23,0.95)","nt":"rgba(201,209,217,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0D1117,#161b22)"},
-    {"dark":False,"bg":"#FFF1F2","pr":"#E11D48","ac":"#F59E0B","tx":"#881337","mu":"#6B7280","ca":"#FFE4E6","br":"#FECDD3","nb":"rgba(255,241,242,0.97)","nt":"#9F1239","font":"Playfair Display","grad":"linear-gradient(135deg,#fff1f2,#ffe4e6)"},
-    {"dark":True,"bg":"#1A0533","pr":"#C084FC","ac":"#F472B6","tx":"#FAF5FF","mu":"rgba(250,245,255,0.6)","ca":"rgba(192,132,252,0.08)","br":"rgba(192,132,252,0.2)","nb":"rgba(26,5,51,0.95)","nt":"rgba(250,245,255,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#1A0533,#2d0a55)"},
-    {"dark":False,"bg":"#ECFDF5","pr":"#10B981","ac":"#3B82F6","tx":"#022C22","mu":"#6B7280","ca":"#D1FAE5","br":"#6EE7B7","nb":"rgba(236,253,245,0.97)","nt":"#065F46","font":"Inter","grad":"linear-gradient(135deg,#ecfdf5,#d1fae5)"},
-    {"dark":True,"bg":"#18181B","pr":"#A1A1AA","ac":"#FACC15","tx":"#FAFAFA","mu":"rgba(250,250,250,0.5)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,255,255,0.1)","nb":"rgba(24,24,27,0.97)","nt":"rgba(250,250,250,0.8)","font":"Inter","grad":"linear-gradient(135deg,#18181B,#27272a)"},
-    {"dark":False,"bg":"#FEF9EE","pr":"#B45309","ac":"#059669","tx":"#1C1200","mu":"#78716C","ca":"#FEF3C7","br":"#FDE68A","nb":"rgba(254,249,238,0.97)","nt":"#78350F","font":"Playfair Display","grad":"linear-gradient(135deg,#fef9ee,#fef3c7)"},
-    {"dark":True,"bg":"#020617","pr":"#6366F1","ac":"#A5F3FC","tx":"#E0F2FE","mu":"rgba(224,242,254,0.55)","ca":"rgba(99,102,241,0.08)","br":"rgba(99,102,241,0.2)","nb":"rgba(2,6,23,0.97)","nt":"rgba(224,242,254,0.8)","font":"Inter","grad":"linear-gradient(135deg,#020617,#050f2a)"},
-    {"dark":False,"bg":"#F5F3FF","pr":"#4F46E5","ac":"#EC4899","tx":"#1E1B4B","mu":"#6B7280","ca":"#EDE9FE","br":"#C4B5FD","nb":"rgba(245,243,255,0.97)","nt":"#3730A3","font":"Inter","grad":"linear-gradient(135deg,#f5f3ff,#ede9fe)"},
-    {"dark":True,"bg":"#0C1A0C","pr":"#22C55E","ac":"#FACC15","tx":"#F0FDF4","mu":"rgba(240,253,244,0.55)","ca":"rgba(34,197,94,0.08)","br":"rgba(34,197,94,0.15)","nb":"rgba(12,26,12,0.97)","nt":"rgba(240,253,244,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0C1A0C,#142814)"},
-    {"dark":False,"bg":"#FFF8F0","pr":"#C2410C","ac":"#FBBF24","tx":"#431407","mu":"#78716C","ca":"#FEE2D5","br":"#FCA27B","nb":"rgba(255,248,240,0.97)","nt":"#7C2D12","font":"Playfair Display","grad":"linear-gradient(135deg,#fff8f0,#fee2d5)"},
-    {"dark":True,"bg":"#08080F","pr":"#E879F9","ac":"#22D3EE","tx":"#FAF5FF","mu":"rgba(250,245,255,0.55)","ca":"rgba(232,121,249,0.06)","br":"rgba(232,121,249,0.15)","nb":"rgba(8,8,15,0.97)","nt":"rgba(250,245,255,0.8)","font":"Inter","grad":"linear-gradient(135deg,#08080F,#10101e)"},
-    {"dark":False,"bg":"#F8F9FA","pr":"#212529","ac":"#E63946","tx":"#212529","mu":"#6C757D","ca":"#E9ECEF","br":"#CED4DA","nb":"rgba(248,249,250,0.97)","nt":"#495057","font":"Inter","grad":"linear-gradient(135deg,#f8f9fa,#e9ecef)"},
-    {"dark":True,"bg":"#0A0A0A","pr":"#FFFFFF","ac":"#F59E0B","tx":"#FFFFFF","mu":"rgba(255,255,255,0.5)","ca":"rgba(255,255,255,0.04)","br":"rgba(255,255,255,0.1)","nb":"rgba(10,10,10,0.97)","nt":"rgba(255,255,255,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#0A0A0A,#1a1a1a)"},
-    {"dark":False,"bg":"#FFF0F3","pr":"#FF4D6D","ac":"#FF9F1C","tx":"#590D22","mu":"#6B7280","ca":"#FFD6E0","br":"#FFAFC5","nb":"rgba(255,240,243,0.97)","nt":"#A4133C","font":"Playfair Display","grad":"linear-gradient(135deg,#fff0f3,#ffd6e0)"},
-    {"dark":True,"bg":"#061014","pr":"#34D399","ac":"#60A5FA","tx":"#ECFDF5","mu":"rgba(236,253,245,0.55)","ca":"rgba(52,211,153,0.08)","br":"rgba(52,211,153,0.15)","nb":"rgba(6,16,20,0.97)","nt":"rgba(236,253,245,0.8)","font":"Inter","grad":"linear-gradient(135deg,#061014,#0a1a20)"},
-    {"dark":False,"bg":"#FFFAF0","pr":"#F97316","ac":"#14B8A6","tx":"#1C0A00","mu":"#78716C","ca":"#FFF1E0","br":"#FED7AA","nb":"rgba(255,250,240,0.97)","nt":"#7C2D12","font":"Playfair Display","grad":"linear-gradient(135deg,#fffaf0,#fff1e0)"},
-    {"dark":True,"bg":"#140028","pr":"#A855F7","ac":"#EC4899","tx":"#FAF5FF","mu":"rgba(250,245,255,0.55)","ca":"rgba(168,85,247,0.08)","br":"rgba(168,85,247,0.2)","nb":"rgba(20,0,40,0.97)","nt":"rgba(250,245,255,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#140028,#220044)"},
-    {"dark":False,"bg":"#F0F9FF","pr":"#0284C7","ac":"#F59E0B","tx":"#0C4A6E","mu":"#6B7280","ca":"#E0F2FE","br":"#BAE6FD","nb":"rgba(240,249,255,0.97)","nt":"#075985","font":"Inter","grad":"linear-gradient(135deg,#f0f9ff,#e0f2fe)"},
-    {"dark":True,"bg":"#0F1923","pr":"#FB923C","ac":"#34D399","tx":"#FFF7ED","mu":"rgba(255,247,237,0.55)","ca":"rgba(251,146,60,0.08)","br":"rgba(251,146,60,0.2)","nb":"rgba(15,25,35,0.97)","nt":"rgba(255,247,237,0.8)","font":"Inter","grad":"linear-gradient(135deg,#0F1923,#18263a)"},
-    {"dark":False,"bg":"#F9FAFB","pr":"#111827","ac":"#6366F1","tx":"#111827","mu":"#6B7280","ca":"#F3F4F6","br":"#D1D5DB","nb":"rgba(249,250,251,0.97)","nt":"#374151","font":"Inter","grad":"linear-gradient(135deg,#f9fafb,#f3f4f6)"},
-    {"dark":True,"bg":"#180A00","pr":"#F97316","ac":"#FCD34D","tx":"#FFF7ED","mu":"rgba(255,247,237,0.6)","ca":"rgba(249,115,22,0.1)","br":"rgba(252,211,77,0.2)","nb":"rgba(24,10,0,0.97)","nt":"rgba(255,247,237,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#180A00,#2a1200)"},
-    {"dark":False,"bg":"#FAFFFE","pr":"#0D9488","ac":"#F59E0B","tx":"#042F2E","mu":"#6B7280","ca":"#CCFBF1","br":"#99F6E4","nb":"rgba(250,255,254,0.97)","nt":"#0F766E","font":"Inter","grad":"linear-gradient(135deg,#fafffe,#ccfbf1)"},
-    {"dark":True,"bg":"#09090B","pr":"#D97706","ac":"#A78BFA","tx":"#FFFBEB","mu":"rgba(255,251,235,0.55)","ca":"rgba(217,119,6,0.08)","br":"rgba(217,119,6,0.2)","nb":"rgba(9,9,11,0.97)","nt":"rgba(255,251,235,0.8)","font":"Playfair Display","grad":"linear-gradient(135deg,#09090B,#141418)"},
-    {"dark":False,"bg":"#FFF9FB","pr":"#BE185D","ac":"#7C3AED","tx":"#4A0020","mu":"#6B7280","ca":"#FCE7F3","br":"#FBCFE8","nb":"rgba(255,249,251,0.97)","nt":"#9D174D","font":"Playfair Display","grad":"linear-gradient(135deg,#fff9fb,#fce7f3)"},
-    {"dark":True,"bg":"#001A10","pr":"#00E676","ac":"#FFD600","tx":"#E8F5E9","mu":"rgba(232,245,233,0.6)","ca":"rgba(0,230,118,0.08)","br":"rgba(0,230,118,0.2)","nb":"rgba(0,26,16,0.97)","nt":"rgba(232,245,233,0.8)","font":"Inter","grad":"linear-gradient(135deg,#001A10,#002a18)"},
-    {"dark":False,"bg":"#F0F4FF","pr":"#1746A2","ac":"#FF6B6B","tx":"#0a1628","mu":"#6B7280","ca":"#DBE4FF","br":"#BAC8FF","nb":"rgba(240,244,255,0.97)","nt":"#1746A2","font":"Inter","grad":"linear-gradient(135deg,#f0f4ff,#dbe4ff)"},
-]
+    best_cat = max(scores, key=scores.get)
+    return best_cat if scores[best_cat] > 0 else "business"
 
-def get_design(prompt: str) -> dict:
-    idx = abs(hash(prompt + "v3design")) % len(DESIGN_SYSTEMS)
-    return DESIGN_SYSTEMS[idx]
-
-# ── CONTENT DATABASE ──────────────────────────────────────────────────────────
 CONTENT = {
-    "restaurant":    {"tagline":"Where Every Bite Tells a Story","sub":"Authentic flavours crafted with passion. Fresh ingredients, timeless recipes, unforgettable moments.","cta1":"Reserve a Table","cta2":"View Menu","services_title":"Our Specialties","services":[("🍽️","Fine Dining","Exquisite multi-course meals by award-winning chefs."),("🍷","Premium Bar","Curated wines, craft cocktails, rare spirits."),("🎂","Private Events","Exclusive rooms for celebrations and corporate dinners."),("🚗","Home Delivery","Restaurant quality at your doorstep, fast.")],"stats":[("15+","Years"),("50K+","Guests"),("4.9★","Rating"),("200+","Dishes")],"testi":[("Arjun M.","Food Critic","Best dining in the city. Every dish is absolute perfection."),("Priya S.","Regular Guest","We celebrate every anniversary here. Simply magical."),("Rahul K.","Corporate Host","World-class private dining. Impressed every single client.")],"af":[("🏆","Award-Winning","Top culinary awards for 10 consecutive years."),("🌿","Farm to Table","Only locally sourced fresh ingredients always."),("🎶","Perfect Ambiance","As memorable as the food itself.")]},
-    "saas":          {"tagline":"Ship Faster. Scale Without Limits.","sub":"AI-powered platform automating your entire workflow. Built for teams that move fast and win.","cta1":"Start Free Trial","cta2":"Watch Demo","services_title":"Platform Features","services":[("⚡","Automation","Eliminate repetitive tasks with intelligent automation."),("📊","Analytics","Real-time dashboards with actionable insights."),("🔗","200+ Integrations","Connect every tool your team already uses."),("🛡️","Enterprise Security","SOC2, SSO, SAML, audit logs built in.")],"stats":[("10K+","Teams"),("99.9%","Uptime"),("10x","Faster"),("4.8★","G2")],"testi":[("Sarah C.","CTO","Cut costs 60% in month one. Genuinely transformative."),("Marcus J.","CEO","Team ships 3x faster. ROI was immediate and obvious."),("Aisha P.","VP Eng","Best developer experience ever. Truly world-class.")],"af":[("⚡","Sub-100ms","Blazing fast response times your users will notice."),("🔒","SOC2","Enterprise security built in from day one always."),("🤖","AI-Native","Every feature powered by intelligent automation.")]},
-    "car":           {"tagline":"Drive Your Dream Car Today","sub":"Premium vehicles, transparent pricing, buying experience that respects your time and money.","cta1":"Browse Inventory","cta2":"Book Test Drive","services_title":"Our Services","services":[("🚗","New Cars","Latest models from top manufacturers at best prices."),("✅","Certified Used","Pre-owned vehicles inspected and warrantied thoroughly."),("💳","Easy Finance","Loans approved in 24 hours from 7.9% APR."),("🔧","Service Centre","Manufacturer-trained technicians for all brands.")],"stats":[("2K+","Cars Sold"),("500+","Reviews"),("15+","Brands"),("24hr","Loan Approval")],"testi":[("Vikram P.","Business Owner","Found my dream SUV at unbelievable price. Zero pressure."),("Sunita R.","Doctor","Financing approved in hours. Drove home same day."),("Amit K.","Entrepreneur","Third car here. Never going anywhere else ever.")],"af":[("🏅","150-Point Check","Every used vehicle certified and thoroughly inspected."),("💰","Price Match","We match any verified competitor price, guaranteed."),("🔧","Free Service","Complimentary maintenance checks for life of vehicle.")]},
-    "portfolio":     {"tagline":"Design That Moves People","sub":"Digital products that convert. Every pixel deliberate. Every interaction purposeful and precise.","cta1":"View My Work","cta2":"Hire Me","services_title":"What I Do","services":[("🎨","UI/UX Design","Research-driven interfaces that users love and convert."),("💻","Development","React and Next.js — fast, accessible, and beautiful."),("📱","Mobile Apps","iOS and Android experiences that delight every user."),("🚀","Brand Identity","Logos and systems that stand the test of time.")],"stats":[("50+","Projects"),("30+","Clients"),("5★","Rating"),("8+","Years")],"testi":[("David P.","Founder","Delivered beyond expectations, on time and under budget."),("Emma W.","Director","Conversion rate up 240% after redesign. Extraordinary."),("Carlos R.","CEO","Best investment this year. Changed our market position.")],"af":[("🎯","Data-Driven","Every design decision backed by research and data."),("⚡","Fast Delivery","Production-ready designs delivered in days always."),("🤝","Collaborative","I work as an extension of your team, not a vendor.")]},
-    "ecommerce":     {"tagline":"Premium Quality, Delivered Fast","sub":"Curated collections you will love. Free shipping. 30-day returns. Shop with complete confidence.","cta1":"Shop Now","cta2":"View Lookbook","services_title":"Why Shop With Us","services":[("🚚","Free Shipping","Express delivery on every order, always."),("✅","Quality Assured","47-point inspection on every product before delivery."),("↩️","Easy Returns","30-day returns, no questions, full refund guaranteed."),("💳","Secure Checkout","UPI, cards, EMI, COD — all accepted securely.")],"stats":[("50K+","Customers"),("10K+","Products"),("4.9★","Rating"),("99%","Satisfaction")],"testi":[("Sneha G.","Buyer","Incredible quality. Delivered in 2 days. Will order again."),("Vikram N.","Member","Shopping here 3 years. Always consistently excellent."),("Divya K.","Blogger","My go-to source for premium finds. Impeccable curation.")],"af":[("🚚","Express Delivery","Free on all orders, no minimum spend required."),("↩️","30-Day Returns","No questions asked. Full refund guaranteed always."),("✅","Quality Certified","47-point inspection on every single product.")]},
-    "agency":        {"tagline":"We Build Brands That Dominate Markets","sub":"Full-service growth agency. Strategy, creative, technology turning businesses into category leaders.","cta1":"Get a Proposal","cta2":"See Case Studies","services_title":"Our Services","services":[("📈","Growth Strategy","Data-driven plans for explosive, sustainable growth."),("🎯","Performance Ads","Campaigns that consistently beat industry benchmarks."),("🌐","Digital Products","Websites and apps engineered to convert visitors."),("✍️","Brand and Creative","Stories that connect emotionally and drive action.")],"stats":[("100+","Brands"),("₹50Cr+","Revenue"),("4.9★","Rating"),("8+","Years")],"testi":[("Ankit J.","CMO","Tripled qualified leads in 90 days. Best agency ever."),("Meera K.","Founder","Rebrand drove 180% revenue growth year on year."),("Rajesh P.","CEO","True growth partners. Exceptional results every time.")],"af":[("📊","Data-Driven","Every strategy backed by rigorous research."),("⚡","Agile","Results in weeks, not quarters. Always."),("🎯","ROI-Obsessed","Every spend tied to measurable business outcomes.")]},
-    "fitness":       {"tagline":"Transform Your Body. Own Your Life.","sub":"Expert coaching, elite facilities, community that refuses to let you quit. Transformation starts today.","cta1":"Start Free Trial","cta2":"View Programs","services_title":"Our Programs","services":[("💪","Strength Training","Elite programming to build real, lasting power."),("🏃","HIIT and Cardio","High-intensity sessions that torch fat fast."),("🧘","Recovery and Mobility","Yoga and protocols to prevent injury always."),("🥗","Nutrition Coaching","Personalised plans that fuel your transformation.")],"stats":[("5K+","Members"),("50+","Coaches"),("98%","Success Rate"),("4.9★","Rating")],"testi":[("Kiran R.","Member","Lost 20kg in 6 months. The coaching is life-changing."),("Ananya S.","Runner","PB improved 22 minutes. Absolutely world-class programming."),("Dev M.","Athlete","12kg muscle in one year. The science behind it is real.")],"af":[("🏆","Elite Coaches","Internationally certified trainers with real results."),("📊","Science-Based","Peer-reviewed sports science programming always."),("👥","Community","Support system that keeps you accountable daily.")]},
-    "education":     {"tagline":"Learn Without Limits. Grow Without Ceiling.","sub":"World-class instructors, live cohorts, lifetime access, certifications that employers actually value.","cta1":"Enroll Now","cta2":"Browse Courses","services_title":"What We Offer","services":[("📚","Expert Courses","Learn from top industry practitioners worldwide."),("🎯","Live Cohorts","Real-time classes with Q&A and mentorship daily."),("🏆","Certifications","Credentials hiring managers trust and recognise."),("♾️","Lifetime Access","Learn at your pace. Revisit any lesson forever.")],"stats":[("20K+","Students"),("500+","Courses"),("4.9★","Rating"),("95%","Placement")],"testi":[("Rohan M.","Graduate","Dream job 3 months after completing the program."),("Priya T.","Career Changer","Best investment in my career. Genuinely life-changing."),("Amit S.","Professional","Promoted twice. Skills are directly applicable daily.")],"af":[("👨‍🏫","Expert Instructors","Industry practitioners with real-world track records."),("🎯","Project-Based","Build real projects, not just watch passive videos."),("🏆","Recognised","Credentials employers and hiring managers trust.")]},
-    "realestate":    {"tagline":"Find Your Perfect Home","sub":"Premium listings, trusted agents, transparent process. Buying, selling, renting made effortless.","cta1":"Browse Properties","cta2":"Talk to Agent","services_title":"Our Services","services":[("🏠","Residential Sales","Premium homes and apartments in prime locations."),("🔑","Rental Properties","Verified listings with fully transparent pricing."),("💼","Commercial Spaces","Offices and retail for every business need."),("📋","Property Management","Complete end-to-end management for landlords.")],"stats":[("5K+","Properties"),("2K+","Clients"),("₹500Cr+","Transactions"),("4.9★","Rating")],"testi":[("Suresh P.","Buyer","Perfect 3BHK in 2 weeks. The agent was exceptional."),("Kavita M.","Investor","ROI on recommended properties has been outstanding."),("Arun K.","Seller","Sold above asking in 10 days. Absolutely remarkable.")],"af":[("🔍","Market Knowledge","Hyper-local expertise in every area we serve."),("💰","Best Price","We negotiate hard to get you the best deal."),("📋","Paperwork Handled","Every document, verification, legal step managed.")]},
-    "hospital":      {"tagline":"Expert Care, Every Step of the Way","sub":"Compassionate healthcare with cutting-edge technology. Your health is our only and greatest priority.","cta1":"Book Appointment","cta2":"Find a Doctor","services_title":"Our Departments","services":[("🫀","Cardiology","Comprehensive heart care from diagnosis to surgery."),("🧠","Neurology","Advanced neurological treatment and expert care."),("🦷","Dental Care","Complete dental services from routine to complex."),("👶","Paediatrics","Specialised child healthcare for all ages.")],"stats":[("50K+","Patients"),("50+","Specialists"),("20+","Departments"),("4.9★","Rating")],"testi":[("Ramesh K.","Patient","The care here saved my life. Exceptional team always."),("Sunita V.","Family Member","Compassionate, skilled, and always available for us."),("Dr. Anil S.","Referring Physician","Best facility in the region. Refer all complex cases.")],"af":[("👨‍⚕️","Expert Specialists","50+ specialists across every medical department."),("🏥","Advanced Technology","State-of-the-art diagnostic and surgical technology."),("❤️","Patient-First","Treating the whole person, not just the illness.")]},
-    "hotel":         {"tagline":"Where Luxury Meets Serenity","sub":"Extraordinary escape where world-class hospitality and unmatched comfort come together perfectly.","cta1":"Book Your Stay","cta2":"Explore Rooms","services_title":"Our Offerings","services":[("🛏️","Luxury Rooms","Beautifully appointed rooms with stunning views."),("🍽️","Fine Dining","Award-winning restaurants serving world cuisine."),("🏊","Pool and Spa","Infinity pool and full-service wellness facilities."),("💼","Business Centre","State-of-the-art conference and event facilities.")],"stats":[("20+","Years"),("10K+","Guests"),("5★","Star Rating"),("4.9★","Guest Rating")],"testi":[("Ananya P.","Honeymooner","Most magical experience of our lives. Absolute perfection."),("Rohit V.","Business Traveller","World-class facilities and service. My permanent go-to."),("Meera S.","Leisure Guest","Every single detail was perfect. Return every year.")],"af":[("⭐","5-Star Service","Award-winning hospitality anticipating every need."),("🍽️","Signature Dining","Three restaurants, each a culinary destination."),("🧖","World-Class Spa","A sanctuary of wellness and total rejuvenation.")]},
-    "law":           {"tagline":"Justice. Expertise. Results.","sub":"Experienced legal counsel for individuals and businesses. We fight for your rights with precision.","cta1":"Free Consultation","cta2":"Our Practice Areas","services_title":"Practice Areas","services":[("🏢","Corporate Law","Business formation, contracts, M&A, governance."),("⚖️","Civil Litigation","Representation across all civil courts nationwide."),("👨‍👩‍👧","Family Law","Divorce, custody, adoption, all family matters."),("🏠","Property Law","Real estate transactions, disputes, and rights.")],"stats":[("10K+","Cases Won"),("25+","Years"),("200+","Corporate Clients"),("4.9★","Rating")],"testi":[("Rajesh M.","Business Owner","Won a case others said was completely unwinnable."),("Priya S.","Client","Handled with total sensitivity and full professionalism."),("Amit Corp","General Counsel","Trusted legal partner for every matter for 10 years.")],"af":[("⚖️","Proven Record","10,000+ cases won across all courts and tribunals."),("🔒","Confidential","Absolute attorney-client privilege guaranteed always."),("📞","24/7 Available","Always accessible for every urgent legal matter.")]},
-    "startup":       {"tagline":"From Zero to Category Leader","sub":"Building the future. Join us at the ground floor of the defining company of our generation.","cta1":"Join Waitlist","cta2":"See How It Works","services_title":"What We Are Building","services":[("⚡","Core Product","Fastest, most intuitive solution in the market today."),("🤖","AI Layer","Features that learn and improve with every interaction."),("🔗","Platform API","Open platform developers can build powerful things on."),("🌐","Global Scale","Infrastructure built to serve millions from day one.")],"stats":[("1K+","Beta Users"),("₹2Cr+","Pre-orders"),("3x","Monthly Growth"),("4.9★","Beta Rating")],"testi":[("Ankit S.","Beta User","This is going to be massive. Never seen anything like it."),("Meera V.","Investor","Most impressive founding team and product I have seen."),("Rahul P.","Early Adopter","Switched day one. Never once looked back at all.")],"af":[("🚀","Hypergrowth","3x month-over-month growth consistently since launch."),("🤖","AI-First","Intelligence built in, not bolted on as an afterthought."),("🌍","Global Vision","Building for India first, then conquering the world.")]},
-    "finance":       {"tagline":"Your Wealth. Our Expertise.","sub":"SEBI-registered advisors helping build, protect, and grow your wealth through disciplined planning.","cta1":"Free Consultation","cta2":"Our Services","services_title":"Our Services","services":[("📈","Wealth Management","Personalised portfolios aligned to your specific goals."),("🏦","Mutual Funds","Curated fund selection and expert SIP planning."),("🛡️","Insurance Planning","Comprehensive coverage for everything you have built."),("📋","Tax Planning","Legal optimisation strategies to maximise your returns.")],"stats":[("5K+","Clients"),("₹500Cr+","AUM"),("15+","Years"),("4.9★","Rating")],"testi":[("Suresh M.","Business Owner","Portfolio grown 18% annually for 5 consecutive years."),("Kavita P.","Retired","Secured my retirement completely. Total peace of mind."),("Arun S.","Professional","Started my SIP journey here. Remarkable compounding.")],"af":[("📊","Research-Driven","All recommendations backed by rigorous fundamental analysis."),("🔒","SEBI Registered","Fully regulated and compliant with all guidelines."),("💼","Personalised","No generic advice. Every plan built for your situation.")]},
-    "construction":  {"tagline":"Building Dreams. Delivering Excellence.","sub":"From homes to commercial complexes, delivered on time, on budget, to the highest quality standards.","cta1":"Get a Quote","cta2":"View Projects","services_title":"Our Services","services":[("🏠","Residential","Custom homes built to the very highest specifications."),("🏢","Commercial","Offices, malls, industrial complexes at real scale."),("🎨","Interior Design","Complete fit-out and interior services for every space."),("🔧","Renovation","Expert renovation and remodelling of existing structures.")],"stats":[("500+","Projects Completed"),("₹500Cr+","Project Value"),("20+","Years Experience"),("4.9★","Client Rating")],"testi":[("Vikram S.","Developer","5 projects with them. Quality and timing always perfect."),("Anita R.","Home Owner","My dream home, exactly as I imagined it. Stunning."),("Raj Corp","Commercial Client","Office complex on time, on budget, exceptional finish.")],"af":[("🏗️","Turnkey Delivery","Complete management from foundation to final finishing."),("⏰","On-Time Guarantee","Never missed a single project deadline in 20 years."),("🏆","ISO 9001 Certified","Certified processes ensuring the highest build quality.")]},
-    "ngo":           {"tagline":"Every Life Deserves Dignity","sub":"Working at compassion and action to create lasting change for communities that need it most.","cta1":"Donate Now","cta2":"Get Involved","services_title":"Our Programs","services":[("📚","Education","Quality education and scholarships for underprivileged."),("🏥","Healthcare","Mobile medical clinics in remote communities nationwide."),("💼","Livelihood","Skills training and microfinance creating independence."),("🌱","Environment","Tree planting and water conservation drives always.")],"stats":[("100K+","Lives Impacted"),("15+","Years of Impact"),("50+","Communities Served"),("4.9★","Transparency")],"testi":[("Anita S.","Major Donor","I can see exactly where my money goes. Real visible impact."),("Rahul M.","Corporate Partner","Most transparent and impactful NGO we have ever partnered."),("Meera P.","Volunteer","Changed my life as much as it changed the communities.")],"af":[("✅","100% Transparent","Full financial reports published for every single donor."),("🎯","Measurable Impact","Programs evaluated against clear, audited outcomes always."),("🤝","Community-Led","Programs designed with and for the communities we serve.")]},
-    "photography":   {"tagline":"Capturing Moments That Last Forever","sub":"Every frame tells a story. Photography transforming ordinary moments into extraordinary timeless memories.","cta1":"Book a Session","cta2":"View Portfolio","services_title":"Our Services","services":[("📸","Wedding Photography","Your perfect day captured beautifully forever."),("👤","Portrait Sessions","Professional headshots and deeply personal portraits."),("🏢","Commercial Photography","Stunning product and corporate photography."),("🎬","Videography","Cinematic videos that genuinely move people emotionally.")],"stats":[("500+","Sessions Done"),("50K+","Photos Taken"),("5★","Rating"),("10+","Years")],"testi":[("Sneha P.","Bride","Our wedding photos are absolutely breathtakingly beautiful."),("Rajesh K.","CEO","Professional headshots exceeded every single expectation."),("Priya M.","Marketing Head","Commercial shots drove our campaign performance significantly.")],"af":[("📷","Award-Winning","Recognised by national photography associations."),("🎨","Artistic Vision","Every photo is a deliberate work of lasting art."),("💾","Fast Delivery","Fully edited photos delivered within just 48 hours.")]},
-    "salon":         {"tagline":"Where Beauty Meets Expertise","sub":"Premium salon services in a luxurious setting. Look and feel your absolute best every single day.","cta1":"Book Appointment","cta2":"Our Services","services_title":"Our Services","services":[("💇","Hair Styling","Cuts, colours, and treatments by true expert stylists."),("💅","Nail Art","Manicure, pedicure, and nail artistry done perfectly."),("🧖","Spa Treatments","Relaxing facials and rejuvenating body treatments."),("💄","Bridal Makeup","Wedding and occasion makeup by skilled professionals.")],"stats":[("10K+","Happy Clients"),("50+","Services Offered"),("5★","Rating"),("8+","Years")],"testi":[("Sunita R.","Bride","Best bridal makeup I have ever seen. Absolutely perfect."),("Kavita P.","Regular Client","Come every month. Always leave feeling and looking amazing."),("Meera S.","Client","The hair treatment completely transformed my confidence.")],"af":[("💎","Premium Products","Only top-tier professional products used always."),("👩‍🎨","Expert Stylists","Internationally trained and certified beauty professionals."),("🌿","Hygienic","Sterilized tools and fresh towels for every client.")]},
-    "travel":        {"tagline":"Your World Awaits. Let Us Take You There.","sub":"Curated travel experiences, personalised itineraries, and memories that last a lifetime truly.","cta1":"Plan My Trip","cta2":"View Packages","services_title":"Our Services","services":[("✈️","International Tours","Handcrafted itineraries to destinations worldwide."),("🏔️","Adventure Travel","Treks, safaris, and extreme experiences."),("🏖️","Beach Holidays","Perfect resort stays and island getaways."),("💑","Honeymoon Packages","Romantic escapes tailored for couples perfectly.")],"stats":[("5K+","Happy Travellers"),("100+","Destinations"),("15+","Years"),("4.9★","Rating")],"testi":[("Rahul K.","Traveller","The Bali trip was flawlessly organised. Dream experience."),("Priya S.","Couple","Our honeymoon was beyond absolutely anything we imagined."),("Amit R.","Family","The Rajasthan tour was magical for our whole family.")],"af":[("🗺️","Expert Local Guides","Local experts in every destination worldwide."),("💰","Best Value","Unbeatable packages for unforgettable experiences."),("📞","24/7 Support","With you every step of your entire journey.")]},
-    "tech_company":  {"tagline":"Technology That Transforms Business","sub":"End-to-end technology solutions driving digital transformation and accelerating sustainable growth.","cta1":"Get a Quote","cta2":"View Our Work","services_title":"Our Services","services":[("💻","Software Development","Custom software built for your exact business needs."),("📱","App Development","iOS, Android, and cross-platform mobile applications."),("☁️","Cloud Solutions","Migration, architecture, and fully managed cloud services."),("🔒","Cybersecurity","Protecting your business from all evolving threats.")],"stats":[("500+","Projects Done"),("200+","Clients Served"),("15+","Years"),("4.9★","Rating")],"testi":[("Vikram S.","CTO","Delivered our entire platform on time and under budget."),("Anita R.","CEO","The app they built drives 60% of our total revenue."),("Rahul P.","Founder","Best tech partner we have ever worked with. Remarkable.")],"af":[("⚡","Agile Delivery","Fast iterative development with regular meaningful releases."),("🔒","Secure by Design","Security built in at every layer of every system."),("🤝","Long-term Partner","We stay invested in your success indefinitely always.")]},
-    "wedding":       {"tagline":"Your Perfect Day. Our Greatest Joy.","sub":"Wedding experiences so perfect they feel like dreams you never want to wake from. Ever.","cta1":"Plan Your Wedding","cta2":"View Gallery","services_title":"Our Services","services":[("💒","Full Planning","Complete wedding management from first concept to big day."),("📸","Photography","Cinematic wedding photography and beautiful videography."),("🌸","Decor and Florals","Breathtaking decorations and stunning floral design."),("🍽️","Catering","Exquisite menus for every cuisine and every taste.")],"stats":[("500+","Weddings Planned"),("50K+","Happy Guests"),("10+","Years"),("5★","Rating")],"testi":[("Priya and Rahul","Couple","Our wedding was beyond any dream we had. Perfect."),("Sunita P.","Bride's Mother","Every detail handled with such genuine love and care."),("Amit V.","Groom","Best decision we ever made was hiring this incredible team.")],"af":[("💎","Luxury Execution","Every element crafted to absolute and total perfection."),("🤝","Personal Touch","Your dedicated planner committed solely to your wedding."),("📞","Always Available","24/7 throughout your entire planning journey always.")]},
-    "dental":        {"tagline":"Your Smile. Our Expertise.","sub":"Advanced dental care in a comfortable, anxiety-free environment. Your perfect smile awaits you.","cta1":"Book Appointment","cta2":"Our Treatments","services_title":"Our Treatments","services":[("🦷","General Dentistry","Regular checkups, cleaning, and preventive care always."),("😁","Cosmetic Dentistry","Whitening, veneers, and complete smile makeovers."),("🦾","Dental Implants","Permanent, natural-looking tooth replacement solutions."),("😬","Orthodontics","Braces and Invisalign for perfect alignment.")],"stats":[("10K+","Happy Patients"),("20+","Treatments"),("15+","Years"),("5★","Rating")],"testi":[("Rahul K.","Patient","My smile transformation was absolutely incredible. Remarkable."),("Priya S.","Patient","Most pain-free dental experience I have ever had anywhere."),("Amit M.","Parent","My children actually look forward to coming here now.")],"af":[("🔬","Advanced Technology","Latest dental technology for most precise treatment."),("💊","Pain-Free Promise","Anxiety-free care with modern pain management always."),("😁","Results Guaranteed","We guarantee results or we make it completely right.")]},
-    "cleaning":      {"tagline":"Spotless Spaces. Happy Places.","sub":"Professional cleaning transforming your home or office into a pristine, immaculate sanctuary.","cta1":"Book a Clean","cta2":"Our Services","services_title":"Our Services","services":[("🏠","Home Cleaning","Deep and regular cleaning for residential properties."),("🏢","Office Cleaning","Professional commercial cleaning services always."),("🧹","Deep Clean","Intensive cleaning for move-in and move-out."),("🌿","Eco Cleaning","Green cleaning with non-toxic, safe products.")],"stats":[("5K+","Happy Clients"),("50K+","Cleans Completed"),("8+","Years"),("5★","Rating")],"testi":[("Priya S.","Home Owner","My home has never ever been this clean. Exceptional always."),("TechCorp","Office Manager","Our office is always spotless. The team is incredibly reliable."),("Rahul K.","Landlord","Move-out cleans are absolutely perfect every single time.")],"af":[("✅","Verified Staff","All staff background-checked and fully insured always."),("🌿","Eco-Friendly","Non-toxic, safe products for your family always."),("⏰","Always Reliable","On time, always thorough, never let you down.")]},
-    "mental_health": {"tagline":"Your Mental Health Matters","sub":"Compassionate, confidential therapy and counselling. You deserve support and help is here.","cta1":"Book a Session","cta2":"Meet Our Team","services_title":"Our Services","services":[("🧠","Individual Therapy","One-on-one sessions with qualified, caring therapists."),("👫","Couples Counselling","Strengthen your relationship with expert guidance."),("👨‍👩‍👧","Family Therapy","Healing and communication support for whole families."),("📱","Online Sessions","Convenient therapy from the comfort of your own home.")],"stats":[("5K+","Clients Helped"),("20+","Qualified Therapists"),("10+","Years"),("5★","Rating")],"testi":[("Priya S.","Client","My anxiety is manageable for the first time in years."),("Rahul K.","Couple","Our marriage is stronger than ever after counselling."),("Anita M.","Client","Online sessions fit perfectly into my busy daily life.")],"af":[("🔐","Confidential","Absolute privacy and confidentiality guaranteed always."),("❤️","Non-Judgmental","A completely safe space to be entirely yourself."),("👩‍⚕️","Qualified","All therapists hold recognised international credentials.")]},
-    "business":      {"tagline":"Excellence Delivered Every Single Time","sub":"Deep expertise, bold execution, obsession with results. We help businesses grow and consistently win.","cta1":"Get Started Today","cta2":"Learn More","services_title":"What We Offer","services":[("⚡","Fast Results","Exceptional outcomes delivered ahead of every schedule."),("🎯","Results-Obsessed","Every action tied to your specific measurable goals."),("🤝","True Partnership","Invested in your success as deeply as you are always."),("🛡️","Proven Reliability","100+ clients trust us with their most critical work.")],"stats":[("100+","Projects Completed"),("50+","Happy Clients"),("4.9★","Average Rating"),("5+","Years")],"testi":[("Rohit K.","Managing Director","Delivered exactly as promised and ahead of schedule."),("Nisha A.","COO","Best vendor relationship we have ever had. Truly reliable."),("Amit S.","Founder","An absolute game-changer for our business and growth.")],"af":[("⚡","Fast Delivery","Results delivered faster than any competitor anywhere."),("🎯","ROI-Focused","Every engagement measured against real business impact."),("🛡️","Proven Record","5+ years, 100+ clients, zero failures anywhere.")]},
+    "restaurant":    {"tagline":"Where Every Bite Tells a Story","sub":"Authentic flavours crafted with passion. Fresh ingredients, timeless recipes, unforgettable moments.","cta1":"Reserve a Table","cta2":"View Menu","services_title":"Our Specialties","services":[("🍽️","Fine Dining","Exquisite multi-course meals by award-winning chefs."),("🍷","Premium Bar","Curated wines, craft cocktails, and rare spirits."),("🎂","Private Events","Exclusive rooms for celebrations."),("🚗","Home Delivery","Restaurant quality at your doorstep.")],"stats":[("15+","Years"),("50K+","Guests"),("4.9★","Rating"),("200+","Dishes")],"testi":[("Arjun M.","Food Critic","Best dining in the city. Every dish is perfection."),("Priya S.","Guest","We celebrate every anniversary here. Magical."),("Rahul K.","Corporate","World-class private dining.")],"af":[("🏆","Award-Winning","Top culinary awards for 10 consecutive years."),("🌿","Farm to Table","Only locally sourced fresh ingredients."),("🎶","Perfect Ambiance","As memorable as the food itself.")]},
+    "saas":          {"tagline":"Ship Faster. Scale Without Limits.","sub":"AI-powered platform that automates your entire workflow. Built for teams that move fast.","cta1":"Start Free Trial","cta2":"Watch Demo","services_title":"Platform Features","services":[("⚡","Automation","Eliminate repetitive tasks with intelligent automation."),("📊","Analytics","Real-time dashboards with actionable insights."),("🔗","Integrations","Connect 200+ tools your team already uses."),("🛡️","Security","SOC2, SSO, SAML, audit logs built in.")],"stats":[("10K+","Teams"),("99.9%","Uptime"),("10x","Faster"),("4.8★","G2")],"testi":[("Sarah C.","CTO","Cut costs 60% in month one. Transformative."),("Marcus J.","CEO","Team ships 3x faster. Immediate ROI."),("Aisha P.","VP Eng","Best developer experience ever. World-class.")],"af":[("⚡","Sub-100ms","Blazing fast response times your users will love."),("🔒","SOC2","Enterprise security built in from day one."),("🤖","AI-Native","Every feature powered by intelligent automation.")]},
+    "car":           {"tagline":"Drive Your Dream Car Today","sub":"Premium vehicles, transparent pricing, and a buying experience that respects your time.","cta1":"Browse Inventory","cta2":"Book Test Drive","services_title":"Our Services","services":[("🚗","New Cars","Latest models at unbeatable prices."),("✅","Certified Used","Pre-owned vehicles inspected and warrantied."),("💳","Easy Finance","Loans approved in 24 hours from 7.9% APR."),("🔧","Service Centre","Manufacturer-trained technicians.")],"stats":[("2K+","Cars Sold"),("500+","Reviews"),("15+","Brands"),("24hr","Loan Approval")],"testi":[("Vikram P.","Business Owner","Found my dream SUV. Zero pressure sales."),("Sunita R.","Doctor","Financing approved in hours. Drove home same day."),("Amit K.","Entrepreneur","Third car here. Never going anywhere else.")],"af":[("🏅","150-Point Check","Every used vehicle certified and inspected."),("💰","Price Match","We match any verified competitor price."),("🔧","Free Service","Complimentary maintenance checks for life.")]},
+    "portfolio":     {"tagline":"Design That Moves People","sub":"I craft digital products that convert. Every pixel deliberate. Every interaction purposeful.","cta1":"View My Work","cta2":"Hire Me","services_title":"What I Do","services":[("🎨","UI/UX Design","Research-driven interfaces users love."),("💻","Development","React and Next.js — fast and accessible."),("📱","Mobile Apps","iOS and Android that delight users."),("🚀","Brand Identity","Logos and systems that stand the test of time.")],"stats":[("50+","Projects"),("30+","Clients"),("5★","Rating"),("8+","Years")],"testi":[("David P.","Founder","Delivered beyond expectations. On time."),("Emma W.","Director","Conversion up 240% after redesign."),("Carlos R.","CEO","Best investment this year. Life-changing.")],"af":[("🎯","Data-Driven","Every design decision backed by research."),("⚡","Fast Delivery","Production-ready in days, not months."),("🤝","Collaborative","I work as an extension of your team.")]},
+    "ecommerce":     {"tagline":"Premium Quality, Delivered Fast","sub":"Curated collections you will love. Free shipping. 30-day returns. Shop with confidence.","cta1":"Shop Now","cta2":"View Lookbook","services_title":"Why Shop With Us","services":[("🚚","Free Shipping","Express delivery on every order."),("✅","Quality Assured","47-point inspection on every product."),("↩️","Easy Returns","30-day returns, no questions asked."),("💳","Secure Checkout","UPI, cards, EMI, COD accepted.")],"stats":[("50K+","Customers"),("10K+","Products"),("4.9★","Rating"),("99%","Satisfaction")],"testi":[("Sneha G.","Buyer","Incredible quality. Delivered in 2 days."),("Vikram N.","Member","Shopping here 3 years. Always excellent."),("Divya K.","Blogger","My go-to for premium finds.")],"af":[("🚚","Express Delivery","Free on all orders, no minimum spend."),("↩️","30-Day Returns","No questions. Full refund guaranteed."),("✅","Quality Certified","47-point inspection every product.")]},
+    "agency":        {"tagline":"We Build Brands That Dominate Markets","sub":"Full-service growth agency. Strategy, creative, and technology that turns businesses into leaders.","cta1":"Get a Proposal","cta2":"See Case Studies","services_title":"Our Services","services":[("📈","Growth Strategy","Data-driven plans for explosive growth."),("🎯","Performance Ads","Campaigns that consistently beat benchmarks."),("🌐","Digital Products","Websites and apps that convert visitors."),("✍️","Brand and Creative","Stories that connect and drive action.")],"stats":[("100+","Brands"),("₹50Cr+","Revenue"),("4.9★","Rating"),("8+","Years")],"testi":[("Ankit J.","CMO","Tripled leads in 90 days. Best agency."),("Meera K.","Founder","Rebrand drove 180% revenue growth."),("Rajesh P.","CEO","True growth partners. Exceptional results.")],"af":[("📊","Data-Driven","Every strategy backed by research."),("⚡","Agile","Results in weeks, not quarters."),("🎯","ROI-Obsessed","Every spend tied to measurable outcomes.")]},
+    "fitness":       {"tagline":"Transform Your Body. Own Your Life.","sub":"Expert coaching, elite facilities, community that refuses to let you quit. Start today.","cta1":"Start Free Trial","cta2":"View Programs","services_title":"Our Programs","services":[("💪","Strength","Elite programming to build real power."),("🏃","HIIT Cardio","High-intensity sessions that torch fat."),("🧘","Recovery","Yoga and mobility to prevent injury."),("🥗","Nutrition","Personalised plans that fuel transformation.")],"stats":[("5K+","Members"),("50+","Coaches"),("98%","Success"),("4.9★","Rating")],"testi":[("Kiran R.","Member","Lost 20kg in 6 months. Life-changing."),("Ananya S.","Runner","PB improved 22 minutes. World-class."),("Dev M.","Athlete","12kg muscle in a year. Real programming.")],"af":[("🏆","Elite Coaches","Internationally certified trainers."),("📊","Science-Based","Peer-reviewed sports science programming."),("👥","Community","Support system that keeps you accountable.")]},
+    "education":     {"tagline":"Learn Without Limits. Grow Without Ceiling.","sub":"World-class instructors. Live cohorts. Lifetime access. Certifications employers value.","cta1":"Enroll Now","cta2":"Browse Courses","services_title":"What We Offer","services":[("📚","Expert Courses","Learn from top industry practitioners."),("🎯","Live Cohorts","Real-time classes with Q&A and mentorship."),("🏆","Certifications","Credentials hiring managers trust."),("♾️","Lifetime Access","Learn at your pace, revisit forever.")],"stats":[("20K+","Students"),("500+","Courses"),("4.9★","Rating"),("95%","Placement")],"testi":[("Rohan M.","Graduate","Dream job 3 months after completing."),("Priya T.","Career Changer","Best investment in my career ever."),("Amit S.","Professional","Promoted twice. Skills directly applicable.")],"af":[("👨‍🏫","Expert Instructors","Industry practitioners with real results."),("🎯","Project-Based","Build real projects, not just watch videos."),("🏆","Recognised","Credentials employers and managers trust.")]},
+    "realestate":    {"tagline":"Find Your Perfect Home","sub":"Premium listings, trusted agents, transparent process. Buying, selling, or renting made effortless.","cta1":"Browse Properties","cta2":"Talk to Agent","services_title":"Our Services","services":[("🏠","Residential Sales","Premium homes in prime locations."),("🔑","Rental","Verified listings with transparent pricing."),("💼","Commercial","Offices and retail for every business."),("📋","Management","Complete end-to-end property management.")],"stats":[("5K+","Properties"),("2K+","Clients"),("₹500Cr+","Transactions"),("4.9★","Rating")],"testi":[("Suresh P.","Buyer","Perfect 3BHK in 2 weeks. Agent was exceptional."),("Kavita M.","Investor","ROI on properties recommended has been outstanding."),("Arun K.","Seller","Sold above asking in 10 days. Remarkable.")],"af":[("🔍","Market Knowledge","Hyper-local expertise in every area."),("💰","Best Price","We negotiate hard for the best deal."),("📋","Paperwork","Every document, verification, legal step handled.")]},
+    "hospital":      {"tagline":"Expert Care, Every Step of the Way","sub":"Compassionate healthcare with cutting-edge technology. Your health is our only priority.","cta1":"Book Appointment","cta2":"Find a Doctor","services_title":"Our Departments","services":[("🫀","Cardiology","Comprehensive heart care from diagnosis to surgery."),("🧠","Neurology","Advanced neurological treatment and care."),("🦷","Dental","Complete dental services from routine to complex."),("👶","Paediatrics","Specialised child healthcare for all ages.")],"stats":[("50K+","Patients"),("50+","Specialists"),("20+","Departments"),("4.9★","Rating")],"testi":[("Ramesh K.","Patient","The care here saved my life. Exceptional team."),("Sunita V.","Family","Compassionate, skilled, always available."),("Dr. Anil S.","Physician","Best facility in the region. Refer all complex cases here.")],"af":[("👨‍⚕️","Expert Specialists","50+ specialists across every department."),("🏥","Advanced Tech","State-of-the-art diagnostic and surgical."),("❤️","Patient-First","Treating the whole person, not just illness.")]},
+    "hotel":         {"tagline":"Where Luxury Meets Serenity","sub":"Extraordinary escape where world-class hospitality and breathtaking comfort come together.","cta1":"Book Your Stay","cta2":"Explore Rooms","services_title":"Our Offerings","services":[("🛏️","Luxury Rooms","Beautifully appointed rooms with stunning views."),("🍽️","Fine Dining","Award-winning restaurants serving world cuisine."),("🏊","Pool and Spa","Infinity pool and full-service wellness."),("💼","Business Centre","State-of-the-art conference facilities.")],"stats":[("20+","Years"),("10K+","Guests"),("5★","Rating"),("4.9★","Reviews")],"testi":[("Ananya P.","Honeymooner","Most magical experience of our lives."),("Rohit V.","Business","World-class facilities. My go-to every visit."),("Meera S.","Leisure","Every detail perfect. Return every year.")],"af":[("⭐","5-Star Service","Award-winning hospitality anticipates every need."),("🍽️","Signature Dining","Three restaurants, each a destination."),("🧖","World-Class Spa","A sanctuary of wellness and rejuvenation.")]},
+    "law":           {"tagline":"Justice. Expertise. Results.","sub":"Experienced legal counsel for individuals and businesses. We fight for your rights with precision.","cta1":"Free Consultation","cta2":"Our Practice Areas","services_title":"Practice Areas","services":[("🏢","Corporate Law","Business formation, contracts, M&A, governance."),("⚖️","Civil Litigation","Representation across all civil courts."),("👨‍👩‍👧","Family Law","Divorce, custody, adoption, all family matters."),("🏠","Property Law","Real estate transactions, disputes, rights.")],"stats":[("10K+","Cases Won"),("25+","Years"),("200+","Corporate Clients"),("4.9★","Rating")],"testi":[("Rajesh M.","Business Owner","Won a case others said was unwinnable."),("Priya S.","Client","Handled with total sensitivity and professionalism."),("Amit Corp","General Counsel","Trusted legal partner for 10 years.")],"af":[("⚖️","Track Record","10,000+ cases won across all courts."),("🔒","Confidential","Absolute attorney-client privilege always."),("📞","24/7 Available","Always accessible for urgent matters.")]},
+    "startup":       {"tagline":"From Zero to Category Leader","sub":"Building the future. Join us at the ground floor of what will be the defining company of our generation.","cta1":"Join Waitlist","cta2":"See How It Works","services_title":"What We Are Building","services":[("⚡","Core Product","Fastest, most intuitive solution in the market."),("🤖","AI Layer","Features that learn with every interaction."),("🔗","Platform API","Open platform developers can build on."),("🌐","Global Scale","Infrastructure for millions from day one.")],"stats":[("1K+","Beta Users"),("₹2Cr+","Pre-orders"),("3x","Monthly Growth"),("4.9★","Beta")],"testi":[("Ankit S.","Beta User","This is going to be massive. Never seen anything like it."),("Meera V.","Investor","Most impressive founding team and product."),("Rahul P.","Early Adopter","Switched day one, never looked back.")],"af":[("🚀","Hypergrowth","3x month-over-month since launch."),("🤖","AI-First","Intelligence built in, not bolted on."),("🌍","Global Vision","India first, then the world.")]},
+    "finance":       {"tagline":"Your Wealth. Our Expertise.","sub":"SEBI-registered advisors helping you build, protect, and grow wealth through disciplined planning.","cta1":"Free Consultation","cta2":"Our Services","services_title":"Our Services","services":[("📈","Wealth Mgmt","Personalised portfolios aligned to your goals."),("🏦","Mutual Funds","Curated funds and SIP planning."),("🛡️","Insurance","Comprehensive coverage for everything you have built."),("📋","Tax Planning","Legal optimisation to maximise returns.")],"stats":[("5K+","Clients"),("₹500Cr+","AUM"),("15+","Years"),("4.9★","Rating")],"testi":[("Suresh M.","Business","Portfolio grown 18% annually for 5 years."),("Kavita P.","Retired","Secured my retirement completely. Total peace of mind."),("Arun S.","Professional","Started my SIP here. Remarkable compounding.")],"af":[("📊","Research-Driven","Recommendations backed by rigorous analysis."),("🔒","SEBI Registered","Fully regulated, compliant with all guidelines."),("💼","Personalised","No generic advice. Built for your situation.")]},
+    "construction":  {"tagline":"Building Dreams. Delivering Excellence.","sub":"From homes to commercial complexes, delivered on time, on budget, to highest quality standards.","cta1":"Get a Quote","cta2":"View Projects","services_title":"Our Services","services":[("🏠","Residential","Custom homes built to highest specifications."),("🏢","Commercial","Offices, malls, industrial at scale."),("🎨","Interior Design","Complete fit-out services for every space."),("🔧","Renovation","Expert renovation of existing structures.")],"stats":[("500+","Projects"),("₹500Cr+","Value"),("20+","Years"),("4.9★","Rating")],"testi":[("Vikram S.","Developer","5 projects with them. Quality always perfect."),("Anita R.","Home Owner","My dream home, exactly as imagined."),("Raj Corp","Commercial","Office complex on time, on budget, exceptional.")],"af":[("🏗️","Turnkey","Complete management from foundation to finishing."),("⏰","On-Time","Never missed a project deadline in 20 years."),("🏆","ISO 9001","Certified processes ensuring highest quality.")]},
+    "ngo":           {"tagline":"Every Life Deserves Dignity","sub":"Compassion and action creating lasting change for communities that need it most.","cta1":"Donate Now","cta2":"Get Involved","services_title":"Our Programs","services":[("📚","Education","Scholarships for underprivileged children."),("🏥","Healthcare","Mobile clinics in remote communities."),("💼","Livelihood","Skills training and microfinance programs."),("🌱","Environment","Tree planting and water conservation.")],"stats":[("100K+","Lives Impacted"),("15+","Years"),("50+","Communities"),("4.9★","Transparency")],"testi":[("Anita S.","Donor","I can see exactly where my money goes. Real impact."),("Rahul M.","Corporate","Most transparent NGO we have ever partnered with."),("Meera P.","Volunteer","Changed my life as much as the communities.")],"af":[("✅","100% Transparent","Full financial reports published for every donor."),("🎯","Measurable","Every program evaluated against audited outcomes."),("🤝","Community-Led","Designed with and for the communities we serve.")]},
+    "photography":   {"tagline":"Capturing Moments That Last Forever","sub":"Every frame tells a story. Professional photography that transforms ordinary moments into extraordinary memories.","cta1":"Book a Session","cta2":"View Portfolio","services_title":"Our Services","services":[("📸","Wedding Photography","Your perfect day captured forever."),("👤","Portrait Sessions","Professional headshots and personal portraits."),("🏢","Commercial Photography","Product and corporate photography."),("🎬","Videography","Cinematic videos that move people.")],"stats":[("500+","Sessions"),("50K+","Photos"),("5★","Rating"),("10+","Years")],"testi":[("Sneha P.","Bride","Our wedding photos are absolutely breathtaking."),("Rajesh K.","CEO","Professional headshots exceeded all expectations."),("Priya M.","Marketing","Commercial shots drove our campaign results.")],"af":[("📷","Award-Winning","Recognised by national photography associations."),("🎨","Artistic Vision","Every photo is a work of art."),("💾","Fast Delivery","Edited photos delivered within 48 hours.")]},
+    "music":         {"tagline":"Where Music Meets Passion","sub":"Professional music production, lessons, and performances. Where talent meets opportunity.","cta1":"Book a Session","cta2":"Listen Now","services_title":"Our Services","services":[("🎵","Music Production","Professional recording and mixing."),("🎸","Music Lessons","Expert tuition for all instruments and levels."),("🎤","Live Performances","Bookings for events and concerts."),("🎼","Composition","Original music composition and arrangement.")],"stats":[("1K+","Artists",""),("500+","Albums",""),("20+","Years",""),("5★","Rating","")],"testi":[("Arjun S.","Artist","My album would not exist without this studio."),("Priya T.","Student","My guitar skills transformed in 3 months."),("Event Co.","Client","Live performance was the highlight of our event.")],"af":[("🎵","Pro Studio","State-of-the-art recording equipment."),("🏆","Award-Winning","Produced chart-topping albums."),("👨‍🏫","Expert Faculty","Industry professionals teaching real skills.")]},
+    "salon":         {"tagline":"Where Beauty Meets Expertise","sub":"Premium salon services in a luxurious setting. Look and feel your absolute best every single day.","cta1":"Book Appointment","cta2":"Our Services","services_title":"Our Services","services":[("💇","Hair Styling","Cuts, colors, and treatments by experts."),("💅","Nail Art","Manicure, pedicure, and nail artistry."),("🧖","Spa Treatments","Relaxing facials and body treatments."),("💄","Makeup","Bridal and occasion makeup by professionals.")],"stats":[("10K+","Clients"),("50+","Services"),("5★","Rating"),("8+","Years")],"testi":[("Sunita R.","Bride","Best bridal makeup I have ever seen."),("Kavita P.","Regular","Come every month. Always leave glowing."),("Meera S.","Client","The hair treatment transformed my confidence.")],"af":[("💎","Premium Products","Only top-tier professional products used."),("👩‍🎨","Expert Stylists","Internationally trained beauty professionals."),("🌿","Hygienic","Sterilized tools, fresh towels, every client.")]},
+    "travel":        {"tagline":"Your World Awaits. Let Us Take You There.","sub":"Curated travel experiences, personalised itineraries, and memories that last a lifetime.","cta1":"Plan My Trip","cta2":"View Packages","services_title":"Our Services","services":[("✈️","International Tours","Handcrafted itineraries worldwide."),("🏔️","Adventure Travel","Treks, safaris, and extreme experiences."),("🏖️","Beach Holidays","Perfect resort stays and island getaways."),("💑","Honeymoon","Romantic escapes tailored for couples.")],"stats":[("5K+","Happy Travellers"),("100+","Destinations"),("15+","Years"),("4.9★","Rating")],"testi":[("Rahul K.","Traveller","The Bali trip was flawlessly organised. Dream experience."),("Priya S.","Couple","Our honeymoon was beyond anything we imagined."),("Amit R.","Family","The Rajasthan tour was magical for our whole family.")],"af":[("🗺️","Expert Guides","Local experts in every destination."),("💰","Best Value","Unbeatable packages for unforgettable experiences."),("📞","24/7 Support","We are with you every step of your journey.")]},
+    "tech_company":  {"tagline":"Technology That Transforms Business","sub":"End-to-end technology solutions that drive digital transformation and accelerate growth.","cta1":"Get a Quote","cta2":"Our Work","services_title":"Our Services","services":[("💻","Software Development","Custom software built for your exact needs."),("📱","App Development","iOS, Android, and cross-platform mobile apps."),("☁️","Cloud Solutions","Migration, architecture, and managed cloud services."),("🔒","Cybersecurity","Protecting your business from evolving threats.")],"stats":[("500+","Projects"),("200+","Clients"),("15+","Years"),("4.9★","Rating")],"testi":[("Vikram S.","CTO","Delivered our platform on time and under budget."),("Anita R.","CEO","The app they built drives 60% of our revenue."),("Rahul P.","Founder","Best tech partner we have ever worked with.")],"af":[("⚡","Agile Delivery","Fast, iterative development with regular releases."),("🔒","Secure by Design","Security built in at every layer."),("🤝","Long-term Partner","We stay invested in your success always.")]},
+    "event":         {"tagline":"Creating Unforgettable Experiences","sub":"Every event tells a story. We make sure yours is one people never stop talking about.","cta1":"Plan Your Event","cta2":"Our Events","services_title":"Our Services","services":[("💒","Weddings","Dream weddings executed to absolute perfection."),("🏢","Corporate Events","Conferences, team outings, product launches."),("🎂","Private Parties","Birthday, anniversary, and milestone celebrations."),("🎪","Exhibitions","Trade shows and public exhibitions organised.")],"stats":[("1K+","Events"),("50K+","Guests"),("10+","Years"),("5★","Rating")],"testi":[("Priya V.","Bride","Our wedding was exactly as I dreamed. Perfect."),("TechCorp","Client","Our annual conference was flawlessly managed."),("Rahul F.","Client","Dad's 60th was the most memorable party ever.")],"af":[("🎯","Detail-Obsessed","Every element planned to absolute perfection."),("⚡","Full Service","From concept to execution, we handle everything."),("💡","Creative Vision","Unique themes and concepts for every event.")]},
+    "consulting":    {"tagline":"Strategy That Drives Results","sub":"Management consulting that transforms organisations, accelerates growth, and delivers measurable impact.","cta1":"Book Consultation","cta2":"Our Work","services_title":"Our Services","services":[("📊","Strategy Consulting","Clear roadmaps for sustainable competitive advantage."),("🔄","Operations","Process optimisation and efficiency transformation."),("👥","HR Consulting","Building high-performance teams and cultures."),("📈","Growth Advisory","Revenue acceleration and market expansion.")],"stats":[("200+","Clients"),("₹100Cr+","Value Delivered"),("15+","Years"),("4.9★","Rating")],"testi":[("Vikram M.","CEO","Their strategy doubled our revenue in 18 months."),("Anita S.","MD","Operations overhaul saved us ₹2Cr annually."),("Rahul T.","Founder","The best business decision I ever made.")],"af":[("🎯","Outcome-Focused","Every engagement measured against clear results."),("📊","Data-Driven","Insights backed by rigorous research and analysis."),("🤝","Embedded Partners","We work inside your team, not alongside it.")]},
+    "fashion":       {"tagline":"Wear Your Story","sub":"Distinctive fashion that speaks before you do. Crafted with intention, worn with confidence.","cta1":"Shop Collection","cta2":"View Lookbook","services_title":"Our Collections","services":[("👗","Women's Wear","Contemporary designs for the modern woman."),("👔","Men's Wear","Sharp, sophisticated pieces for every occasion."),("👜","Accessories","The perfect finishing touch for every look."),("✂️","Custom Design","Bespoke pieces tailored exactly to you.")],"stats":[("10K+","Customers"),("500+","Pieces"),("5★","Rating"),("5+","Years")],"testi":[("Sneha P.","Influencer","The quality and design are absolutely unmatched."),("Kavita R.","Stylist","My clients always ask about pieces from this brand."),("Meera S.","Customer","I have never received so many compliments.")],"af":[("🌿","Sustainable","Ethically sourced, sustainably produced always."),("✂️","Bespoke","Custom tailoring available for every piece."),("💎","Premium Quality","Fabrics and craftsmanship that last forever.")]},
+    "interior":      {"tagline":"Transform Your Space. Elevate Your Life.","sub":"Thoughtful interior design that turns any space into a place you truly love to be.","cta1":"Get a Consultation","cta2":"View Projects","services_title":"Our Services","services":[("🏠","Residential Design","Homes that reflect your personality perfectly."),("🏢","Commercial Spaces","Offices and retail that inspire productivity."),("🛋️","Furniture Design","Custom furniture designed and built for you."),("🏗️","Project Management","Complete turnkey interior delivery.")],"stats":[("300+","Projects"),("₹50Cr+","Work Done"),("10+","Years"),("5★","Rating")],"testi":[("Rahul K.","Home Owner","Transformed my apartment beyond imagination."),("TechCorp","Client","Our new office increased team productivity 40%."),("Priya M.","Home Owner","The design perfectly captures our family's soul.")],"af":[("🎨","Creative Vision","Unique concepts tailored to every client."),("⏰","On Schedule","Every project delivered on time without fail."),("💎","Premium Materials","Only the finest materials for lasting beauty.")]},
+    "bakery":        {"tagline":"Baked With Love. Tasted With Joy.","sub":"Artisan baked goods made fresh daily. From morning pastries to celebration cakes.","cta1":"Order Now","cta2":"View Menu","services_title":"Our Specialties","services":[("🎂","Custom Cakes","Celebration and wedding cakes designed for you."),("🥐","Pastries","Fresh croissants, danish, and artisan pastries."),("🍞","Artisan Bread","Sourdough, focaccia, whole grain breads."),("🍪","Cookies and Sweets","Handcrafted cookies, macarons, and confections.")],"stats":[("5K+","Happy Customers"),("50+","Products"),("5★","Rating"),("8+","Years")],"testi":[("Priya S.","Bride","Our wedding cake was the centrepiece of the day."),("Rahul K.","Regular","Best sourdough I have ever had. Come every week."),("Anita V.","Customer","The custom birthday cake made my son's day perfect.")],"af":[("🌾","Fresh Daily","Everything baked fresh every single morning."),("🥚","Natural Ingredients","No preservatives, no artificial additives ever."),("❤️","Made With Love","Every item crafted with genuine care and passion.")]},
+    "coffee":        {"tagline":"Your Perfect Cup Awaits","sub":"Specialty coffee sourced from the world's finest farms. Brewed with precision, served with passion.","cta1":"Visit Us","cta2":"Order Online","services_title":"What We Offer","services":[("☕","Specialty Coffee","Single origin and blends from world's best farms."),("🍵","Tea Selection","Premium loose leaf teas curated globally."),("🥪","Food Menu","Fresh snacks and meals to complement your coffee."),("📦","Subscriptions","Monthly coffee subscriptions delivered fresh.")],"stats":[("10K+","Cups Served"),("20+","Origins"),("5★","Rating"),("5+","Years")],"testi":[("Vikram P.","Regular","Best flat white I have had outside of Melbourne."),("Sunita R.","Remote Worker","My permanent office. Perfect coffee, perfect vibe."),("Rahul M.","Coffee Lover","Their single origin Ethiopian is a revelation.")],"af":[("🌍","Direct Trade","We buy direct from farmers, fairly priced."),("🔬","Precision Brewing","Every cup dialled in to perfect extraction."),("🌿","Sustainable","Compostable cups, ethical sourcing always.")]},
+    "yoga":          {"tagline":"Find Your Inner Peace. Transform Your Life.","sub":"A sanctuary for the mind, body, and soul. All levels welcome. Transform from the inside out.","cta1":"Book a Class","cta2":"View Schedule","services_title":"Our Classes","services":[("🧘","Yoga Classes","Hatha, vinyasa, restorative, yin, and more."),("🧠","Meditation","Guided meditation for clarity and calm."),("💨","Breathwork","Pranayama and breathing techniques."),("🌿","Wellness Retreats","Weekend and week-long transformational retreats.")],"stats":[("2K+","Students"),("20+","Classes/Week"),("10+","Instructors"),("5★","Rating")],"testi":[("Priya S.","Student","My anxiety is completely transformed. Grateful."),("Rahul K.","Meditator","The meditation practice changed my leadership."),("Anita V.","Retreater","The retreat was the most profound experience of my life.")],"af":[("🏆","Certified","Internationally certified instructors."),("🌿","Holistic","Mind, body, and spirit treated as one."),("❤️","Inclusive","All bodies, all levels, always welcome here.")]},
+    "pet":           {"tagline":"Because They Deserve the Best","sub":"Premium pet care, grooming, and products for your furry family members. They are family.","cta1":"Book Service","cta2":"Shop Now","services_title":"Our Services","services":[("✂️","Pet Grooming","Bathing, trimming, and styling for all breeds."),("🏥","Veterinary Care","Health checkups, vaccinations, and treatment."),("🛏️","Pet Boarding","Safe, loving home away from home for pets."),("🦮","Dog Training","Positive reinforcement obedience training.")],"stats":[("5K+","Happy Pets"),("50+","Services"),("10+","Years"),("5★","Rating")],"testi":[("Rahul K.","Dog Owner","My lab looks and smells amazing after every groom."),("Priya S.","Cat Owner","The vet here is patient, thorough, and so kind."),("Amit M.","Pet Parent","Boarding here gives total peace of mind when travelling.")],"af":[("❤️","Animal Lovers","Every team member is a passionate pet lover."),("🔬","Expert Care","Qualified vets and certified groomers only."),("🏠","Safe Environment","Clean, safe, and loving care always.")]},
+    "book":          {"tagline":"Every Book Is a New World","sub":"Curated books for curious minds. Rare finds, bestsellers, and literary gems all in one place.","cta1":"Browse Books","cta2":"Visit Us","services_title":"What We Offer","services":[("📚","Fiction and Literature","Contemporary and classic fiction from worldwide."),("📖","Non-Fiction","Business, self-help, history, science, and more."),("👶","Children's Books","Inspiring books for young readers of all ages."),("☕","Reading Cafe","Browse books with a perfect cup of coffee.")],"stats":[("10K+","Titles"),("5K+","Members"),("15+","Years"),("5★","Rating")],"testi":[("Priya M.","Book Lover","Found books here I could not find anywhere else."),("Rahul T.","Author","The best independent bookstore I have ever visited."),("Anita S.","Parent","My children's love of reading started here.")],"af":[("📚","Curated Selection","Every book personally selected by our team."),("🤝","Community","Monthly book clubs and author events."),("🌍","Global Titles","Books from publishers worldwide, rare and new.")]},
+    "gaming":        {"tagline":"Level Up Your Game","sub":"The ultimate gaming community. Tournaments, coaching, gear, and a tribe of passionate players.","cta1":"Join Now","cta2":"View Games","services_title":"What We Offer","services":[("🎮","Gaming Tournaments","Competitive esports events with real prizes."),("🏆","Pro Coaching","Learn from professional esports players."),("🖥️","Gaming Cafe","Premium rigs, low latency, perfect setups."),("🎯","Game Reviews","Expert reviews and gaming content.")],"stats":[("10K+","Players"),("100+","Tournaments"),("5+","Years"),("4.9★","Rating")],"testi":[("Arjun P.","Pro Gamer","The coaching here took me to national level."),("Vikram S.","Casual Gamer","Best gaming cafe setup I have ever played on."),("Rahul K.","Parent","My son's confidence transformed through gaming here.")],"af":[("🏆","Pro Community","Connect with professional and aspiring players."),("🖥️","Premium Rigs","High-end gaming setups with zero lag."),("🎯","Expert Coaching","Certified coaches from professional esports.")]},
+    "crypto":        {"tagline":"The Future of Finance Is Here","sub":"Your trusted gateway to Web3, DeFi, and digital assets. Secure, simple, and powerful.","cta1":"Get Started","cta2":"Learn More","services_title":"Our Platform","services":[("₿","Crypto Exchange","Trade 500+ cryptocurrencies securely."),("🏦","DeFi Protocols","Earn yield through decentralised finance."),("🖼️","NFT Marketplace","Discover, create, and trade digital art."),("🔐","Secure Wallet","Military-grade security for your assets.")],"stats":[("100K+","Users"),("$1B+","Volume"),("500+","Tokens"),("4.8★","Rating")],"testi":[("Rahul K.","Investor","Clearest and safest crypto platform in India."),("Priya S.","Trader","The interface makes complex trading effortless."),("Amit M.","NFT Creator","Sold my first NFT collection here. Life-changing.")],"af":[("🔐","Bank-Grade Security","Military encryption for every transaction."),("⚡","Instant Settlement","Trades settled in seconds, not days."),("📊","Advanced Analytics","Professional tools for serious investors.")]},
+    "wedding":       {"tagline":"Your Perfect Day. Our Greatest Joy.","sub":"Creating wedding experiences so perfect they feel like dreams you never want to wake from.","cta1":"Plan Your Wedding","cta2":"View Gallery","services_title":"Our Services","services":[("💒","Full Planning","Complete wedding management from concept to day."),("📸","Photography","Cinematic wedding photography and videography."),("🌸","Decor and Florals","Breathtaking decorations and floral design."),("🍽️","Catering","Exquisite menus for every cuisine and taste.")],"stats":[("500+","Weddings"),("50K+","Happy Guests"),("10+","Years"),("5★","Rating")],"testi":[("Priya and Rahul","Couple","Our wedding was beyond any dream we had."),("Sunita P.","Bride's Mother","Every detail was handled with such love and care."),("Amit V.","Groom","Best decision we made was hiring this team.")],"af":[("💎","Luxury Execution","Every element crafted to absolute perfection."),("🤝","Personal Touch","Your wedding planner is dedicated solely to you."),("📞","Always On Call","Available 24/7 throughout your planning journey.")]},
+    "children":      {"tagline":"Where Every Child Shines","sub":"Nurturing environments where children discover, learn, play, and grow into their best selves.","cta1":"Enroll Now","cta2":"Visit Us","services_title":"Our Programs","services":[("📚","Early Education","Holistic learning for children aged 2 to 6."),("🎨","Creative Arts","Painting, craft, music, and drama programs."),("⚽","Sports and Play","Physical development through structured play."),("🧑‍💻","STEM Programs","Science, tech, engineering, math for kids.")],"stats":[("500+","Children"),("50+","Programs"),("10+","Years"),("5★","Rating")],"testi":[("Priya S.","Parent","My son has flourished academically and socially."),("Rahul K.","Father","The teachers genuinely care about every child."),("Anita M.","Mother","The best investment we made for our daughter.")],"af":[("❤️","Child-First","Every decision made in the best interest of children."),("👩‍🏫","Expert Teachers","Qualified educators with child psychology training."),("🔒","Safe Environment","CCTV, secure premises, strict safety protocols.")]},
+    "dental":        {"tagline":"Your Smile. Our Expertise.","sub":"Advanced dental care in a comfortable, anxiety-free environment. Your perfect smile awaits.","cta1":"Book Appointment","cta2":"Our Treatments","services_title":"Our Treatments","services":[("🦷","General Dentistry","Checkups, cleaning, and preventive care."),("😁","Cosmetic Dentistry","Whitening, veneers, and smile makeovers."),("🦾","Implants","Permanent tooth replacement solutions."),("😬","Orthodontics","Braces and Invisalign for perfect alignment.")],"stats":[("10K+","Patients"),("20+","Services"),("15+","Years"),("5★","Rating")],"testi":[("Rahul K.","Patient","My smile transformation was absolutely incredible."),("Priya S.","Patient","The most pain-free dental experience I have had."),("Amit M.","Parent","My children actually look forward to visits here.")],"af":[("🔬","Advanced Tech","Latest dental technology for precise treatment."),("💊","Pain-Free","Anxiety-free care with modern pain management."),("😁","Smile Guarantee","We guarantee results or we make it right.")]},
+    "cleaning":      {"tagline":"Spotless Spaces. Happy Places.","sub":"Professional cleaning services that transform your home or office into a pristine sanctuary.","cta1":"Book a Clean","cta2":"Our Services","services_title":"Our Services","services":[("🏠","Home Cleaning","Deep and regular cleaning for residences."),("🏢","Office Cleaning","Professional commercial cleaning services."),("🧹","Deep Clean","Intensive cleaning for move-in and move-out."),("🌿","Eco Cleaning","Green cleaning with non-toxic products.")],"stats":[("5K+","Clients"),("50K+","Cleans Done"),("8+","Years"),("5★","Rating")],"testi":[("Priya S.","Home Owner","My home has never been so clean. Exceptional."),("TechCorp","Manager","Our office is always spotless. The team is reliable."),("Rahul K.","Landlord","Move-out cleans are perfect every time.")],"af":[("✅","Verified Staff","All staff background-checked and insured."),("🌿","Eco-Friendly","Non-toxic, safe products for your family."),("⏰","Reliable","Always on time, always thorough, always.")]},
+    "solar":         {"tagline":"Harness the Power of the Sun","sub":"Clean, renewable solar energy solutions that reduce your bills and help save the planet.","cta1":"Get Free Quote","cta2":"Our Solutions","services_title":"Our Solutions","services":[("☀️","Solar Installation","Residential and commercial solar panel systems."),("🔋","Battery Storage","Store energy and use it when you need it."),("📊","Energy Audit","Free analysis of your energy consumption."),("🔧","Maintenance","Regular servicing to maximise efficiency.")],"stats":[("2K+","Installations"),("500MW+","Installed"),("10+","Years"),("4.9★","Rating")],"testi":[("Rahul K.","Home Owner","My electricity bill dropped 80%. Incredible ROI."),("Vikram S.","Factory Owner","Best investment for our manufacturing plant."),("Priya M.","School Principal","Our school is fully energy independent now.")],"af":[("💰","Save 80%","Average 80% reduction in electricity bills."),("🌍","Planet-Positive","Every installation reduces carbon footprint."),("⚡","25-Year Warranty","Panels guaranteed for 25 years performance.")]},
+    "automobile_service": {"tagline":"Your Car Deserves the Best Care","sub":"Expert automotive service you can trust. From oil changes to complete rebuilds, done right every time.","cta1":"Book Service","cta2":"Our Services","services_title":"Our Services","services":[("🔧","Servicing","Complete vehicle servicing and maintenance."),("🚘","Repairs","Expert diagnosis and repair of all issues."),("🎨","Detailing","Professional detailing inside and out."),("🔋","Electrical","Advanced diagnostics and electrical repair.")],"stats":[("10K+","Cars Serviced"),("20+","Technicians"),("15+","Years"),("4.9★","Rating")],"testi":[("Rahul K.","Driver","Never going to another workshop. These guys are the best."),("Priya S.","Owner","My car runs better than when I bought it. Amazing."),("Amit M.","Fleet Owner","All 20 of our company vehicles serviced here.")],"af":[("🔧","Expert Technicians","Manufacturer-trained mechanics for all brands."),("⚡","Fast Turnaround","Most services completed same day."),("✅","Guaranteed Work","All work backed by our quality guarantee.")]},
+    "logistics":     {"tagline":"Delivering Reliability, Every Mile","sub":"End-to-end logistics solutions that keep your supply chain moving efficiently and on time.","cta1":"Get a Quote","cta2":"Our Services","services_title":"Our Services","services":[("🚚","Last Mile Delivery","Fast and reliable delivery to your customers."),("🏭","Warehousing","Secure storage and inventory management."),("✈️","Air Freight","Time-sensitive international cargo solutions."),("🚢","Sea Freight","Cost-effective bulk shipping worldwide.")],"stats":[("10K+","Deliveries/Day"),("50+","Cities"),("15+","Years"),("4.9★","Rating")],"testi":[("Vikram S.","E-commerce","Their delivery reliability transformed our customer ratings."),("Anita R.","Manufacturer","Supply chain has never run this smoothly."),("Rahul M.","Importer","Sea freight rates and reliability are unmatched.")],"af":[("⏰","On-Time","99.8% on-time delivery rate across all routes."),("📍","Real-Time","Live tracking for every shipment always."),("🔐","Insured","Full insurance coverage on every consignment.")]},
+    "agriculture":   {"tagline":"Nourishing the Nation from Seed to Table","sub":"Modern agricultural solutions that help farmers grow more, earn more, and sustain our planet.","cta1":"Get Started","cta2":"Our Products","services_title":"Our Services","services":[("🌾","Premium Seeds","High-yield, disease-resistant crop varieties."),("🌱","Organic Inputs","Natural fertilisers and pest management."),("📱","AgriTech Platform","Digital tools for precision farming."),("🚚","Market Linkage","Direct connection to buyers for better prices.")],"stats":[("10K+","Farmers"),("5+","States"),("10+","Years"),("4.9★","Rating")],"testi":[("Ravi P.","Farmer","My wheat yield increased 40% using their seeds."),("Suresh K.","Cooperative","The platform helps us get fair market prices."),("Anita M.","Organic Farmer","Their natural inputs transformed my soil health.")],"af":[("🔬","Science-Backed","Agronomists supporting every farmer."),("💰","Better Prices","Direct market linkage for maximum income."),("🌍","Sustainable","Practices that protect soil for future generations.")]},
+    "security":      {"tagline":"Protect What Matters Most","sub":"Comprehensive security solutions for homes, businesses, and institutions. Your safety is our mission.","cta1":"Get Assessment","cta2":"Our Solutions","services_title":"Our Solutions","services":[("📷","CCTV Systems","HD surveillance systems for 24/7 monitoring."),("👮","Manned Guards","Trained security personnel for your premises."),("🔐","Access Control","Smart access management systems."),("🔥","Fire Safety","Detection, suppression, and evacuation systems.")],"stats":[("1K+","Clients"),("5K+","Guards"),("15+","Years"),("4.9★","Rating")],"testi":[("Vikram S.","Mall Owner","Their security system paid for itself in month one."),("Anita R.","School Principal","Our parents have complete peace of mind now."),("Rahul K.","Factory Owner","Zero security incidents since partnering with them.")],"af":[("🛡️","24/7 Response","Round-the-clock monitoring and rapid response."),("👮","Trained Guards","All personnel certified and background-verified."),("🔬","Latest Tech","Cutting-edge security technology deployed.")]},
+    "mental_health": {"tagline":"Your Mental Health Matters","sub":"Compassionate, confidential therapy and counselling. You deserve support, and help is here.","cta1":"Book Session","cta2":"Meet Our Team","services_title":"Our Services","services":[("🧠","Individual Therapy","One-on-one sessions with qualified therapists."),("👫","Couples Counselling","Strengthen your relationship with expert guidance."),("👨‍👩‍👧","Family Therapy","Healing and communication for families."),("📱","Online Sessions","Convenient therapy from the comfort of home.")],"stats":[("5K+","Clients Helped"),("20+","Therapists"),("10+","Years"),("5★","Rating")],"testi":[("Priya S.","Client","My anxiety is manageable for the first time in years."),("Rahul K.","Couple","Our marriage is stronger than ever after counselling."),("Anita M.","Client","The online sessions fit perfectly into my busy life.")],"af":[("🔐","Confidential","Absolute privacy and confidentiality guaranteed."),("❤️","Non-Judgmental","A safe space to be completely yourself."),("👩‍⚕️","Qualified","All therapists hold international credentials.")]},
+    "business":      {"tagline":"Excellence Delivered Every Single Time","sub":"Deep expertise, bold execution, and an obsession with results. We help businesses grow and win.","cta1":"Get Started","cta2":"Learn More","services_title":"What We Offer","services":[("⚡","Fast Results","Exceptional outcomes ahead of schedule."),("🎯","Results-Obsessed","Every action tied to your measurable goals."),("🤝","True Partnership","We are invested in your success as deeply as you are."),("🛡️","Reliable","100+ clients trust us with critical work.")],"stats":[("100+","Projects"),("50+","Clients"),("4.9★","Rating"),("5+","Years")],"testi":[("Rohit K.","MD","Delivered as promised, ahead of schedule."),("Nisha A.","COO","Best vendor relationship we have ever had."),("Amit S.","Founder","A game-changer for our business growth.")],"af":[("⚡","Fast Delivery","Results delivered faster than any competitor."),("🎯","ROI-Focused","Every engagement measured against business impact."),("🛡️","Proven Track Record","5+ years, 100+ clients, zero failures.")]},
 }
 
-def get_content(cat: str) -> dict:
-    return CONTENT.get(cat, CONTENT["business"])
+def get_content_for_category(cat: str) -> dict:
+    """Get content, falling back to business if category not in CONTENT."""
+    return CONTENT.get(cat, CONTENT.get("business"))
 
-# ── SECTION GENERATORS ────────────────────────────────────────────────────────
-def make_contact_section(ud: dict, ds: dict, features: dict, name: str) -> str:
-    phone = ud["phone"] or "+91 99999 99999"
-    email_addr = ud["email"] or f"hello@{re.sub(chr(91)+chr(94)+chr(97)+chr(122)+chr(48)+chr(57)+chr(93),'',name.lower())}.com"
-    address = ud["address"] or "123 Business Street, Mumbai, India"
-    hours = ud["opening_hours"] or "Mon–Sat: 9 AM – 8 PM | Sun: 10 AM – 6 PM"
-    wa = ud["whatsapp"] or phone
-    is_dark = ds["dark"]
-    card_bg = "rgba(255,255,255,0.04)" if is_dark else ds["ca"]
-    input_bg = "rgba(255,255,255,0.07)" if is_dark else "#ffffff"
-    input_border = ds["br"]
-    input_color = ds["tx"]
-    map_query = ud["map_location"] or urllib.parse.quote(address)
-
-    contact_info = f"""
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-bottom:40px">
-      <div style="background:{card_bg};border:1px solid {ds["br"]};border-radius:20px;padding:24px;text-align:center">
-        <div style="font-size:2rem;margin-bottom:12px">📞</div>
-        <h4 style="color:{ds["tx"]};font-weight:700;font-size:0.9rem;margin-bottom:6px">Call Us</h4>
-        <a href="tel:{phone}" style="color:{ds["pr"]};text-decoration:none;font-size:0.9rem;font-weight:600">{phone}</a>
-      </div>
-      <div style="background:{card_bg};border:1px solid {ds["br"]};border-radius:20px;padding:24px;text-align:center">
-        <div style="font-size:2rem;margin-bottom:12px">📧</div>
-        <h4 style="color:{ds["tx"]};font-weight:700;font-size:0.9rem;margin-bottom:6px">Email Us</h4>
-        <a href="mailto:{email_addr}" style="color:{ds["pr"]};text-decoration:none;font-size:0.85rem;font-weight:600;word-break:break-all">{email_addr}</a>
-      </div>
-      <div style="background:{card_bg};border:1px solid {ds["br"]};border-radius:20px;padding:24px;text-align:center">
-        <div style="font-size:2rem;margin-bottom:12px">📍</div>
-        <h4 style="color:{ds["tx"]};font-weight:700;font-size:0.9rem;margin-bottom:6px">Visit Us</h4>
-        <p style="color:{ds["mu"]};font-size:0.82rem;line-height:1.5">{address}</p>
-      </div>
-      <div style="background:{card_bg};border:1px solid {ds["br"]};border-radius:20px;padding:24px;text-align:center">
-        <div style="font-size:2rem;margin-bottom:12px">⏰</div>
-        <h4 style="color:{ds["tx"]};font-weight:700;font-size:0.9rem;margin-bottom:6px">Hours</h4>
-        <p style="color:{ds["mu"]};font-size:0.82rem;line-height:1.5">{hours}</p>
-      </div>
-    </div>"""
-
-    form_html = ""
-    if features.get("contact_form") or features.get("booking_form"):
-        form_label = "Book Appointment" if features.get("booking_form") else "Send Message"
-        extra_fields = ""
-        if features.get("booking_form"):
-            extra_fields = f"""
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div>
-              <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Preferred Date</label>
-              <input type="date" style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none"/>
-            </div>
-            <div>
-              <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Preferred Time</label>
-              <input type="time" style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none"/>
-            </div>
-          </div>"""
-        form_html = f"""
-        <form onsubmit="handleForm(event)" style="display:flex;flex-direction:column;gap:16px;background:{card_bg};border:1px solid {ds["br"]};border-radius:24px;padding:32px;margin-top:32px">
-          <h3 style="font-size:1.2rem;font-weight:800;color:{ds["tx"]};margin-bottom:8px">{form_label}</h3>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div>
-              <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Full Name *</label>
-              <input type="text" placeholder="Your name" required style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none"/>
-            </div>
-            <div>
-              <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Phone Number *</label>
-              <input type="tel" placeholder="+91 00000 00000" required style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none"/>
-            </div>
-          </div>
-          <div>
-            <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Email Address</label>
-            <input type="email" placeholder="your@email.com" style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none"/>
-          </div>
-          {extra_fields}
-          <div>
-            <label style="display:block;font-size:0.8rem;font-weight:600;color:{ds["mu"]};margin-bottom:6px">Message</label>
-            <textarea placeholder="How can we help you?" rows="4" style="width:100%;padding:12px 16px;background:{input_bg};border:1px solid {input_border};border-radius:12px;color:{input_color};font-size:0.9rem;outline:none;resize:vertical"></textarea>
-          </div>
-          <button type="submit" style="background:{ds["pr"]};color:#fff;border:none;padding:14px 32px;border-radius:100px;font-weight:800;font-size:0.9rem;cursor:pointer;transition:all 0.3s" onmouseover="this.style.filter=\'brightness(1.1)\'" onmouseout="this.style.filter=\'\'">
-            {form_label} →
-          </button>
-          <div id="formSuccess" style="display:none;background:#dcfce7;border:1px solid #a7f3d0;border-radius:12px;padding:16px;text-align:center;color:#065f46;font-weight:600">
-            ✅ Thank you! We will contact you within 24 hours.
-          </div>
-        </form>"""
-
-    map_html = ""
-    if features.get("map"):
-        map_html = f"""
-        <div style="margin-top:32px;border-radius:24px;overflow:hidden;border:1px solid {ds["br"]}">
-          <iframe
-            src="https://maps.google.com/maps?q={map_query}&output=embed"
-            width="100%" height="350" style="border:0;display:block"
-            allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade">
-          </iframe>
-        </div>"""
-
-    return f"""
-    <section style="padding:100px 5%;background:{ds["bg"]}" id="contact">
-      <div style="max-width:1280px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Contact Us</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Get In <span style="color:{ds["pr"]}">Touch</span></h2>
-          <p style="color:{ds["mu"]};margin-top:12px;font-size:0.95rem">We would love to hear from you. Reach out any time.</p>
-        </div>
-        {contact_info}
-        {form_html}
-        {map_html}
-      </div>
-    </section>"""
-
-def make_newsletter_section(ds: dict) -> str:
-    is_dark = ds["dark"]
-    input_bg = "rgba(255,255,255,0.1)" if is_dark else "#ffffff"
-    return f"""
-    <section style="padding:80px 5%;background:{ds["ca"]}" id="newsletter">
-      <div style="max-width:600px;margin:0 auto;text-align:center">
-        <div style="font-size:2.5rem;margin-bottom:16px">📬</div>
-        <h2 style="font-family:'{ds["font"]}',serif;font-size:2rem;font-weight:900;color:{ds["tx"]};margin-bottom:12px">Stay in the Loop</h2>
-        <p style="color:{ds["mu"]};margin-bottom:32px;font-size:0.95rem">Get the latest updates, offers, and insights delivered straight to your inbox.</p>
-        <form onsubmit="handleNewsletter(event)" style="display:flex;gap:12px;max-width:480px;margin:0 auto;flex-wrap:wrap">
-          <input type="email" placeholder="Enter your email address" required
-            style="flex:1;min-width:200px;padding:14px 20px;background:{input_bg};border:1px solid {ds["br"]};border-radius:100px;color:{ds["tx"]};font-size:0.9rem;outline:none"/>
-          <button type="submit"
-            style="background:{ds["pr"]};color:#fff;border:none;padding:14px 28px;border-radius:100px;font-weight:800;font-size:0.9rem;cursor:pointer;white-space:nowrap">
-            Subscribe →
-          </button>
-        </form>
-        <div id="nlSuccess" style="display:none;margin-top:16px;color:{ds["pr"]};font-weight:600">✅ You are subscribed! Welcome aboard.</div>
-        <p style="color:{ds["mu"]};font-size:0.75rem;margin-top:16px">No spam ever. Unsubscribe anytime. We respect your privacy.</p>
-      </div>
-    </section>"""
-
-def make_pricing_section(ds: dict, con: dict, name: str) -> str:
-    is_dark = ds["dark"]
-    plans = [
-        ("Starter","Free","Perfect to get started","✓ Basic features\n✓ 5 users\n✓ Email support\n✓ 1GB storage","Get Started"),
-        ("Professional",f"₹{2999:,}/mo","For growing teams","✓ All Starter features\n✓ 50 users\n✓ Priority support\n✓ 50GB storage\n✓ Analytics","Start Trial"),
-        ("Enterprise","Custom","For large organisations","✓ All Pro features\n✓ Unlimited users\n✓ Dedicated support\n✓ Unlimited storage\n✓ Custom integrations","Contact Sales"),
-    ]
-    cards = ""
-    for i,(plan_name, price, desc, features_list, cta_text) in enumerate(plans):
-        is_highlight = i == 1
-        bg = ds["pr"] if is_highlight else ("rgba(255,255,255,0.04)" if is_dark else "#ffffff")
-        text_col = "#ffffff" if is_highlight else ds["tx"]
-        muted_col = "rgba(255,255,255,0.7)" if is_highlight else ds["mu"]
-        btn_style = f"background:#fff;color:{ds['pr']}" if is_highlight else f"background:{ds['pr']};color:#fff"
-        popular = '<div style="position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:#fff;color:{};font-size:0.7rem;font-weight:800;padding:6px 16px;border-radius:100px;white-space:nowrap">⭐ Most Popular</div>'.format(ds["pr"]) if is_highlight else ""
-        feat_html = "".join([f'<li style="padding:6px 0;font-size:0.85rem;color:{muted_col}">{f.strip()}</li>' for f in features_list.split("\\n") if f.strip()])
-        cards += f"""
-        <div style="position:relative;background:{bg};border:2px solid {ds["pr"] if is_highlight else ds["br"]};border-radius:24px;padding:36px;{"transform:scale(1.05);" if is_highlight else ""}transition:all 0.3s">
-          {popular}
-          <h3 style="font-size:1.2rem;font-weight:800;color:{text_col};margin-bottom:8px">{plan_name}</h3>
-          <p style="font-size:0.8rem;color:{muted_col};margin-bottom:24px">{desc}</p>
-          <div style="font-family:'{ds["font"]}',serif;font-size:2.4rem;font-weight:900;color:{text_col};margin-bottom:24px">{price}</div>
-          <ul style="list-style:none;margin-bottom:32px">{feat_html}</ul>
-          <button onclick="alert('Contact us to get started with {plan_name}!')" style="{btn_style};border:none;padding:14px 24px;border-radius:100px;font-weight:800;font-size:0.88rem;cursor:pointer;width:100%">{cta_text} →</button>
-        </div>"""
-    return f"""
-    <section style="padding:100px 5%;background:{ds["ca"]}" id="pricing">
-      <div style="max-width:1280px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Pricing</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Simple, <span style="color:{ds["pr"]}">Transparent Pricing</span></h2>
-          <p style="color:{ds["mu"]};margin-top:12px">No hidden fees. No lock-in. Cancel anytime.</p>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px;align-items:center">{cards}</div>
-      </div>
-    </section>"""
-
-def make_faq_section(ds: dict) -> str:
-    faqs = [
-        ("How do I get started?","Simply click the Get Started button and follow the easy setup process. It takes less than 5 minutes to be up and running completely."),
-        ("What payment methods do you accept?","We accept all major credit and debit cards, UPI, net banking, and bank transfers for enterprise customers."),
-        ("Is there a free trial available?","Yes, we offer a completely free plan with no credit card required. You can upgrade anytime when you are ready."),
-        ("How does your support work?","We provide email support on all plans and priority phone support on Professional and Enterprise plans. Response within 24 hours guaranteed."),
-        ("Can I cancel anytime?","Absolutely. There are no long-term contracts or cancellation fees. You can cancel your subscription at any time with just one click."),
-        ("Is my data secure and private?","Yes, we use industry-standard encryption and are fully compliant with data protection regulations. Your data is always yours."),
-    ]
-    items = ""
-    for q, a in faqs:
-        items += f"""
-        <div class="faq-item" style="border-bottom:1px solid {ds["br"]};padding:20px 0">
-          <button onclick="toggleFAQ(this)" style="width:100%;text-align:left;background:none;border:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:16px">
-            <span style="font-weight:700;font-size:0.95rem;color:{ds["tx"]}">{q}</span>
-            <span style="font-size:1.4rem;color:{ds["pr"]};flex-shrink:0;transition:transform 0.3s">+</span>
-          </button>
-          <div class="faq-answer" style="display:none;padding-top:12px">
-            <p style="color:{ds["mu"]};font-size:0.88rem;line-height:1.7">{a}</p>
-          </div>
-        </div>"""
-    return f"""
-    <section style="padding:100px 5%;background:{ds["bg"]}" id="faq">
-      <div style="max-width:800px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ FAQ</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Frequently Asked <span style="color:{ds["pr"]}">Questions</span></h2>
-        </div>
-        <div>{items}</div>
-      </div>
-    </section>"""
-
-def make_team_section(ds: dict) -> str:
-    members = [
-        ("CEO","Founder and Chief Executive","10+ years experience","👤"),
-        ("CTO","Chief Technology Officer","Tech visionary and architect","👤"),
-        ("COO","Chief Operations Officer","Operations and growth expert","👤"),
-        ("CMO","Chief Marketing Officer","Brand and growth strategist","👤"),
-    ]
-    cards = ""
-    for role, title, desc, icon in members:
-        seed_v = abs(hash(role)) % 99999
-        cards += f"""
-        <div style="background:{ds["ca"]};border:1px solid {ds["br"]};border-radius:24px;padding:32px;text-align:center;transition:all 0.3s" onmouseover="this.style.transform=\'translateY(-6px)\';this.style.borderColor=\'{ds["pr"]}\'" onmouseout="this.style.transform=\'\';this.style.borderColor=\'{ds["br"]}\'">
-          <div style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,{ds["pr"]},{ds["ac"]});margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-size:2rem">{icon}</div>
-          <h4 style="font-weight:800;font-size:1rem;color:{ds["tx"]};margin-bottom:4px">{role}</h4>
-          <p style="font-size:0.82rem;color:{ds["pr"]};font-weight:600;margin-bottom:8px">{title}</p>
-          <p style="font-size:0.78rem;color:{ds["mu"]}">{desc}</p>
-          <div style="display:flex;justify-content:center;gap:12px;margin-top:16px">
-            <a href="#" style="color:{ds["pr"]};font-size:0.8rem">LinkedIn →</a>
-            <a href="#" style="color:{ds["mu"]};font-size:0.8rem">Twitter</a>
-          </div>
-        </div>"""
-    return f"""
-    <section style="padding:100px 5%;background:{ds["ca"]}" id="team">
-      <div style="max-width:1280px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Our Team</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Meet the <span style="color:{ds["pr"]}">People Behind It</span></h2>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px">{cards}</div>
-      </div>
-    </section>"""
-
-def make_social_section(ud: dict, ds: dict) -> str:
-    socials = []
-    if ud["instagram"]: socials.append(("📸","Instagram",f"@{ud['instagram']}",f"https://instagram.com/{ud['instagram']}","Follow on Instagram"))
-    if ud["facebook"]: socials.append(("👍","Facebook",f"/{ud['facebook']}",f"https://facebook.com/{ud['facebook']}","Like on Facebook"))
-    if ud["twitter"]: socials.append(("🐦","Twitter / X",f"@{ud['twitter']}",f"https://twitter.com/{ud['twitter']}","Follow on X"))
-    if ud["linkedin"]: socials.append(("💼","LinkedIn",f"/{ud['linkedin']}",f"https://linkedin.com/in/{ud['linkedin']}","Connect on LinkedIn"))
-    if ud["youtube"]: socials.append(("▶️","YouTube",f"/{ud['youtube']}",f"https://youtube.com/{ud['youtube']}","Subscribe on YouTube"))
-    if not socials:
-        return ""
-    cards = ""
-    for icon, platform, handle, link, cta in socials:
-        cards += f"""
-        <a href="{link}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:16px;background:{ds["ca"]};border:1px solid {ds["br"]};border-radius:20px;padding:20px 24px;text-decoration:none;transition:all 0.3s" onmouseover="this.style.borderColor=\'{ds["pr"]}\';this.style.transform=\'translateY(-3px)\'" onmouseout="this.style.borderColor=\'{ds["br"]}\';this.style.transform=\'\'">
-          <span style="font-size:2rem">{icon}</span>
-          <div>
-            <div style="font-weight:700;font-size:0.9rem;color:{ds["tx"]}">{platform}</div>
-            <div style="font-size:0.8rem;color:{ds["pr"]}">{handle}</div>
-          </div>
-          <div style="margin-left:auto;font-size:0.8rem;font-weight:600;color:{ds["mu"]}">{cta} →</div>
-        </a>"""
-    return f"""
-    <section style="padding:80px 5%;background:{ds["bg"]}" id="social">
-      <div style="max-width:800px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:40px">
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:1.8rem;font-weight:900;color:{ds["tx"]}">Follow Us on <span style="color:{ds["pr"]}">Social Media</span></h2>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px">{cards}</div>
-      </div>
-    </section>"""
-
-def make_whatsapp_button(ud: dict, ds: dict, name: str) -> str:
-    phone = (ud["whatsapp"] or ud["phone"] or "919999999999").replace("+","").replace(" ","").replace("-","")
-    msg = urllib.parse.quote(f"Hi {name}, I found you online and would like to know more about your services.")
-    return f"""
-    <a href="https://wa.me/{phone}?text={msg}" target="_blank" rel="noopener"
-      style="position:fixed;bottom:24px;right:24px;z-index:9999;width:60px;height:60px;background:#25D366;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 30px rgba(37,211,102,0.4);text-decoration:none;transition:all 0.3s;animation:waPulse 2s infinite"
-      onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'\'">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-    </a>"""
-
-def make_sticky_cta(ds: dict, con: dict, phone: str) -> str:
-    ph = phone or "+91 99999 99999"
-    return f"""
-    <div id="stickyCTA" style="position:fixed;bottom:0;left:0;right:0;z-index:9998;background:{ds["nb"]};backdrop-filter:blur(20px);border-top:1px solid {ds["br"]};padding:12px 5%;display:flex;align-items:center;justify-content:space-between;gap:16px;transform:translateY(100%);transition:transform 0.4s ease;flex-wrap:wrap">
-      <div>
-        <p style="font-weight:700;font-size:0.9rem;color:{ds["tx"]}">Ready to get started?</p>
-        <p style="font-size:0.78rem;color:{ds["mu"]}">Contact us today and get a free consultation</p>
-      </div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <a href="tel:{ph}" style="background:{ds["ca"]};color:{ds["tx"]};border:1px solid {ds["br"]};padding:10px 20px;border-radius:100px;text-decoration:none;font-weight:700;font-size:0.85rem">📞 Call Now</a>
-        <a href="#contact" onclick="document.getElementById('stickyCTA').style.transform='translateY(100%)'" style="background:{ds["pr"]};color:#fff;padding:10px 20px;border-radius:100px;text-decoration:none;font-weight:700;font-size:0.85rem">{con["cta1"]} →</a>
-      </div>
-    </div>"""
-
-def make_countdown_section(ds: dict) -> str:
-    return f"""
-    <section style="padding:60px 5%;background:{ds["pr"]}">
-      <div style="max-width:900px;margin:0 auto;text-align:center">
-        <p style="color:rgba(255,255,255,0.85);font-size:0.9rem;font-weight:600;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px">Limited Time Offer</p>
-        <h2 style="font-family:'{ds["font"]}',serif;font-size:2rem;font-weight:900;color:#ffffff;margin-bottom:32px">Offer Ends In</h2>
-        <div style="display:flex;justify-content:center;gap:20px;flex-wrap:wrap">
-          <div id="cd-days" style="background:rgba(255,255,255,0.15);border-radius:16px;padding:20px 28px">
-            <div style="font-family:'{ds["font"]}',serif;font-size:3rem;font-weight:900;color:#fff" id="days">00</div>
-            <div style="color:rgba(255,255,255,0.7);font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:1px">Days</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.15);border-radius:16px;padding:20px 28px">
-            <div style="font-family:'{ds["font"]}',serif;font-size:3rem;font-weight:900;color:#fff" id="hours">00</div>
-            <div style="color:rgba(255,255,255,0.7);font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:1px">Hours</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.15);border-radius:16px;padding:20px 28px">
-            <div style="font-family:'{ds["font"]}',serif;font-size:3rem;font-weight:900;color:#fff" id="mins">00</div>
-            <div style="color:rgba(255,255,255,0.7);font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:1px">Minutes</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.15);border-radius:16px;padding:20px 28px">
-            <div style="font-family:'{ds["font"]}',serif;font-size:3rem;font-weight:900;color:#fff" id="secs">00</div>
-            <div style="color:rgba(255,255,255,0.7);font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:1px">Seconds</div>
-          </div>
-        </div>
-        <a href="#contact" style="display:inline-block;margin-top:32px;background:#fff;color:{ds["pr"]};font-weight:800;padding:14px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem">Claim Offer Now →</a>
-      </div>
-    </section>"""
-
-def make_blog_section(ds: dict) -> str:
-    posts = [
-        ("The Future of Our Industry","Insights into how the landscape is changing and what it means for you going forward.","5 min read"),
-        ("Top 10 Tips for Success","Expert advice and proven strategies that will help you achieve your goals faster.","7 min read"),
-        ("Case Study: How We Helped","A detailed look at how we transformed a client's results in just 90 days.","10 min read"),
-    ]
-    cards = ""
-    for title, excerpt, read_time in posts:
-        seed_v = abs(hash(title)) % 99999
-        cards += f"""
-        <article style="background:{ds["ca"]};border:1px solid {ds["br"]};border-radius:24px;overflow:hidden;transition:all 0.3s" onmouseover="this.style.transform=\'translateY(-6px)\';this.style.borderColor=\'{ds["pr"]}\'" onmouseout="this.style.transform=\'\';this.style.borderColor=\'{ds["br"]}\'">
-          <div style="height:200px;background:linear-gradient(135deg,{ds["pr"]}33,{ds["ac"]}22);display:flex;align-items:center;justify-content:center;font-size:3rem">📝</div>
-          <div style="padding:24px">
-            <div style="font-size:0.72rem;color:{ds["pr"]};font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">{read_time}</div>
-            <h3 style="font-family:'{ds["font"]}',serif;font-size:1.1rem;font-weight:800;color:{ds["tx"]};margin-bottom:10px;line-height:1.3">{title}</h3>
-            <p style="font-size:0.84rem;color:{ds["mu"]};line-height:1.6;margin-bottom:16px">{excerpt}</p>
-            <a href="#" style="color:{ds["pr"]};font-weight:700;font-size:0.85rem;text-decoration:none">Read More →</a>
-          </div>
-        </article>"""
-    return f"""
-    <section style="padding:100px 5%;background:{ds["ca"]}" id="blog">
-      <div style="max-width:1280px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Blog</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Latest <span style="color:{ds["pr"]}">Insights</span></h2>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">{cards}</div>
-        <div style="text-align:center;margin-top:40px">
-          <a href="#" style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["tx"]};border:1px solid {ds["br"]};padding:14px 28px;border-radius:100px;text-decoration:none;font-weight:700;font-size:0.88rem">View All Posts →</a>
-        </div>
-      </div>
-    </section>"""
-
-def make_portfolio_grid(ds: dict, name: str, seed: int) -> str:
-    enc = urllib.parse.quote(name)
-    items = [(f"Project {i+1}",f"Category {i+1}",f"https://image.pollinations.ai/prompt/{enc}_project_{i+1}_showcase?width=600&height=400&seed={seed+i+20}&nologo=true&model=flux") for i in range(6)]
-    cards = ""
-    for proj, cat, img in items:
-        cards += f"""
-        <div style="border-radius:20px;overflow:hidden;position:relative;aspect-ratio:4/3;cursor:pointer" onmouseover="this.querySelector('.overlay').style.opacity=\'1\'" onmouseout="this.querySelector('.overlay').style.opacity=\'0\'">
-          <img src="{img}" alt="{proj}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;transition:transform 0.6s" onmouseover="this.style.transform=\'scale(1.08)\'" onmouseout="this.style.transform=\'\'"/>
-          <div class="overlay" style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.8),transparent);opacity:0;transition:opacity 0.3s;display:flex;flex-direction:column;justify-content:flex-end;padding:20px">
-            <h4 style="color:#fff;font-weight:700;font-size:0.95rem;margin-bottom:4px">{proj}</h4>
-            <p style="color:rgba(255,255,255,0.7);font-size:0.78rem">{cat}</p>
-          </div>
-        </div>"""
-    return f"""
-    <section style="padding:100px 5%;background:{ds["bg"]}" id="portfolio">
-      <div style="max-width:1280px;margin:0 auto">
-        <div style="text-align:center;margin-bottom:60px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Portfolio</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:clamp(2rem,3vw,2.8rem);font-weight:900;color:{ds["tx"]};letter-spacing:-1px">Our <span style="color:{ds["pr"]}">Work</span></h2>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">{cards}</div>
-      </div>
-    </section>"""
-
-def make_video_section(ds: dict) -> str:
-    return f"""
-    <section style="padding:100px 5%;background:{ds["ca"]}" id="video">
-      <div style="max-width:900px;margin:0 auto;text-align:center">
-        <div style="text-align:center;margin-bottom:40px">
-          <div style="display:inline-flex;align-items:center;gap:8px;background:{ds["ca"]};color:{ds["pr"]};font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:2px;padding:8px 18px;border-radius:100px;margin-bottom:20px;border:1px solid {ds["br"]}">✦ Watch</div>
-          <h2 style="font-family:'{ds["font"]}',serif;font-size:2rem;font-weight:900;color:{ds["tx"]}">See Us In <span style="color:{ds["pr"]}">Action</span></h2>
-        </div>
-        <div style="border-radius:24px;overflow:hidden;background:#000;position:relative;aspect-ratio:16/9;box-shadow:0 40px 80px rgba(0,0,0,0.3)">
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,{ds["pr"]}22,{ds["ac"]}22)">
-            <button onclick="this.closest(\'div\').innerHTML=\'<iframe width=\\\"100%\\\" height=\\\"100%\\\" src=\\\"https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1\\\" frameborder=\\\"0\\\" allowfullscreen style=\\\"display:block\\\"></iframe>\'" style="width:80px;height:80px;border-radius:50%;background:{ds["pr"]};border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 30px rgba(0,0,0,0.3);transition:all 0.3s" onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'\'">
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>"""
-
-# ── MAIN BUILD FUNCTION ───────────────────────────────────────────────────────
 def build_template(prompt: str) -> str:
     name = extract_name(prompt)
     cat = get_category(prompt)
     ds = get_design(prompt)
-    con = get_content(cat)
-    ud = extract_user_data(prompt)
-    features = detect_features(prompt)
+    con = get_content_for_category(cat)
     seed = abs(hash(prompt)) % 99999
     enc = urllib.parse.quote(prompt[:80])
     is_dark = ds["dark"]
     font = ds["font"]
 
-    phone = ud["phone"] or "+91 99999 99999"
-    email_addr = ud["email"] or f"hello@{re.sub(chr(91)+chr(94)+chr(97)+chr(122)+chr(48)+chr(57)+chr(93),'',name.lower())}.com"
-    address = ud["address"] or "Mumbai, India"
-
     imgs = {
-        "hero":  f"https://image.pollinations.ai/prompt/ultra_realistic_cinematic_{enc}_dramatic_4k?width=1400&height=800&seed={seed}&nologo=true&model=flux",
-        "about": f"https://image.pollinations.ai/prompt/professional_{enc}_team_modern?width=900&height=700&seed={seed+1}&nologo=true&model=flux",
-        "g1":    f"https://image.pollinations.ai/prompt/{enc}_showcase_1?width=700&height=500&seed={seed+2}&nologo=true&model=flux",
-        "g2":    f"https://image.pollinations.ai/prompt/{enc}_showcase_2?width=700&height=500&seed={seed+3}&nologo=true&model=flux",
-        "g3":    f"https://image.pollinations.ai/prompt/{enc}_showcase_3?width=700&height=500&seed={seed+4}&nologo=true&model=flux",
-        "g4":    f"https://image.pollinations.ai/prompt/{enc}_showcase_4?width=700&height=500&seed={seed+5}&nologo=true&model=flux",
+        "hero":  f"https://image.pollinations.ai/prompt/ultra_realistic_cinematic_{enc}_dramatic_4k_professional?width=1400&height=800&seed={seed}&nologo=true&model=flux",
+        "about": f"https://image.pollinations.ai/prompt/professional_premium_{enc}_team_modern_office?width=900&height=700&seed={seed+1}&nologo=true&model=flux",
+        "g1":    f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_professional_1?width=700&height=500&seed={seed+2}&nologo=true&model=flux",
+        "g2":    f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_professional_2?width=700&height=500&seed={seed+3}&nologo=true&model=flux",
+        "g3":    f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_professional_3?width=700&height=500&seed={seed+4}&nologo=true&model=flux",
+        "g4":    f"https://image.pollinations.ai/prompt/{enc}_premium_showcase_professional_4?width=700&height=500&seed={seed+5}&nologo=true&model=flux",
     }
 
-    tagline = ud["tagline_custom"] or con["tagline"]
-    about_text = ud["about_text"] or con["sub"]
+    svcs_html = "".join([f\'<div class="sc"><div class="si">{ic}</div><h3>{t}</h3><p>{d}</p></div>\' for ic,t,d in con["services"]])
+    stats_html = "".join([f\'<div class="stat"><div class="sn">{n}</div><div class="sl">{l}</div></div>\' for n,l in con["stats"]])
+    testi_html = "".join([f\'<div class="tc"><div class="ts">★★★★★</div><p class="tt">"{t}"</p><div class="ta"><div class="av">{a[0]}</div><div><div class="an">{a}</div><div class="ar">{r}</div></div></div></div>\' for a,r,t in con["testi"]])
+    gal_html = "".join([f\'<div class="gi"><img src="{imgs[k]}" loading="lazy" alt=""/></div>\' for k in ["g1","g2","g3","g4"]])
+    af_html = "".join([f\'<div class="af"><div class="afi">{ic}</div><div class="aft"><h4>{t}</h4><p>{d}</p></div></div>\' for ic,t,d in con["af"]])
+
     nav_logo_color = "#fff" if is_dark else ds["pr"]
     nav_link_color = "rgba(255,255,255,0.8)" if is_dark else ds["mu"]
     nav_hb_color = "#fff" if is_dark else ds["tx"]
+    hero_img_opacity = "0.12" if is_dark else "0.07"
     hero_overlay = f"linear-gradient(135deg,{ds['bg']}F5 0%,{ds['bg']}CC 60%,{ds['pr']}22 100%)"
     card_shadow = "0 40px 80px rgba(0,0,0,0.5)" if is_dark else "0 40px 80px rgba(0,0,0,0.12)"
     hover_shadow = "0 20px 60px rgba(0,0,0,0.3)" if is_dark else "0 20px 60px rgba(0,0,0,0.1)"
-    services_bg = "rgba(255,255,255,0.03)" if is_dark else ds["ca"]
     stat_bg = "rgba(0,0,0,0.4)" if is_dark else ds["ca"]
-
-    svcs_html = "".join([f\'<div class="sc" onmouseover="this.style.transform=\'translateY(-6px)\';this.style.borderColor=\\\'{ds["pr"]}\\\';" onmouseout="this.style.transform=\'\';this.style.borderColor=\\\'{ds["br"]}\\\';"><div class="si">{ic}</div><h3>{t}</h3><p>{d}</p></div>\' for ic,t,d in con["services"]])
-    stats_html = "".join([f\'<div class="stat"><div class="sn" data-target="{n.replace("+","").replace("★","").replace("K","000").replace("M","000000").replace("%","").replace("Cr","0000000") if n[0].isdigit() else 0}">{n}</div><div class="sl">{l}</div></div>\' for n,l in con["stats"]])
-    testi_html = "".join([f\'<div class="tc" onmouseover="this.style.transform=\'translateY(-6px)\';this.style.borderColor=\\\'{ds["pr"]}\\\'" onmouseout="this.style.transform=\'\';this.style.borderColor=\\\'{ds["br"]}\'"><div class="ts">★★★★★</div><p class="tt">"{t}"</p><div class="ta"><div class="av">{a[0]}</div><div><div class="an">{a}</div><div class="ar">{r}</div></div></div></div>\' for a,r,t in con["testi"]])
-    gal_html = "".join([f\'<div class="gi" onmouseover="this.querySelector(\'img\').style.transform=\'scale(1.08)\';" onmouseout="this.querySelector(\'img\').style.transform=\'\'"><img src="{imgs[k]}" loading="lazy" alt=""/></div>\' for k in ["g1","g2","g3","g4"]])
-    af_html = "".join([f\'<div class="af" onmouseover="this.style.borderColor=\\\'{ds["pr"]}\\\';this.style.transform=\'translateX(4px)\';" onmouseout="this.style.borderColor=\\\'{ds["br"]}\\\';this.style.transform=\'\'"><div class="afi">{ic}</div><div class="aft"><h4>{t}</h4><p>{d}</p></div></div>\' for ic,t,d in con["af"]])
-
-    # Optional sections
-    newsletter_html = make_newsletter_section(ds) if features.get("newsletter") else ""
-    pricing_html = make_pricing_section(ds, con, name) if features.get("pricing_table") else ""
-    faq_html = make_faq_section(ds) if features.get("faq") else ""
-    team_html = make_team_section(ds) if features.get("team") else ""
-    social_html = make_social_section(ud, ds) if (ud["instagram"] or ud["facebook"] or ud["twitter"] or ud["linkedin"] or ud["youtube"]) else ""
-    contact_html = make_contact_section(ud, ds, features, name)
-    whatsapp_html = make_whatsapp_button(ud, ds, name)
-    sticky_html = make_sticky_cta(ds, con, phone)
-    countdown_html = make_countdown_section(ds) if features.get("countdown") else ""
-    blog_html = make_blog_section(ds) if features.get("blog") else ""
-    portfolio_html = make_portfolio_grid(ds, name, seed) if features.get("portfolio_grid") else ""
-    video_html = make_video_section(ds) if features.get("video") else ""
+    services_bg = "rgba(255,255,255,0.03)" if is_dark else ds["ca"]
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="{name} — {tagline}. {con['sub'][:120]}">
-<meta property="og:title" content="{name} — {tagline}">
-<meta property="og:description" content="{con['sub'][:160]}">
-<title>{name} — {tagline}</title>
+<title>{name} — {con["tagline"]}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,700;0,800;0,900;1,700&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-:root{{--bg:{ds["bg"]};--pr:{ds["pr"]};--ac:{ds["ac"]};--tx:{ds["tx"]};--mu:{ds["mu"]};--ca:{ds["ca"]};--br:{ds["br"]};--nb:{ds["nb"]};--nt:{ds["nt"]}}}
+:root{{
+  --bg:{ds["bg"]};--pr:{ds["pr"]};--ac:{ds["ac"]};--tx:{ds["tx"]};
+  --mu:{ds["mu"]};--ca:{ds["ca"]};--br:{ds["br"]};--nb:{ds["nb"]};--nt:{ds["nt"]};
+}}
 html{{scroll-behavior:smooth}}
 body{{font-family:"Inter",sans-serif;background:var(--bg);color:var(--tx);overflow-x:hidden;line-height:1.6}}
-@keyframes pulse{{0%,100%{{opacity:1;transform:scale(1)}}50%{{opacity:0.6;transform:scale(1.4)}}}}
-@keyframes fadeInUp{{from{{opacity:0;transform:translateY(40px)}}to{{opacity:1;transform:translateY(0)}}}}
-@keyframes fadeInRight{{from{{opacity:0;transform:translateX(40px)}}to{{opacity:1;transform:translateX(0)}}}}
-@keyframes waPulse{{0%,100%{{box-shadow:0 8px 30px rgba(37,211,102,0.4)}}50%{{box-shadow:0 8px 50px rgba(37,211,102,0.7)}}}}
-@keyframes spin{{to{{transform:rotate(360deg)}}}}
-#loader{{position:fixed;inset:0;background:{ds["bg"]};z-index:99999;display:flex;align-items:center;justify-content:center;transition:opacity 0.5s}}
-#loader.hidden{{opacity:0;pointer-events:none}}
-.loader-ring{{width:50px;height:50px;border:4px solid {ds["ca"]};border-top-color:{ds["pr"]};border-radius:50%;animation:spin 0.8s linear infinite}}
 nav{{position:fixed;top:0;width:100%;z-index:1000;transition:all 0.4s;padding:0 5%}}
-nav.sc{{background:var(--nb);backdrop-filter:blur(24px);border-bottom:1px solid var(--br);box-shadow:0 4px 30px rgba(0,0,0,0.08)}}
+nav.sc{{background:var(--nb);backdrop-filter:blur(24px);border-bottom:1px solid var(--br);box-shadow:0 4px 30px rgba(0,0,0,0.1)}}
 .ni{{max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:72px}}
 .nl{{font-family:"{font}",serif;font-size:1.8rem;font-weight:900;color:{nav_logo_color};text-decoration:none;letter-spacing:-0.5px;transition:color 0.3s}}
 nav.sc .nl{{color:var(--pr)}}
@@ -1441,23 +920,24 @@ nav.sc .nhb span{{background:var(--tx)}}
 .nmob a{{color:var(--mu);text-decoration:none;font-weight:600;font-size:0.95rem;padding:8px 0;border-bottom:1px solid var(--br)}}
 .nmob .mc{{background:var(--pr);color:#fff!important;text-align:center;padding:14px;border-radius:12px;border:none!important;margin-top:4px}}
 .hero{{min-height:100vh;display:flex;align-items:center;padding:100px 5% 80px;position:relative;overflow:hidden;background:var(--bg)}}
-.hbg{{position:absolute;inset:0;background:url("{imgs["hero"]}") center/cover no-repeat;opacity:{"0.12" if is_dark else "0.07"};filter:blur(2px);transform:scale(1.05)}}
+.hbg{{position:absolute;inset:0;background:url("{imgs["hero"]}") center/cover no-repeat;opacity:{hero_img_opacity};filter:blur(2px);transform:scale(1.05)}}
 .hov{{position:absolute;inset:0;background:{hero_overlay}}}
 .hsh{{position:absolute;inset:0;overflow:hidden;pointer-events:none}}
 .hsh::before{{content:"";position:absolute;top:-30%;right:-10%;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,{ds["pr"]}{"18" if is_dark else "0D"} 0%,transparent 70%)}}
 .hsh::after{{content:"";position:absolute;bottom:-20%;left:-5%;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,{ds["ac"]}{"12" if is_dark else "0A"} 0%,transparent 70%)}}
 .hi{{position:relative;z-index:2;max-width:1280px;margin:0 auto;width:100%;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}}
-.hbadge{{display:inline-flex;align-items:center;gap:8px;background:{"rgba(255,255,255,0.1)" if is_dark else ds["ca"]};backdrop-filter:blur(10px);border:1px solid var(--br);color:var(--tx);padding:9px 20px;border-radius:100px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:24px;animation:fadeInUp 0.6s ease both}}
+.hbadge{{display:inline-flex;align-items:center;gap:8px;background:{"rgba(255,255,255,0.1)" if is_dark else ds["ca"]};backdrop-filter:blur(10px);border:1px solid var(--br);color:var(--tx);padding:9px 20px;border-radius:100px;font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:24px}}
 .bdot{{width:8px;height:8px;border-radius:50%;background:var(--ac);animation:pulse 2s infinite;box-shadow:0 0 10px var(--ac)}}
-.ht{{font-family:"{font}",serif;font-size:clamp(2.8rem,4.5vw,4.5rem);font-weight:900;line-height:1.05;letter-spacing:-2px;margin-bottom:16px;color:var(--tx);animation:fadeInUp 0.7s ease 0.1s both}}
+@keyframes pulse{{0%,100%{{opacity:1;transform:scale(1)}}50%{{opacity:0.6;transform:scale(1.4)}}}}
+.ht{{font-family:"{font}",serif;font-size:clamp(2.8rem,4.5vw,4.5rem);font-weight:900;line-height:1.05;letter-spacing:-2px;margin-bottom:16px;color:var(--tx)}}
 .hta{{color:var(--pr);display:block;font-style:italic}}
-.hs{{font-size:1.05rem;color:var(--mu);line-height:1.75;margin-bottom:36px;max-width:480px;animation:fadeInUp 0.7s ease 0.2s both}}
-.hbtns{{display:flex;gap:14px;flex-wrap:wrap;animation:fadeInUp 0.7s ease 0.3s both}}
+.hs{{font-size:1.05rem;color:var(--mu);line-height:1.75;margin-bottom:36px;max-width:480px}}
+.hbtns{{display:flex;gap:14px;flex-wrap:wrap}}
 .bp{{display:inline-flex;align-items:center;gap:8px;background:var(--pr);color:#fff;font-weight:800;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.2)}}
 .bp:hover{{transform:translateY(-3px);filter:brightness(1.1);box-shadow:0 16px 40px rgba(0,0,0,0.3)}}
 .bs{{display:inline-flex;align-items:center;gap:8px;background:var(--ca);color:var(--tx);font-weight:700;font-size:0.9rem;padding:16px 32px;border-radius:100px;text-decoration:none;border:1px solid var(--br);transition:all 0.3s}}
-.bs:hover{{transform:translateY(-3px)}}
-.hiw{{position:relative;perspective:1200px;animation:fadeInRight 0.9s ease 0.2s both}}
+.bs:hover{{transform:translateY(-3px);filter:brightness(1.05)}}
+.hiw{{position:relative;perspective:1200px}}
 .hic{{border-radius:24px;overflow:hidden;box-shadow:{card_shadow},0 0 0 1px var(--br);transform:rotateY(-6deg) rotateX(3deg);transition:transform 0.6s ease}}
 .hic:hover{{transform:rotateY(0deg) rotateX(0deg)}}
 .hic img{{width:100%;height:420px;object-fit:cover;display:block}}
@@ -1466,7 +946,7 @@ nav.sc .nhb span{{background:var(--tx)}}
 .lt{{color:#fff;font-size:0.78rem;font-weight:600}}
 .stbar{{background:{stat_bg};border-top:1px solid var(--br);border-bottom:1px solid var(--br);padding:0 5%}}
 .sti{{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}}
-.stat{{padding:32px 24px;text-align:center;border-right:1px solid var(--br);transition:background 0.3s;cursor:default}}
+.stat{{padding:32px 24px;text-align:center;border-right:1px solid var(--br);transition:background 0.3s}}
 .stat:last-child{{border-right:none}}
 .stat:hover{{background:var(--ca)}}
 .sn{{font-family:"{font}",serif;font-size:2.4rem;font-weight:900;color:var(--pr);margin-bottom:4px}}
@@ -1483,6 +963,7 @@ nav.sc .nhb span{{background:var(--tx)}}
 .ss{{font-size:0.95rem;color:var(--mu);line-height:1.8;margin-bottom:36px}}
 .aff{{display:flex;flex-direction:column;gap:14px}}
 .af{{display:flex;align-items:flex-start;gap:14px;padding:16px;background:var(--ca);border-radius:16px;border:1px solid var(--br);transition:all 0.3s}}
+.af:hover{{border-color:var(--pr);transform:translateX(4px);box-shadow:0 8px 24px rgba(0,0,0,0.08)}}
 .afi{{width:42px;height:42px;border-radius:12px;background:var(--bg);border:1px solid var(--br);display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}}
 .aft h4{{font-weight:700;font-size:0.88rem;color:var(--tx);margin-bottom:3px}}
 .aft p{{font-size:0.8rem;color:var(--mu)}}
@@ -1490,8 +971,9 @@ nav.sc .nhb span{{background:var(--tx)}}
 .svi{{max-width:1280px;margin:0 auto}}
 .sh2{{text-align:center;margin-bottom:60px}}
 .sg{{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}}
-.sc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:36px;transition:all 0.4s;position:relative;overflow:hidden;cursor:default}}
+.sc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:36px;transition:all 0.4s;position:relative;overflow:hidden}}
 .sc::before{{content:"";position:absolute;inset:0;background:linear-gradient(135deg,var(--pr) 0%,transparent 60%);opacity:0;transition:opacity 0.4s}}
+.sc:hover{{border-color:var(--pr);transform:translateY(-6px);box-shadow:{hover_shadow}}}
 .sc:hover::before{{opacity:0.04}}
 .si{{font-size:2.6rem;margin-bottom:20px;display:block}}
 .sc h3{{font-family:"{font}",serif;font-size:1.25rem;font-weight:800;color:var(--tx);margin-bottom:12px}}
@@ -1501,30 +983,32 @@ nav.sc .nhb span{{background:var(--tx)}}
 .gg{{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:48px}}
 .gi{{border-radius:20px;overflow:hidden;aspect-ratio:4/3;cursor:pointer;position:relative;box-shadow:0 8px 24px rgba(0,0,0,0.1)}}
 .gi img{{width:100%;height:100%;object-fit:cover;display:block;transition:transform 0.6s}}
+.gi:hover img{{transform:scale(1.08)}}
 .gi::after{{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.5),transparent);opacity:0;transition:opacity 0.3s}}
 .gi:hover::after{{opacity:1}}
 .testi{{padding:120px 5%;background:{services_bg}}}
 .tti{{max-width:1280px;margin:0 auto}}
 .tg{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:48px}}
-.tc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:32px;transition:all 0.3s;position:relative;overflow:hidden;cursor:default}}
+.tc{{background:var(--bg);border:1px solid var(--br);border-radius:24px;padding:32px;transition:all 0.3s;position:relative;overflow:hidden}}
 .tc::before{{content:"\\201C";position:absolute;top:-20px;right:16px;font-size:8rem;color:var(--pr);opacity:0.06;font-family:serif;line-height:1}}
+.tc:hover{{border-color:var(--pr);transform:translateY(-4px);box-shadow:{hover_shadow}}}
 .ts{{color:var(--ac);font-size:1rem;letter-spacing:2px;margin-bottom:16px}}
 .tt{{font-size:0.9rem;color:var(--mu);line-height:1.75;margin-bottom:24px;font-style:italic}}
 .ta{{display:flex;align-items:center;gap:12px}}
 .av{{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--pr),var(--ac));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:0.9rem;flex-shrink:0}}
 .an{{font-weight:700;font-size:0.85rem;color:var(--tx)}}
 .ar{{font-size:0.72rem;color:var(--mu)}}
-.cta-sec{{padding:120px 5%;background:var(--bg)}}
+.cta{{padding:120px 5%;background:var(--bg)}}
 .ctai{{max-width:1000px;margin:0 auto;border-radius:32px;padding:80px 60px;text-align:center;position:relative;overflow:hidden;background:linear-gradient(135deg,var(--pr) 0%,var(--ac) 100%);box-shadow:0 40px 80px rgba(0,0,0,0.25)}}
 .ctai::before{{content:"";position:absolute;top:-50%;right:-10%;width:500px;height:500px;border-radius:50%;background:rgba(255,255,255,0.08);pointer-events:none}}
 .ctai h2{{font-family:"{font}",serif;font-size:clamp(2rem,4vw,3rem);font-weight:900;color:#fff;margin-bottom:16px;position:relative;z-index:1;letter-spacing:-1px}}
 .ctai p{{font-size:1rem;color:rgba(255,255,255,0.85);margin-bottom:40px;position:relative;z-index:1;max-width:500px;margin-left:auto;margin-right:auto}}
 .cbtns{{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative;z-index:1}}
 .cb1{{display:inline-flex;align-items:center;gap:8px;background:#fff;color:var(--pr);font-weight:800;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;transition:all 0.3s;box-shadow:0 8px 30px rgba(0,0,0,0.15)}}
-.cb1:hover{{transform:translateY(-3px)}}
+.cb1:hover{{transform:translateY(-3px);box-shadow:0 16px 40px rgba(0,0,0,0.2)}}
 .cb2{{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.15);color:#fff;font-weight:700;padding:16px 36px;border-radius:100px;text-decoration:none;font-size:0.9rem;border:1px solid rgba(255,255,255,0.3);transition:all 0.3s}}
 .cb2:hover{{background:rgba(255,255,255,0.25);transform:translateY(-3px)}}
-footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{services_bg}}}
+footer{{padding:60px 5% 30px;border-top:1px solid var(--br);background:{services_bg}}}
 .fi{{max-width:1280px;margin:0 auto}}
 .ft{{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:48px;margin-bottom:48px}}
 .fb p{{font-size:0.82rem;color:var(--mu);margin-top:12px;line-height:1.7;max-width:240px}}
@@ -1534,10 +1018,6 @@ footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{service
 .fc a:hover{{color:var(--pr)}}
 .fbot{{border-top:1px solid var(--br);padding-top:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}}
 .fbot p{{font-size:0.75rem;color:var(--mu)}}
-#backTop{{position:fixed;bottom:90px;right:24px;z-index:9990;width:44px;height:44px;background:var(--pr);color:#fff;border:none;border-radius:50%;cursor:pointer;font-size:1.2rem;display:none;align-items:center;justify-content:center;box-shadow:0 4px 20px rgba(0,0,0,0.2);transition:all 0.3s}}
-#backTop:hover{{transform:translateY(-3px)}}
-.reveal{{opacity:0;transform:translateY(40px) scale(0.97);transition:opacity 0.7s ease,transform 0.7s ease}}
-.reveal.visible{{opacity:1;transform:translateY(0) scale(1)}}
 @media(max-width:900px){{
   .hi,.abi{{grid-template-columns:1fr;gap:48px;text-align:center}}
   .hiw{{order:-1}}.hs{{max-width:100%}}.hbtns{{justify-content:center}}
@@ -1556,11 +1036,6 @@ footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{service
 </style>
 </head>
 <body>
-
-<!-- LOADER -->
-<div id="loader"><div class="loader-ring"></div></div>
-
-<!-- NAV -->
 <nav id="nav">
   <div class="ni">
     <a href="#" class="nl">{name}</a>
@@ -1568,8 +1043,6 @@ footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{service
       <li><a href="#about">About</a></li>
       <li><a href="#services">{con["services_title"]}</a></li>
       <li><a href="#gallery">Gallery</a></li>
-      {"<li><a href='#pricing'>Pricing</a></li>" if features.get("pricing_table") else ""}
-      {"<li><a href='#blog'>Blog</a></li>" if features.get("blog") else ""}
       <li><a href="#contact" class="nc">{con["cta1"]}</a></li>
     </ul>
     <button class="nhb" id="hb"><span></span><span></span><span></span></button>
@@ -1579,24 +1052,18 @@ footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{service
   <a href="#about">About</a>
   <a href="#services">{con["services_title"]}</a>
   <a href="#gallery">Gallery</a>
-  {"<a href='#pricing'>Pricing</a>" if features.get("pricing_table") else ""}
-  {"<a href='#blog'>Blog</a>" if features.get("blog") else ""}
   <a href="#contact" class="mc">{con["cta1"]}</a>
 </div>
-
-<!-- HERO -->
 <section class="hero" id="home">
   <div class="hbg"></div><div class="hov"></div><div class="hsh"></div>
   <div class="hi">
     <div>
       <div class="hbadge"><span class="bdot"></span>✦ {name} · {cat.replace("_"," ").title()}</div>
-      <h1 class="ht">{name}<span class="hta">{tagline}</span></h1>
+      <h1 class="ht">{name}<span class="hta">{con["tagline"]}</span></h1>
       <p class="hs">{con["sub"]}</p>
-      {"<p style='margin-top:-20px;margin-bottom:24px;font-size:0.9rem;color:var(--pr);font-weight:600'>📞 " + phone + " &nbsp;|&nbsp; ✉️ " + email_addr + "</p>" if ud["phone"] or ud["email"] else ""}
       <div class="hbtns">
         <a href="#contact" class="bp">{con["cta1"]} →</a>
         <a href="#services" class="bs">▶ {con["cta2"]}</a>
-        {"<a href='https://wa.me/" + (ud["whatsapp"] or "919999999999").replace("+","").replace(" ","") + "' target='_blank' style='display:inline-flex;align-items:center;gap:8px;background:#25D366;color:#fff;font-weight:700;font-size:0.9rem;padding:16px 24px;border-radius:100px;text-decoration:none'>💬 WhatsApp</a>" if features.get("whatsapp_btn") else ""}
       </div>
     </div>
     <div class="hiw">
@@ -1607,241 +1074,104 @@ footer{{padding:60px 5% 100px;border-top:1px solid var(--br);background:{service
     </div>
   </div>
 </section>
-
-<!-- STATS -->
 <div class="stbar"><div class="sti">{stats_html}</div></div>
-
-{countdown_html}
-
-<!-- ABOUT -->
 <section class="about" id="about">
   <div class="abi">
-    <div class="abimg reveal">
+    <div class="abimg">
       <img src="{imgs["about"]}" alt="About {name}" loading="lazy"/>
       <div class="abtag">Our Story</div>
     </div>
-    <div class="reveal">
+    <div>
       <div class="sl2">✦ About Us</div>
       <h2 class="sh">Built for <span>Excellence</span>.</h2>
-      <p class="ss">{about_text}</p>
+      <p class="ss">{con["sub"]}</p>
       <div class="aff">{af_html}</div>
     </div>
   </div>
 </section>
-
-<!-- SERVICES -->
 <section class="services" id="services">
   <div class="svi">
     <div class="sh2">
       <div class="sl2">✦ {con["services_title"]}</div>
       <h2 class="sh" style="text-align:center">Why Choose <span>{name}</span></h2>
-      <p style="color:var(--mu);font-size:0.95rem;max-width:500px;margin:12px auto 0">Everything you need, crafted to the highest possible standard.</p>
     </div>
-    <div class="sg reveal">{svcs_html}</div>
+    <div class="sg">{svcs_html}</div>
   </div>
 </section>
-
-{video_html}
-
-<!-- GALLERY -->
 <section class="gallery" id="gallery">
   <div class="gli">
     <div class="sh2">
       <div class="sl2">✦ Gallery</div>
       <h2 class="sh" style="text-align:center">See It For <span>Yourself</span></h2>
     </div>
-    <div class="gg reveal">{gal_html}</div>
+    <div class="gg">{gal_html}</div>
   </div>
 </section>
-
-{portfolio_html}
-
-{team_html}
-
-<!-- TESTIMONIALS -->
 <section class="testi" id="testimonials">
   <div class="tti">
     <div class="sh2">
       <div class="sl2">✦ Testimonials</div>
       <h2 class="sh" style="text-align:center">What Our <span>Clients Say</span></h2>
     </div>
-    <div class="tg reveal">{testi_html}</div>
+    <div class="tg">{testi_html}</div>
   </div>
 </section>
-
-{pricing_html}
-
-{blog_html}
-
-{faq_html}
-
-{newsletter_html}
-
-{contact_html}
-
-{social_html}
-
-<!-- CTA -->
-<section class="cta-sec" id="cta">
-  <div class="ctai reveal">
+<section class="cta" id="contact">
+  <div class="ctai">
     <h2>Ready to Get Started?</h2>
-    <p>Join thousands who trust {name}. First step is free. No commitment needed.</p>
+    <p>Join thousands who already trust {name}. Take the first step today.</p>
     <div class="cbtns">
-      <a href="#contact" class="cb1">{con["cta1"]} →</a>
-      <a href="tel:{phone}" class="cb2">📞 {phone}</a>
+      <a href="mailto:hello@{re.sub(r"[^a-z0-9]","",name.lower())}.com" class="cb1">{con["cta1"]} →</a>
+      <a href="tel:+919999999999" class="cb2">📞 Contact Us</a>
     </div>
   </div>
 </section>
-
-<!-- FOOTER -->
 <footer>
   <div class="fi">
     <div class="ft">
       <div class="fb">
         <div class="flogo">{name}</div>
         <p>{con["sub"][:100]}...</p>
-        <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap">
-          {"<a href='https://instagram.com/" + ud["instagram"] + "' target='_blank' style='color:var(--pr);font-size:1.2rem;text-decoration:none' title='Instagram'>📸</a>" if ud["instagram"] else ""}
-          {"<a href='https://facebook.com/" + ud["facebook"] + "' target='_blank' style='color:var(--pr);font-size:1.2rem;text-decoration:none' title='Facebook'>👍</a>" if ud["facebook"] else ""}
-          {"<a href='https://twitter.com/" + ud["twitter"] + "' target='_blank' style='color:var(--pr);font-size:1.2rem;text-decoration:none' title='Twitter'>🐦</a>" if ud["twitter"] else ""}
-          {"<a href='https://linkedin.com/in/" + ud["linkedin"] + "' target='_blank' style='color:var(--pr);font-size:1.2rem;text-decoration:none' title='LinkedIn'>💼</a>" if ud["linkedin"] else ""}
-          {"<a href='https://youtube.com/" + ud["youtube"] + "' target='_blank' style='color:var(--pr);font-size:1.2rem;text-decoration:none' title='YouTube'>▶️</a>" if ud["youtube"] else ""}
-        </div>
       </div>
       <div class="fc">
         <h4>Company</h4>
-        <a href="#about">About Us</a>
+        <a href="#about">About</a>
         <a href="#services">{con["services_title"]}</a>
         <a href="#gallery">Gallery</a>
-        {"<a href='#team'>Our Team</a>" if features.get("team") else ""}
-        {"<a href='#blog'>Blog</a>" if features.get("blog") else ""}
+        <a href="#contact">Contact</a>
       </div>
       <div class="fc">
         <h4>Services</h4>
         {"".join([f\'<a href="#services">{s[1]}</a>\' for s in con["services"]])}
       </div>
       <div class="fc">
-        <h4>Contact</h4>
-        <a href="tel:{phone}">📞 {phone}</a>
-        <a href="mailto:{email_addr}">✉️ Email Us</a>
-        {"<a href='https://wa.me/" + (ud["whatsapp"] or phone).replace("+","").replace(" ","") + "' target='_blank'>💬 WhatsApp</a>" if features.get("whatsapp_btn") else ""}
-        <a href="#contact">📍 {address[:30]}...</a>
-        {"<p style='color:var(--mu);font-size:0.78rem;margin-top:8px'>⏰ " + (ud["opening_hours"] or "Mon-Sat 9AM-8PM") + "</p>" if ud["opening_hours"] else ""}
+        <h4>Connect</h4>
+        <a href="#">Instagram</a>
+        <a href="#">LinkedIn</a>
+        <a href="#">Twitter</a>
+        <a href="mailto:hello@{re.sub(r"[^a-z0-9]","",name.lower())}.com">Email</a>
       </div>
     </div>
     <div class="fbot">
       <p>© 2024 {name}. All rights reserved.</p>
-      <p style="display:flex;gap:16px"><a href="#" style="color:var(--mu);text-decoration:none;font-size:0.72rem">Privacy Policy</a><a href="#" style="color:var(--mu);text-decoration:none;font-size:0.72rem">Terms of Service</a></p>
       <p>Built with Dacexy AI</p>
     </div>
   </div>
 </footer>
-
-<!-- FLOATING ELEMENTS -->
-{whatsapp_html}
-{sticky_html}
-<button id="backTop" onclick="window.scrollTo({{top:0,behavior:'smooth'}})">↑</button>
-
 <script>
-// Loader
-window.addEventListener('load',()=>{{
-  setTimeout(()=>document.getElementById('loader').classList.add('hidden'),600);
-}});
-
-// Nav scroll
-const nav=document.getElementById('nav');
-const stickyCTA=document.getElementById('stickyCTA');
-const backTop=document.getElementById('backTop');
-window.addEventListener('scroll',()=>{{
-  nav.classList.toggle('sc',scrollY>60);
-  if(stickyCTA)stickyCTA.style.transform=scrollY>300?'translateY(0)':'translateY(100%)';
-  if(backTop)backTop.style.display=scrollY>400?'flex':'none';
-}});
-
-// Mobile menu
-const hb=document.getElementById('hb'),nmo=document.getElementById('nmo');
-hb.addEventListener('click',()=>nmo.classList.toggle('open'));
-nmo.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>nmo.classList.remove('open')));
-
-// Scroll reveal
+const nav=document.getElementById("nav");
+window.addEventListener("scroll",()=>nav.classList.toggle("sc",scrollY>60));
+const hb=document.getElementById("hb"),nmo=document.getElementById("nmo");
+hb.addEventListener("click",()=>nmo.classList.toggle("open"));
+nmo.querySelectorAll("a").forEach(a=>a.addEventListener("click",()=>nmo.classList.remove("open")));
 const obs=new IntersectionObserver(entries=>entries.forEach(e=>{{
-  if(e.isIntersecting)e.target.classList.add('visible');
+  if(e.isIntersecting){{e.target.style.opacity="1";e.target.style.transform="translateY(0) scale(1)"}}
 }}),{{threshold:0.1}});
-document.querySelectorAll('.sc,.tc,.af,.gi,.stat,.reveal').forEach(el=>{{
-  el.classList.add('reveal');
+document.querySelectorAll(".sc,.tc,.af,.gi,.stat").forEach(el=>{{
+  el.style.opacity="0";
+  el.style.transform="translateY(40px) scale(0.97)";
+  el.style.transition="opacity 0.7s ease,transform 0.7s ease";
   obs.observe(el);
-}});
-
-// FAQ toggle
-function toggleFAQ(btn){{
-  const ans=btn.nextElementSibling;
-  const icon=btn.querySelector('span:last-child');
-  const isOpen=ans.style.display==='block';
-  ans.style.display=isOpen?'none':'block';
-  icon.textContent=isOpen?'+':'−';
-  icon.style.transform=isOpen?'':'rotate(45deg)';
-}}
-
-// Form submit
-function handleForm(e){{
-  e.preventDefault();
-  const btn=e.target.querySelector('button[type="submit"]');
-  const orig=btn.innerHTML;
-  btn.innerHTML='⏳ Sending...';
-  btn.disabled=true;
-  setTimeout(()=>{{
-    btn.innerHTML='✅ Sent!';
-    document.getElementById('formSuccess').style.display='block';
-    e.target.reset();
-    setTimeout(()=>{{btn.innerHTML=orig;btn.disabled=false;}},3000);
-  }},1500);
-}}
-
-// Newsletter
-function handleNewsletter(e){{
-  e.preventDefault();
-  document.getElementById('nlSuccess').style.display='block';
-  e.target.reset();
-}}
-
-// Countdown timer
-function startCountdown(){{
-  const target=new Date();
-  target.setDate(target.getDate()+7);
-  function update(){{
-    const now=new Date();
-    const diff=target-now;
-    if(diff<=0)return;
-    const d=Math.floor(diff/86400000);
-    const h=Math.floor((diff%86400000)/3600000);
-    const m=Math.floor((diff%3600000)/60000);
-    const s=Math.floor((diff%60000)/1000);
-    const dEl=document.getElementById('days');
-    const hEl=document.getElementById('hours');
-    const mEl=document.getElementById('mins');
-    const sEl=document.getElementById('secs');
-    if(dEl)dEl.textContent=String(d).padStart(2,'0');
-    if(hEl)hEl.textContent=String(h).padStart(2,'0');
-    if(mEl)mEl.textContent=String(m).padStart(2,'0');
-    if(sEl)sEl.textContent=String(s).padStart(2,'0');
-  }}
-  update();
-  setInterval(update,1000);
-}}
-startCountdown();
-
-// Input focus effects
-document.querySelectorAll('input,textarea').forEach(el=>{{
-  el.addEventListener('focus',()=>el.style.borderColor='var(--pr)');
-  el.addEventListener('blur',()=>el.style.borderColor='');
-}});
-
-// Smooth image loading
-document.querySelectorAll('img').forEach(img=>{{
-  img.style.opacity='0';
-  img.style.transition='opacity 0.5s ease';
-  if(img.complete){{img.style.opacity='1';}}
-  else{{img.addEventListener('load',()=>img.style.opacity='1');}}
 }});
 </script>
 </body>
@@ -1853,7 +1183,7 @@ async def generate_website(prompt: str, ai=None) -> str:
     except Exception as e:
         log.error(f"Website generation error: {e}")
         raise
-''')         
+''')
 
 
 w("src/interfaces/http/routes/auth.py", """
