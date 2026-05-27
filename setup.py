@@ -692,8 +692,8 @@ def extract_user_data(prompt):
 
     hm = re.search(r'(?:open|hours|timing)[:\s]+([^.\n]{5,60})', p, re.IGNORECASE)
 
-if hm:
-    data["opening_hours"] = hm.group(1).strip()
+    if hm:
+        data["opening_hours"] = hm.group(1).strip()
 
     wa = re.search(
         r'(?:whatsapp)[:\s#]*([+\d][\d\s\-+]{7,15})',
@@ -1545,7 +1545,7 @@ async def generate_website(prompt, ai=None):
         except Exception as e:
             log.warning("AI generation failed, using premium template: " + str(e))
     log.info("Using premium template for: " + prompt[:60])
-    return build_template(prompt, name, ud)              
+    return build_template(prompt, name, ud)
 ''')  
 
 
