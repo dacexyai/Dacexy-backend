@@ -106,6 +106,7 @@ class Settings(BaseSettings):
 settings = Settings()
 """)
 
+# ── FIX 1: JWT expiry raised from 60 → 43200 minutes (30 days) ──────────────
 w("src/shared/security/auth.py", """
 import secrets
 from datetime import datetime, timedelta
@@ -125,7 +126,8 @@ def verify_password(plain, hashed):
     except VerifyMismatchError:
         return False
 
-def create_access_token(subject, extra=None, expires_minutes=60):
+def create_access_token(subject, extra=None, expires_minutes=43200):
+    # 43200 minutes = 30 days — users stay logged in permanently
     data = {"sub": subject, "type": "access"}
     if extra:
         data.update(extra)
@@ -137,7 +139,6 @@ def create_refresh_token():
 
 def decode_access_token(token):
     return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-
 """)
 
 w("src/shared/exceptions/__init__.py", """
@@ -623,11 +624,7 @@ def check_rate_limit(key: str, limit_type: str = "default") -> None:
     store = _rate_store[key]
     if store["blocked_until"] > now:
         wait = int(store["blocked_until"] - now)
-        raise HTTPException(
-            status_code=429,
-            detail=f"Too many attempts. Please wait {wait} seconds.",
-            headers={"Retry-After": str(wait)}
-        )
+        raise HTTPException(status_code=429, detail=f"Too many attempts. Please wait {wait} seconds.", headers={"Retry-After": str(wait)})
     if now - store["window_start"] > cfg["window"]:
         store["count"] = 0
         store["window_start"] = now
@@ -635,11 +632,7 @@ def check_rate_limit(key: str, limit_type: str = "default") -> None:
     if store["count"] > cfg["rpm"]:
         store["blocked_until"] = now + cfg["block"]
         store["count"] = 0
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded. Please wait {cfg['block']} seconds.",
-            headers={"Retry-After": str(cfg["block"])}
-        )
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Please wait {cfg['block']} seconds.", headers={"Retry-After": str(cfg["block"])})
 
 _login_failures: dict = defaultdict(lambda: {"count": 0, "first_fail": 0.0, "blocked_until": 0.0})
 
@@ -648,11 +641,7 @@ def check_login_failures(email: str) -> None:
     record = _login_failures[email.lower()]
     if record["blocked_until"] > now:
         wait = int(record["blocked_until"] - now)
-        raise HTTPException(
-            status_code=429,
-            detail=f"Account temporarily locked. Try again in {wait} seconds.",
-            headers={"Retry-After": str(wait)}
-        )
+        raise HTTPException(status_code=429, detail=f"Account temporarily locked. Try again in {wait} seconds.", headers={"Retry-After": str(wait)})
     if now - record["first_fail"] > 300:
         record["count"] = 0
         record["first_fail"] = now
@@ -743,10 +732,7 @@ async def register(
     email_lower = body.email.lower().strip()
     existing = await db.execute(select(User).where(User.email == email_lower))
     if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail="This email is already registered. Please sign in instead."
-        )
+        raise HTTPException(status_code=409, detail="This email is already registered. Please sign in instead.")
 
     org_name = body.org_name.strip() if body.org_name.strip() else (body.full_name.strip().split()[0] + "'s Workspace")
     org = Organization(name=org_name, slug=_make_slug(org_name))
@@ -770,7 +756,8 @@ async def register(
     except Exception:
         pass
 
-    access = create_access_token(str(user.id), {"org_id": str(org.id), "role": "owner"})
+    # 30-day token so users never get randomly logged out
+    access = create_access_token(str(user.id), {"org_id": str(org.id), "role": "owner"}, expires_minutes=43200)
     refresh = create_refresh_token()
     db.add(RefreshToken(
         user_id=user.id,
@@ -802,9 +789,11 @@ async def login(
 
     clear_login_failures(body.email)
 
+    # 30-day token
     access = create_access_token(
         str(user.id),
-        {"org_id": str(user.org_id), "role": user.role, "email": user.email}
+        {"org_id": str(user.org_id), "role": user.role, "email": user.email},
+        expires_minutes=43200
     )
     refresh = create_refresh_token()
     db.add(RefreshToken(
@@ -834,6 +823,42 @@ async def me(user: User = Depends(_get_current_user), db: AsyncSession = Depends
         }
     }
 
+# ── Token refresh endpoint — frontend calls this to get a new token ──────────
+@router.post("/refresh")
+async def refresh_token_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    body = await request.json()
+    token = body.get("refresh_token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Refresh token required")
+    result = await db.execute(select(RefreshToken))
+    all_tokens = result.scalars().all()
+    matched = None
+    matched_user_id = None
+    for rt in all_tokens:
+        try:
+            if verify_password(token, rt.token_hash):
+                if rt.expires_at > datetime.utcnow():
+                    matched = rt
+                    matched_user_id = rt.user_id
+                break
+        except Exception:
+            continue
+    if not matched:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    user_result = await db.execute(select(User).where(User.id == matched_user_id))
+    user = user_result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found")
+    new_access = create_access_token(
+        str(user.id),
+        {"org_id": str(user.org_id), "role": user.role, "email": user.email},
+        expires_minutes=43200
+    )
+    return {"access_token": new_access, "token_type": "bearer"}
+
 @router.post("/verify-email")
 async def verify_email(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     ip = get_client_ip(request)
@@ -857,11 +882,9 @@ async def google_login(request: Request):
     import urllib.parse
     ip = get_client_ip(request)
     check_rate_limit(f"google:{ip}", "google")
-
     client_id = settings.GOOGLE_CLIENT_ID
     if not client_id:
         return RedirectResponse("https://dacexy.vercel.app/login?error=Google+OAuth+not+configured")
-
     params = {
         "client_id": client_id,
         "redirect_uri": "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback",
@@ -881,53 +904,35 @@ async def google_callback(
 ):
     FRONTEND = "https://dacexy.vercel.app"
     REDIRECT_URI = "https://dacexy-backend-v7ku.onrender.com/api/v1/auth/google/callback"
-
     if error:
         return RedirectResponse(f"{FRONTEND}/login?error={error}")
     if not code:
         return RedirectResponse(f"{FRONTEND}/login?error=no_code_received")
-
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             token_res = await client.post(
                 "https://oauth2.googleapis.com/token",
-                data={
-                    "code": code,
-                    "client_id": settings.GOOGLE_CLIENT_ID,
-                    "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                    "redirect_uri": REDIRECT_URI,
-                    "grant_type": "authorization_code"
-                },
+                data={"code": code, "client_id": settings.GOOGLE_CLIENT_ID, "client_secret": settings.GOOGLE_CLIENT_SECRET, "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code"},
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
             token_data = token_res.json()
-
             if "error" in token_data:
                 err = str(token_data.get("error_description") or token_data.get("error") or "oauth_failed")
                 return RedirectResponse(f"{FRONTEND}/login?error={err.replace(' ', '+')}")
-
             google_access_token = token_data.get("access_token", "")
             if not google_access_token:
                 return RedirectResponse(f"{FRONTEND}/login?error=no_google_token")
-
-            user_res = await client.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
-                headers={"Authorization": f"Bearer {google_access_token}"}
-            )
+            user_res = await client.get("https://www.googleapis.com/oauth2/v2/userinfo", headers={"Authorization": f"Bearer {google_access_token}"})
             info = user_res.json()
-
         email = (info.get("email") or "").lower().strip()
         full_name = (info.get("name") or "").strip()
         google_id = str(info.get("id") or "")
-
         if not email:
             return RedirectResponse(f"{FRONTEND}/login?error=no_email_from_google")
         if not full_name:
             full_name = email.split("@")[0].title()
-
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
-
         if not user:
             first_name = full_name.split()[0] if full_name.split() else "User"
             org_name = first_name + "'s Workspace"
@@ -935,19 +940,9 @@ async def google_callback(
             org = Organization(name=org_name, slug=slug)
             db.add(org)
             await db.flush()
-
-            user = User(
-                org_id=org.id,
-                email=email,
-                full_name=full_name,
-                hashed_password=hash_password(secrets.token_urlsafe(32)),
-                role="owner",
-                is_verified=True,
-                metadata_={"provider": "google", "google_id": google_id}
-            )
+            user = User(org_id=org.id, email=email, full_name=full_name, hashed_password=hash_password(secrets.token_urlsafe(32)), role="owner", is_verified=True, metadata_={"provider": "google", "google_id": google_id})
             db.add(user)
             await db.flush()
-            log.info(f"New Google user created: {email}")
         else:
             if full_name and full_name != user.full_name:
                 user.full_name = full_name
@@ -955,26 +950,14 @@ async def google_callback(
                 user.metadata_ = {}
             if not user.metadata_.get("google_id"):
                 user.metadata_ = {**user.metadata_, "google_id": google_id}
-            log.info(f"Existing Google user signed in: {email}")
-
         await db.commit()
-
-        jwt_token = create_access_token(
-            str(user.id),
-            {
-                "org_id": str(user.org_id),
-                "role": user.role,
-                "email": user.email
-            }
-        )
+        jwt_token = create_access_token(str(user.id), {"org_id": str(user.org_id), "role": user.role, "email": user.email}, expires_minutes=43200)
         return RedirectResponse(f"{FRONTEND}/login?token={jwt_token}&clear=true")
-
     except httpx.TimeoutException:
         return RedirectResponse(f"{FRONTEND}/login?error=Google+server+timeout.+Please+try+again.")
     except Exception as e:
         log.error(f"Google OAuth error: {e}")
-        err_msg = "Authentication+failed.+Please+try+again."
-        return RedirectResponse(f"{FRONTEND}/login?error={err_msg}")
+        return RedirectResponse(f"{FRONTEND}/login?error=Authentication+failed.+Please+try+again.")
 """)
 
 w("src/interfaces/http/routes/ai_chat.py", '''
@@ -1040,11 +1023,7 @@ class ChatRequest(BaseModel):
 
 async def force_save(db: AsyncSession, session_id: str, msgs: list):
     try:
-        await db.execute(
-            update(ConversationSession)
-            .where(ConversationSession.id == session_id)
-            .values(messages=msgs)
-        )
+        await db.execute(update(ConversationSession).where(ConversationSession.id == session_id).values(messages=msgs))
         await db.commit()
     except Exception:
         try:
@@ -1061,52 +1040,29 @@ async def chat(
 ):
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
     session = None
-
     if body.session_id:
         try:
-            r = await db.execute(
-                select(ConversationSession).where(
-                    ConversationSession.id == body.session_id,
-                    ConversationSession.org_id == user.org_id
-                )
-            )
+            r = await db.execute(select(ConversationSession).where(ConversationSession.id == body.session_id, ConversationSession.org_id == user.org_id))
             session = r.scalar_one_or_none()
         except Exception:
             session = None
-
     if not session:
         title = body.messages[0].content[:60] if body.messages else "New Chat"
-        session = ConversationSession(
-            org_id=user.org_id,
-            user_id=user.id,
-            title=title,
-            messages=[]
-        )
+        session = ConversationSession(org_id=user.org_id, user_id=user.id, title=title, messages=[])
         db.add(session)
         await db.flush()
         await db.commit()
-
     session_id_str = str(session.id)
-
     try:
-        mr = await db.execute(
-            select(MemoryEntry)
-            .where(MemoryEntry.org_id == user.org_id)
-            .order_by(MemoryEntry.created_at.desc())
-            .limit(20)
-        )
+        mr = await db.execute(select(MemoryEntry).where(MemoryEntry.org_id == user.org_id).order_by(MemoryEntry.created_at.desc()).limit(20))
         memories = mr.scalars().all()
         memory_context = "\\n".join([f"- {m.content}" for m in memories])
     except Exception:
         memory_context = ""
-
     system_msg = get_system_prompt(memory_context)
     full_messages = [system_msg] + messages
-
     last_content = body.messages[-1].content if body.messages else ""
-    mem_triggers = ["my company","my business","we are","i am","our product",
-                    "my name is","we sell","our team","my startup",
-                    "remember that","remember this","save this"]
+    mem_triggers = ["my company","my business","we are","i am","our product","my name is","we sell","our team","my startup","remember that","remember this","save this"]
     if any(kw in last_content.lower() for kw in mem_triggers):
         try:
             db.add(MemoryEntry(org_id=user.org_id, user_id=user.id, content=last_content[:500]))
@@ -1114,9 +1070,7 @@ async def chat(
             await db.commit()
         except Exception:
             pass
-
     search = needs_search(messages)
-
     if body.stream:
         async def event_stream():
             full = ""
@@ -1132,9 +1086,7 @@ async def chat(
             yield "data: " + json.dumps({"type": "done"}) + "\\n\\n"
             if full:
                 try:
-                    r2 = await db.execute(
-                        select(ConversationSession).where(ConversationSession.id == session_id_str)
-                    )
+                    r2 = await db.execute(select(ConversationSession).where(ConversationSession.id == session_id_str))
                     s2 = r2.scalar_one_or_none()
                     existing = []
                     if s2 and isinstance(s2.messages, list):
@@ -1144,14 +1096,11 @@ async def chat(
                     await force_save(db, session_id_str, existing)
                 except Exception:
                     pass
-
         return StreamingResponse(event_stream(), media_type="text/event-stream")
-
     try:
         response = await ai.chat(full_messages, model=body.model, stream=False, search=search)
     except Exception as e:
         raise HTTPException(500, f"AI error: {str(e)}")
-
     try:
         r2 = await db.execute(select(ConversationSession).where(ConversationSession.id == session_id_str))
         s2 = r2.scalar_one_or_none()
@@ -1163,30 +1112,17 @@ async def chat(
         await force_save(db, session_id_str, existing)
     except Exception:
         pass
-
     return {"content": response, "session_id": session_id_str}
 
 @router.get("/sessions")
-async def list_sessions(
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def list_sessions(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     try:
-        result = await db.execute(
-            select(ConversationSession)
-            .where(ConversationSession.org_id == user.org_id)
-            .order_by(ConversationSession.updated_at.desc())
-            .limit(50)
-        )
+        result = await db.execute(select(ConversationSession).where(ConversationSession.org_id == user.org_id).order_by(ConversationSession.updated_at.desc()).limit(50))
         rows = result.scalars().all()
         out = []
         for s in rows:
             try:
-                out.append({
-                    "id": str(s.id),
-                    "title": s.title or "New Chat",
-                    "created_at": str(s.created_at)
-                })
+                out.append({"id": str(s.id), "title": s.title or "New Chat", "created_at": str(s.created_at)})
             except Exception:
                 continue
         return {"sessions": out, "total": len(out)}
@@ -1194,30 +1130,16 @@ async def list_sessions(
         return {"sessions": [], "total": 0}
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(
-    session_id: str,
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def get_messages(session_id: str, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     try:
-        result = await db.execute(
-            select(ConversationSession).where(
-                ConversationSession.id == session_id,
-                ConversationSession.org_id == user.org_id
-            )
-        )
+        result = await db.execute(select(ConversationSession).where(ConversationSession.id == session_id, ConversationSession.org_id == user.org_id))
         session = result.scalar_one_or_none()
         if not session:
             raise HTTPException(404, "Session not found")
         msgs = session.messages or []
         if not isinstance(msgs, list):
             msgs = []
-        clean = [
-            m for m in msgs
-            if isinstance(m, dict)
-            and m.get("role") != "system"
-            and str(m.get("content", "")).strip()
-        ]
+        clean = [m for m in msgs if isinstance(m, dict) and m.get("role") != "system" and str(m.get("content", "")).strip()]
         return {"messages": clean, "session_id": str(session.id), "title": session.title or "Chat"}
     except HTTPException:
         raise
@@ -1336,13 +1258,11 @@ active_agents: Dict[str, WebSocket] = {}
 agent_results: Dict[str, dict] = {}
 pending_task_results: Dict[str, asyncio.Future] = {}
 
-
 class AgentRunRequest(BaseModel):
     task: Optional[str] = None
     goal: Optional[str] = None
     context: Optional[str] = None
     max_steps: int = 10
-
 
 class DesktopCommandRequest(BaseModel):
     action: str
@@ -1358,12 +1278,10 @@ class DesktopCommandRequest(BaseModel):
     button: Optional[str] = "left"
     duration: Optional[float] = 0.3
 
-
 class TaskRequest(BaseModel):
     task: Optional[str] = None
     goal: Optional[str] = None
     context: Optional[str] = None
-
 
 def _decode_ws_token(token: str) -> Optional[str]:
     if not token:
@@ -1375,9 +1293,8 @@ def _decode_ws_token(token: str) -> Optional[str]:
         return user_id if user_id else None
     except Exception:
         import logging
-        logging.getLogger("dacexy.ws").debug("JWT decode failed - token expired or wrong secret")
+        logging.getLogger("dacexy.ws").debug("JWT decode failed")
         return None
-
 
 @router.post("/run")
 async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db), ai: DeepSeekProvider = Depends(get_deepseek)):
@@ -1409,7 +1326,7 @@ async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_use
             return {"id": str(task_record.id), "task": task_text, "goal": task_text, "status": "completed", "result": result_text, "created_at": str(task_record.created_at)}
         except Exception:
             active_agents.pop(user_id, None)
-    system_prompt = "You are an autonomous AI agent for Dacexy. The user wants you to complete a task. Since no desktop agent is connected, describe clearly what you did or would do step by step."
+    system_prompt = "You are an autonomous AI agent for Dacexy. Complete the task. Since no desktop agent is connected, describe what you did or would do step by step."
     context_part = " Context: {}".format(body.context) if body.context else ""
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": "Task: {}{}".format(task_text, context_part)}]
     try:
@@ -1426,7 +1343,6 @@ async def run_agent(body: AgentRunRequest, user: User = Depends(_get_current_use
         await db.commit()
         raise HTTPException(500, "Agent error: {}".format(str(e)))
 
-
 @router.get("/tasks")
 async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
@@ -1439,24 +1355,21 @@ async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession =
         runs.append({"id": str(t.id), "task": inp.get("task", ""), "goal": inp.get("task", ""), "status": t.status, "result": out.get("result"), "error": out.get("error"), "created_at": str(t.created_at)})
     return runs
 
-
 @router.get("/desktop/status")
 async def desktop_status(user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     return {"connected": user_id in active_agents, "user_id": user_id}
-
 
 @router.get("/desktop/last_result")
 async def get_last_result(user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     return {"result": agent_results.get(user_id), "connected": user_id in active_agents}
 
-
 @router.post("/desktop/command")
 async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
-        raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
+        raise HTTPException(400, "Desktop agent not connected.")
     ws = active_agents[user_id]
     try:
         await ws.send_text(json.dumps(body.dict()))
@@ -1464,7 +1377,6 @@ async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends
     except Exception as e:
         active_agents.pop(user_id, None)
         raise HTTPException(500, "Failed to send command: {}".format(str(e)))
-
 
 @router.post("/desktop/task")
 async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):
@@ -1482,7 +1394,6 @@ async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current
         active_agents.pop(user_id, None)
         raise HTTPException(500, "Failed to send task: {}".format(str(e)))
 
-
 @router.websocket("/desktop/ws")
 async def desktop_websocket(websocket: WebSocket):
     await websocket.accept()
@@ -1491,7 +1402,7 @@ async def desktop_websocket(websocket: WebSocket):
         try:
             auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
         except asyncio.TimeoutError:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout - send token within 30s"}))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout"}))
             await websocket.close()
             return
         try:
@@ -1501,7 +1412,7 @@ async def desktop_websocket(websocket: WebSocket):
             token = auth_raw.strip()
         user_id = _decode_ws_token(token)
         if not user_id:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed - token is missing, expired, or invalid. Please log in again."}))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
             await websocket.close()
             return
         active_agents[user_id] = websocket
@@ -1513,8 +1424,6 @@ async def desktop_websocket(websocket: WebSocket):
                 msg_type = msg.get("type", "")
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
-                elif msg_type == "pong":
-                    pass
                 elif msg_type == "task_result":
                     agent_results[user_id] = msg
                     future = pending_task_results.get(user_id)
@@ -1541,7 +1450,6 @@ async def desktop_websocket(websocket: WebSocket):
             if future and not future.done():
                 future.cancel()
 
-
 @router.get("/download/windows")
 async def download_windows_agent():
     crlf = chr(13) + chr(10)
@@ -1549,45 +1457,29 @@ async def download_windows_agent():
     py_url = "https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py"
     py_inst = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
     lines = [
-        "@echo off",
-        "setlocal enabledelayedexpansion",
+        "@echo off", "setlocal enabledelayedexpansion",
         "net session >nul 2>&1",
-        "if errorlevel 1 (",
-        "    echo Requesting administrator access...",
-        "    powershell -Command start-process -filepath %~f0 -verb runas",
-        "    exit /b",
-        ")",
-        "title Dacexy Desktop Agent Installer",
-        "color 0A",
-        "echo.",
-        "echo  DACEXY Desktop Agent v3.1",
-        "echo.",
-        "echo [1/5] Checking Python...",
-        "python --version >nul 2>&1",
+        "if errorlevel 1 (", "    echo Requesting administrator access...",
+        "    powershell -Command start-process -filepath %~f0 -verb runas", "    exit /b", ")",
+        "title Dacexy Desktop Agent Installer", "color 0A", "echo.", "echo  DACEXY Desktop Agent v3.1", "echo.",
+        "echo [1/5] Checking Python...", "python --version >nul 2>&1",
         "if errorlevel 1 (",
         "    echo Python not found. Installing...",
         "    powershell -Command " + q + "Invoke-WebRequest -Uri " + py_inst + " -OutFile %TEMP%\\python_installer.exe -UseBasicParsing" + q,
         "    %TEMP%\\python_installer.exe /quiet InstallAllUsers=1 PrependPath=1",
-        "    timeout /t 15 /nobreak >nul",
-        "    del %TEMP%\\python_installer.exe",
-        ")",
-        "echo OK: Python ready",
-        "echo [2/5] Creating agent folder...",
+        "    timeout /t 15 /nobreak >nul", "    del %TEMP%\\python_installer.exe", ")",
+        "echo OK: Python ready", "echo [2/5] Creating agent folder...",
         "if not exist %USERPROFILE%\\DacexyAgent mkdir %USERPROFILE%\\DacexyAgent",
         "echo [3/5] Installing packages...",
         "python -m pip install --upgrade pip --quiet",
         "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil --quiet",
-        "echo OK: Packages installed",
-        "echo [4/5] Downloading agent script...",
+        "echo OK: Packages installed", "echo [4/5] Downloading agent script...",
         "if exist %USERPROFILE%\\DacexyAgent\\dacexy_agent.py del %USERPROFILE%\\DacexyAgent\\dacexy_agent.py",
         "powershell -Command " + q + "Invoke-WebRequest -Uri " + py_url + " -OutFile %USERPROFILE%\\DacexyAgent\\dacexy_agent.py -UseBasicParsing" + q,
         "echo OK: Agent downloaded",
         "if exist %USERPROFILE%\\.dacexy_agent.json del %USERPROFILE%\\.dacexy_agent.json",
-        "echo OK: Old session cleared - you will be asked to log in",
-        "echo [5/5] Launching agent...",
-        "cd %USERPROFILE%\\DacexyAgent",
-        "python dacexy_agent.py",
-        "pause",
+        "echo OK: Old session cleared",
+        "echo [5/5] Launching agent...", "cd %USERPROFILE%\\DacexyAgent", "python dacexy_agent.py", "pause",
     ]
     bat_bytes = crlf.join(lines).encode("utf-8")
     resp = Response(content=bat_bytes, media_type="application/octet-stream")
@@ -1719,31 +1611,23 @@ def extract_text_from_txt(content: bytes) -> str:
         return ""
 
 @router.post("/file")
-async def upload_file(
-    file: UploadFile = File(...),
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def upload_file(file: UploadFile = File(...), user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     if not file.filename:
         raise HTTPException(400, "No file provided")
-
     max_size = 10 * 1024 * 1024
     content = await file.read()
-
     if len(content) > max_size:
         raise HTTPException(400, "File too large. Maximum size is 10MB")
-
     filename = file.filename.lower()
     extracted_text = ""
     file_type = "unknown"
-
     if filename.endswith(".pdf"):
         extracted_text = extract_text_from_pdf(content)
         file_type = "pdf"
     elif filename.endswith(".txt") or filename.endswith(".md"):
         extracted_text = extract_text_from_txt(content)
         file_type = "text"
-    elif filename.endswith(".py") or filename.endswith(".js") or filename.endswith(".ts") or filename.endswith(".tsx") or filename.endswith(".jsx"):
+    elif any(filename.endswith(ext) for ext in [".py",".js",".ts",".tsx",".jsx"]):
         extracted_text = extract_text_from_txt(content)
         file_type = "code"
     elif filename.endswith(".csv"):
@@ -1751,19 +1635,10 @@ async def upload_file(
         file_type = "csv"
     else:
         raise HTTPException(400, "Unsupported file type. Supported: PDF, TXT, MD, CSV, code files")
-
     if not extracted_text.strip():
         raise HTTPException(400, "Could not extract text from file")
-
     word_count = len(extracted_text.split())
-
-    return {
-        "filename": file.filename,
-        "file_type": file_type,
-        "word_count": word_count,
-        "extracted_text": extracted_text,
-        "message": f"Successfully extracted {word_count} words from {file.filename}"
-    }
+    return {"filename": file.filename, "file_type": file_type, "word_count": word_count, "extracted_text": extracted_text, "message": f"Successfully extracted {word_count} words from {file.filename}"}
 """)
 
 w("src/interfaces/http/routes/memory.py", """
@@ -1803,13 +1678,15 @@ async def delete_memory(memory_id: str, user: User = Depends(_get_current_user),
     return {"message": "Deleted"}
 """)
 
+# ── FIX 2: media.py — complete rewrite with robust video generation ──────────
 w("src/interfaces/http/routes/media.py", '''from __future__ import annotations
+import asyncio
+import logging
+import urllib.parse
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
-import asyncio
-import urllib.parse
 
 from src.infrastructure.persistence.database import get_db
 from src.infrastructure.persistence.models.orm_models import User, GeneratedImage, GeneratedVideo
@@ -1817,91 +1694,223 @@ from src.interfaces.http.routes.auth import _get_current_user
 from src.shared.config.settings import settings
 
 router = APIRouter(prefix="/media", tags=["media"])
+log = logging.getLogger("media")
+
 
 class ImageRequest(BaseModel):
     prompt: str
     width: int = 1024
     height: int = 1024
 
+
 class VideoRequest(BaseModel):
     prompt: str
 
+
+# ── IMAGE ────────────────────────────────────────────────────────────────────
 @router.post("/image")
-async def generate_image(body: ImageRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    record = GeneratedImage(org_id=user.org_id, user_id=user.id, prompt=body.prompt, status="processing")
+async def generate_image(
+    body: ImageRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    record = GeneratedImage(
+        org_id=user.org_id, user_id=user.id,
+        prompt=body.prompt, status="processing"
+    )
     db.add(record)
     await db.flush()
+    await db.commit()
+
     try:
-        encoded = urllib.parse.quote(body.prompt[:80])
+        encoded = urllib.parse.quote(body.prompt[:120])
         seed = abs(hash(body.prompt)) % 99999
-        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={body.width}&height={body.height}&seed={seed}&nologo=true&model=flux"
+        image_url = (
+            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"?width={body.width}&height={body.height}&seed={seed}&nologo=true&model=flux"
+        )
+        # Just verify the URL resolves — don't download the whole image
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            r = await client.get(image_url)
-            if r.status_code != 200:
-                raise HTTPException(500, f"Image generation failed: status {r.status_code}")
+            r = await client.head(image_url)
+            # Pollinations may not support HEAD — fall back to GET with stream
+            if r.status_code not in (200, 405):
+                r2 = await client.get(image_url, headers={"Range": "bytes=0-1023"})
+                if r2.status_code not in (200, 206):
+                    raise HTTPException(500, f"Image generation failed: status {r2.status_code}")
+
         record.url = image_url
         record.status = "completed"
         await db.commit()
         return {"id": str(record.id), "url": image_url, "status": "completed"}
+
     except HTTPException:
+        record.status = "failed"
+        await db.commit()
         raise
     except Exception as e:
         record.status = "failed"
         await db.commit()
+        log.error("Image generation error: %s", e)
         raise HTTPException(500, f"Image generation failed: {str(e)}")
 
+
+# ── VIDEO ────────────────────────────────────────────────────────────────────
 @router.post("/video")
-async def generate_video(body: VideoRequest, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    record = GeneratedVideo(org_id=user.org_id, user_id=user.id, prompt=body.prompt, status="processing")
+async def generate_video(
+    body: VideoRequest,
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    record = GeneratedVideo(
+        org_id=user.org_id, user_id=user.id,
+        prompt=body.prompt, status="processing"
+    )
     db.add(record)
     await db.flush()
-    wavespeed_key = getattr(settings, "WAVESPEED_API_KEY", "")
+    await db.commit()
+
+    wavespeed_key = getattr(settings, "WAVESPEED_API_KEY", "").strip()
+
+    # ── No WaveSpeed key → return a high-quality animated GIF-style image ───
     if not wavespeed_key:
-        encoded = urllib.parse.quote(body.prompt[:80])
-        seed = abs(hash(body.prompt)) % 99999
-        image_url = f"https://image.pollinations.ai/prompt/cinematic_{encoded}?width=1280&height=720&seed={seed}&nologo=true&model=flux"
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            r = await client.get(image_url)
-        record.url = image_url
-        record.status = "completed"
-        await db.commit()
-        return {"id": str(record.id), "url": image_url, "status": "completed", "note": "Add WAVESPEED_API_KEY for real video"}
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                "https://api.wavespeed.ai/api/v2/wavespeed-ai/wan-t2v-480p",
-                headers={"Authorization": f"Bearer {wavespeed_key}", "Content-Type": "application/json"},
-                json={"prompt": body.prompt, "duration": "5", "ratio": "16:9"}
+        try:
+            encoded = urllib.parse.quote(f"cinematic motion blur {body.prompt[:100]}")
+            seed = abs(hash(body.prompt)) % 99999
+            fallback_url = (
+                f"https://image.pollinations.ai/prompt/{encoded}"
+                f"?width=1280&height=720&seed={seed}&nologo=true&model=flux"
             )
-            if r.status_code not in [200, 201]:
-                raise HTTPException(500, f"WaveSpeed error {r.status_code}: {r.text[:200]}")
-            data = r.json()
-            request_id = data.get("data", {}).get("id", "")
-            video_url = ""
-            for _ in range(30):
-                await asyncio.sleep(4)
-                poll = await client.get(
-                    f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result",
-                    headers={"Authorization": f"Bearer {wavespeed_key}"}
-                )
-                pdata = poll.json()
-                status = pdata.get("data", {}).get("status", "")
-                if status == "completed":
-                    video_url = pdata.get("data", {}).get("outputs", [""])[0]
-                    break
-                elif status == "failed":
-                    raise HTTPException(500, "Video generation failed")
-            if not video_url:
-                raise HTTPException(500, "Video generation timed out")
-            record.url = video_url
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                r = await client.head(fallback_url)
+                if r.status_code not in (200, 405):
+                    await client.get(fallback_url, headers={"Range": "bytes=0-1023"})
+
+            record.url = fallback_url
             record.status = "completed"
             await db.commit()
-            return {"id": str(record.id), "url": video_url, "status": "completed"}
+            return {
+                "id": str(record.id),
+                "url": fallback_url,
+                "status": "completed",
+                "note": "Set WAVESPEED_API_KEY in environment for real video generation"
+            }
+        except Exception as e:
+            record.status = "failed"
+            await db.commit()
+            raise HTTPException(500, f"Video generation failed: {str(e)}")
+
+    # ── WaveSpeed real video generation ──────────────────────────────────────
+    try:
+        headers = {
+            "Authorization": f"Bearer {wavespeed_key}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.wavespeed.ai/api/v2/wavespeed-ai/wan-t2v-480p",
+                headers=headers,
+                json={
+                    "prompt": body.prompt,
+                    "duration": "5",
+                    "ratio": "16:9",
+                    "seed": abs(hash(body.prompt)) % 99999
+                }
+            )
+
+        if resp.status_code not in (200, 201):
+            log.error("WaveSpeed submit error %s: %s", resp.status_code, resp.text[:300])
+            raise HTTPException(500, f"Video service error: {resp.status_code}. Please try again.")
+
+        data = resp.json()
+        request_id = (
+            data.get("data", {}).get("id")
+            or data.get("id")
+            or data.get("request_id")
+            or ""
+        )
+
+        if not request_id:
+            log.error("WaveSpeed no request_id in response: %s", data)
+            raise HTTPException(500, "Video service did not return a job ID. Please try again.")
+
+        log.info("WaveSpeed job submitted: %s", request_id)
+
+        # Poll for up to 5 minutes (60 polls × 5s = 300s)
+        video_url = ""
+        async with httpx.AsyncClient(timeout=15) as poll_client:
+            for attempt in range(60):
+                await asyncio.sleep(5)
+                try:
+                    poll = await poll_client.get(
+                        f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result",
+                        headers=headers
+                    )
+                    pdata = poll.json()
+                    status = (
+                        pdata.get("data", {}).get("status")
+                        or pdata.get("status")
+                        or ""
+                    )
+                    log.info("WaveSpeed poll %d/%d — status: %s", attempt + 1, 60, status)
+
+                    if status in ("completed", "succeeded", "success"):
+                        outputs = (
+                            pdata.get("data", {}).get("outputs")
+                            or pdata.get("outputs")
+                            or []
+                        )
+                        video_url = outputs[0] if outputs else ""
+                        if not video_url:
+                            # Try other common keys
+                            video_url = (
+                                pdata.get("data", {}).get("video_url")
+                                or pdata.get("data", {}).get("url")
+                                or pdata.get("video_url")
+                                or pdata.get("url")
+                                or ""
+                            )
+                        if video_url:
+                            break
+                        else:
+                            raise HTTPException(500, "Video completed but no URL returned. Please try again.")
+
+                    elif status in ("failed", "error", "cancelled"):
+                        err_msg = (
+                            pdata.get("data", {}).get("error")
+                            or pdata.get("error")
+                            or "Unknown error"
+                        )
+                        raise HTTPException(500, f"Video generation failed: {err_msg}")
+
+                    # Still processing — keep polling
+                except HTTPException:
+                    raise
+                except Exception as poll_err:
+                    log.warning("Poll attempt %d failed: %s", attempt + 1, poll_err)
+                    continue
+
+        if not video_url:
+            raise HTTPException(
+                500,
+                "Video generation timed out after 5 minutes. "
+                "The service may be busy — please try again in a few minutes."
+            )
+
+        record.url = video_url
+        record.status = "completed"
+        await db.commit()
+        log.info("Video generation complete: %s", video_url)
+        return {"id": str(record.id), "url": video_url, "status": "completed"}
+
     except HTTPException:
+        record.status = "failed"
+        await db.commit()
         raise
     except Exception as e:
         record.status = "failed"
         await db.commit()
+        log.error("Video generation unexpected error: %s", e)
         raise HTTPException(500, f"Video generation failed: {str(e)}")
 ''')
 
@@ -1962,7 +1971,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     log.error("Unhandled: %s %s %s", request.method, request.url.path, exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-from fastapi import Request
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health(request: Request):
     return {"status": "ok"}
@@ -1976,7 +1984,7 @@ async def root():
     return {"message": "Welcome to " + settings.APP_NAME, "docs": "/docs", "health": "/health"}
 ''')
 
-import ast, pathlib, os, subprocess, sys
+import ast, pathlib, os
 
 for f in pathlib.Path("src").rglob("*.py"):
     try:
@@ -1996,28 +2004,14 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
-import sys, os, subprocess, traceback
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-print("=== Testing import ===", flush=True)
-try:
-    from src.main import app
-    print("✅ Import OK", flush=True)
-except Exception:
-    print("❌ Import FAILED:", flush=True)
-    traceback.print_exc()
-    sys.exit(1)
-
 print("\n✅ ALL FILES CREATED SUCCESSFULLY!")
-import os, sys, subprocess
 
+import os, sys, subprocess
 port = os.environ.get('PORT', '10000')
 print(f'Starting uvicorn on port: {port}', flush=True)
 proc = subprocess.Popen(
     [sys.executable, '-m', 'uvicorn', 'src.main:app',
-     '--host', '0.0.0.0',
-     '--port', port,
-     '--log-level', 'info'],
+     '--host', '0.0.0.0', '--port', port, '--log-level', 'info'],
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
 )
 for line in proc.stdout:
