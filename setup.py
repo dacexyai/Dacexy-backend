@@ -1750,9 +1750,8 @@ async def generate_image(
         raise HTTPException(500, f"Image generation failed: {str(e)}")
 
 
-# ── VIDEO ─────────────────────────────────────────────────────────────────────
-async def _pollinations_video_fallback(prompt: str) -> str:
-    """Always-working fallback: returns a high-quality image URL styled as video frame."""
+# ── FALLBACK — always-working cinematic image ─────────────────────────────────
+async def _image_fallback(prompt: str) -> str:
     encoded = urllib.parse.quote(f"cinematic 4k ultra detailed {prompt[:100]}")
     seed = abs(hash(prompt)) % 99999
     url = (
@@ -1764,6 +1763,116 @@ async def _pollinations_video_fallback(prompt: str) -> str:
         if r.status_code not in (200, 206):
             raise Exception(f"Pollinations returned {r.status_code}")
     return url
+
+
+# ── VIDEO ─────────────────────────────────────────────────────────────────────
+# WaveSpeed model endpoints to try in order (first valid one wins)
+WAVESPEED_MODELS = [
+    "wavespeed-ai/wan2.1-t2v-480p",
+    "wavespeed-ai/wan2.1-t2v-720p",
+    "wavespeed-ai/wan-t2v",
+    "wavespeed-ai/wan2-t2v-480p",
+]
+
+
+async def _try_wavespeed(prompt: str, key: str) -> str:
+    """Try each WaveSpeed model until one works. Returns video URL or raises."""
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "prompt": prompt,
+        "duration": "5",
+        "ratio": "16:9",
+        "seed": abs(hash(prompt)) % 99999
+    }
+
+    request_id = ""
+    used_model = ""
+
+    # Try each model endpoint
+    async with httpx.AsyncClient(timeout=30) as client:
+        for model in WAVESPEED_MODELS:
+            url = f"https://api.wavespeed.ai/api/v2/{model}"
+            try:
+                resp = await client.post(url, headers=headers, json=payload)
+                log.info("WaveSpeed model %s → HTTP %s", model, resp.status_code)
+
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    rid = (
+                        data.get("data", {}).get("id")
+                        or data.get("id")
+                        or data.get("request_id")
+                        or ""
+                    )
+                    if rid:
+                        request_id = rid
+                        used_model = model
+                        log.info("WaveSpeed job submitted via %s: %s", model, request_id)
+                        break
+                elif resp.status_code in (401, 403):
+                    # Key is invalid — no point trying other models
+                    raise Exception(f"WaveSpeed key invalid: HTTP {resp.status_code}")
+                # 400 = model not found, try next
+                else:
+                    log.warning("WaveSpeed model %s failed: %s — %s", model, resp.status_code, resp.text[:100])
+                    continue
+            except Exception as e:
+                if "key invalid" in str(e):
+                    raise
+                log.warning("WaveSpeed model %s error: %s", model, e)
+                continue
+
+    if not request_id:
+        raise Exception("No WaveSpeed model accepted the request")
+
+    # Poll for result
+    poll_url = f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result"
+    async with httpx.AsyncClient(timeout=15) as poll_client:
+        for attempt in range(60):
+            await asyncio.sleep(5)
+            try:
+                poll = await poll_client.get(poll_url, headers=headers)
+                pdata = poll.json()
+                status = (
+                    pdata.get("data", {}).get("status")
+                    or pdata.get("status", "")
+                )
+                log.info("WaveSpeed poll %d/60 [%s] — status: %s", attempt + 1, used_model, status)
+
+                if status in ("completed", "succeeded", "success"):
+                    outputs = (
+                        pdata.get("data", {}).get("outputs")
+                        or pdata.get("outputs", [])
+                    )
+                    video_url = outputs[0] if outputs else ""
+                    if not video_url:
+                        video_url = (
+                            pdata.get("data", {}).get("video_url")
+                            or pdata.get("data", {}).get("url")
+                            or pdata.get("video_url", "")
+                            or pdata.get("url", "")
+                        )
+                    if video_url:
+                        return video_url
+                    raise Exception("Video completed but no URL in response")
+
+                elif status in ("failed", "error", "cancelled"):
+                    err = (
+                        pdata.get("data", {}).get("error")
+                        or pdata.get("error", "Unknown error")
+                    )
+                    raise Exception(f"WaveSpeed job failed: {err}")
+
+            except Exception as poll_err:
+                if "completed but no URL" in str(poll_err) or "job failed" in str(poll_err):
+                    raise
+                log.warning("Poll %d error: %s", attempt + 1, poll_err)
+                continue
+
+    raise Exception("WaveSpeed timed out after 5 minutes")
 
 
 @router.post("/video")
@@ -1782,151 +1891,44 @@ async def generate_video(
 
     wavespeed_key = (getattr(settings, "WAVESPEED_API_KEY", "") or "").strip()
 
-    # ── Try WaveSpeed only if key looks valid (non-empty, not a placeholder) ──
     wavespeed_ok = bool(
         wavespeed_key
         and len(wavespeed_key) > 10
         and wavespeed_key not in ("your_key_here", "WAVESPEED_API_KEY", "changeme", "xxx")
     )
 
+    # ── Try WaveSpeed if key looks valid ──────────────────────────────────────
     if wavespeed_ok:
         try:
-            headers = {
-                "Authorization": f"Bearer {wavespeed_key}",
-                "Content-Type": "application/json"
-            }
-
-            # Submit job
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    "https://api.wavespeed.ai/api/v2/wavespeed-ai/wan-t2v-480p",
-                    headers=headers,
-                    json={
-                        "prompt": body.prompt,
-                        "duration": "5",
-                        "ratio": "16:9",
-                        "seed": abs(hash(body.prompt)) % 99999
-                    }
-                )
-
-            # ── If 401/403 → key is bad, fall through to fallback immediately ──
-            if resp.status_code in (401, 403):
-                log.warning(
-                    "WaveSpeed key is invalid (HTTP %s) — using image fallback",
-                    resp.status_code
-                )
-                wavespeed_ok = False  # skip to fallback below
-
-            elif resp.status_code not in (200, 201):
-                log.error("WaveSpeed submit error %s: %s", resp.status_code, resp.text[:300])
-                raise HTTPException(500, f"Video service error {resp.status_code}. Please try again.")
-
-            else:
-                data = resp.json()
-                request_id = (
-                    data.get("data", {}).get("id")
-                    or data.get("id")
-                    or data.get("request_id")
-                    or ""
-                )
-
-                if not request_id:
-                    log.error("WaveSpeed no request_id: %s", data)
-                    raise HTTPException(500, "Video service did not return a job ID.")
-
-                log.info("WaveSpeed job submitted: %s", request_id)
-
-                # Poll up to 5 minutes (60 × 5s)
-                video_url = ""
-                async with httpx.AsyncClient(timeout=15) as poll_client:
-                    for attempt in range(60):
-                        await asyncio.sleep(5)
-                        try:
-                            poll = await poll_client.get(
-                                f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result",
-                                headers=headers
-                            )
-                            pdata = poll.json()
-                            status = (
-                                pdata.get("data", {}).get("status")
-                                or pdata.get("status", "")
-                            )
-                            log.info("WaveSpeed poll %d/60 — status: %s", attempt + 1, status)
-
-                            if status in ("completed", "succeeded", "success"):
-                                outputs = (
-                                    pdata.get("data", {}).get("outputs")
-                                    or pdata.get("outputs", [])
-                                )
-                                video_url = outputs[0] if outputs else ""
-                                if not video_url:
-                                    video_url = (
-                                        pdata.get("data", {}).get("video_url")
-                                        or pdata.get("data", {}).get("url")
-                                        or pdata.get("video_url", "")
-                                        or pdata.get("url", "")
-                                    )
-                                if video_url:
-                                    break
-                                raise HTTPException(500, "Video completed but no URL returned.")
-
-                            elif status in ("failed", "error", "cancelled"):
-                                err = (
-                                    pdata.get("data", {}).get("error")
-                                    or pdata.get("error", "Unknown error")
-                                )
-                                raise HTTPException(500, f"Video generation failed: {err}")
-
-                        except HTTPException:
-                            raise
-                        except Exception as poll_err:
-                            log.warning("Poll %d error: %s", attempt + 1, poll_err)
-                            continue
-
-                if not video_url:
-                    raise HTTPException(
-                        500,
-                        "Video generation timed out after 5 minutes. Please try again."
-                    )
-
-                record.url = video_url
-                record.status = "completed"
-                await db.commit()
-                log.info("WaveSpeed video done: %s", video_url)
-                return {"id": str(record.id), "url": video_url, "status": "completed"}
-
-        except HTTPException:
-            # Only re-raise if it's NOT a key/auth problem
-            # For auth problems we fall through to the image fallback
-            record.status = "failed"
+            video_url = await _try_wavespeed(body.prompt, wavespeed_key)
+            record.url = video_url
+            record.status = "completed"
             await db.commit()
-            raise
+            log.info("WaveSpeed video done: %s", video_url)
+            return {"id": str(record.id), "url": video_url, "status": "completed"}
         except Exception as e:
-            log.error("WaveSpeed unexpected error: %s", e)
-            # Fall through to image fallback
-            wavespeed_ok = False
+            log.warning("WaveSpeed failed (%s), using image fallback", e)
+            # Fall through to image fallback below
 
-    # ── FALLBACK: Always works — cinematic image via Pollinations ─────────────
-    # This runs when: no key set, key is invalid/401, or WaveSpeed errored
+    # ── FALLBACK: Pollinations cinematic image (always works) ─────────────────
     try:
-        log.info("Using image fallback for video prompt: %s", body.prompt[:60])
-        fallback_url = await _pollinations_video_fallback(body.prompt)
+        log.info("Using image fallback for: %s", body.prompt[:60])
+        fallback_url = await _image_fallback(body.prompt)
         record.url = fallback_url
         record.status = "completed"
         await db.commit()
-        log.info("Fallback image-as-video done: %s", fallback_url)
         return {
             "id": str(record.id),
             "url": fallback_url,
             "status": "completed",
-            "note": "Add a valid WAVESPEED_API_KEY in Render environment for real video"
+            "note": "Set a valid WAVESPEED_API_KEY in Render env for real video generation"
         }
     except Exception as e:
         record.status = "failed"
         await db.commit()
         log.error("Fallback also failed: %s", e)
         raise HTTPException(500, f"Video generation failed: {str(e)}")
-
+        
 ''')
 
 w("src/main.py", '''
