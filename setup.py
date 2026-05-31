@@ -1321,7 +1321,6 @@ async def run_agent(
     await db.flush()
     await db.commit()
 
-    # If desktop agent is connected, send task directly to it
     if user_id in active_agents:
         ws = active_agents[user_id]
         try:
@@ -1336,7 +1335,7 @@ async def run_agent(
             }))
             try:
                 result_data = await asyncio.wait_for(future, timeout=120)
-                result_text = f"Completed {result_data.get('actions_taken', 0)} actions on your desktop."
+                result_text = "Completed {} actions on your desktop.".format(result_data.get("actions_taken", 0))
             except asyncio.TimeoutError:
                 result_text = "Task sent to desktop agent but timed out waiting for confirmation."
             finally:
@@ -1344,77 +1343,41 @@ async def run_agent(
             task_record.status = "completed"
             task_record.output_data = {"result": result_text}
             await db.commit()
-            return {
-                "id": str(task_record.id),
-                "task": task_text,
-                "status": "completed",
-                "result": result_text,
-                "created_at": str(task_record.created_at)
-            }
+            return {"id": str(task_record.id), "task": task_text, "status": "completed", "result": result_text, "created_at": str(task_record.created_at)}
         except Exception:
             active_agents.pop(user_id, None)
 
-    # No desktop agent connected — use AI to describe the task
-    system_prompt = (
-        "You are an autonomous AI agent for Dacexy. "
-        "The user wants you to complete a task on their computer. "
-        "Since no desktop agent is connected, describe clearly what you would do step by step, "
-        "then tell the user to connect the Desktop Agent from Settings for automatic execution."
-    )
-    context_part = f" Context: {body.context}" if body.context else ""
+    system_prompt = "You are an autonomous AI agent for Dacexy. Complete the task. Since no desktop agent is connected, describe what you would do step by step."
+    context_part = " Context: {}".format(body.context) if body.context else ""
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Task: {task_text}{context_part}"}
+        {"role": "user", "content": "Task: {}{}".format(task_text, context_part)}
     ]
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
         if isinstance(result, list):
-            result = " ".join(
-                block.get("text", "") for block in result
-                if isinstance(block, dict) and block.get("type") == "text"
-            )
+            result = " ".join(block.get("text", "") for block in result if isinstance(block, dict) and block.get("type") == "text")
         task_record.status = "completed"
         task_record.output_data = {"result": result}
         await db.commit()
-        return {
-            "id": str(task_record.id),
-            "task": task_text,
-            "status": "completed",
-            "result": result,
-            "created_at": str(task_record.created_at)
-        }
+        return {"id": str(task_record.id), "task": task_text, "status": "completed", "result": result, "created_at": str(task_record.created_at)}
     except Exception as e:
         task_record.status = "failed"
         task_record.output_data = {"error": str(e)}
         await db.commit()
-        raise HTTPException(500, f"Agent error: {str(e)}")
+        raise HTTPException(500, "Agent error: {}".format(str(e)))
 
 
 @router.get("/tasks")
-async def list_tasks(
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
-    result = await db.execute(
-        select(AiTask)
-        .where(AiTask.org_id == user.org_id)
-        .order_by(AiTask.created_at.desc())
-        .limit(50)
-    )
+    result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(50))
     tasks = result.scalars().all()
     runs = []
     for t in tasks:
         out = t.output_data or {}
         inp = t.input_data or {}
-        runs.append({
-            "id": str(t.id),
-            "task": inp.get("task", ""),
-            "status": t.status,
-            "result": out.get("result"),
-            "error": out.get("error"),
-            "created_at": str(t.created_at)
-        })
+        runs.append({"id": str(t.id), "task": inp.get("task", ""), "status": t.status, "result": out.get("result"), "error": out.get("error"), "created_at": str(t.created_at)})
     return runs
 
 
@@ -1431,27 +1394,21 @@ async def get_last_result(user: User = Depends(_get_current_user)):
 
 
 @router.post("/desktop/command")
-async def send_desktop_command(
-    body: DesktopCommandRequest,
-    user: User = Depends(_get_current_user)
-):
+async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
-        raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
+        raise HTTPException(400, "Desktop agent not connected.")
     ws = active_agents[user_id]
     try:
         await ws.send_text(json.dumps(body.dict()))
         return {"status": "sent", "action": body.action}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, f"Failed to send command: {str(e)}")
+        raise HTTPException(500, "Failed to send command: {}".format(str(e)))
 
 
 @router.post("/desktop/task")
-async def send_desktop_task(
-    body: TaskRequest,
-    user: User = Depends(_get_current_user)
-):
+async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):
     user_id = str(user.id)
     if user_id not in active_agents:
         raise HTTPException(400, "Desktop agent not connected.")
@@ -1460,15 +1417,11 @@ async def send_desktop_task(
     if not task_text:
         raise HTTPException(400, "task or goal required")
     try:
-        await ws.send_text(json.dumps({
-            "type": "task",
-            "task": task_text,
-            "context": body.context or ""
-        }))
+        await ws.send_text(json.dumps({"type": "task", "task": task_text, "context": body.context or ""}))
         return {"status": "sent", "task": task_text}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, f"Failed to send task: {str(e)}")
+        raise HTTPException(500, "Failed to send task: {}".format(str(e)))
 
 
 @router.websocket("/desktop/ws")
@@ -1476,43 +1429,29 @@ async def desktop_websocket(websocket: WebSocket):
     await websocket.accept()
     user_id = None
     try:
-        # Authenticate
         try:
             auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
         except asyncio.TimeoutError:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout — send token within 30s"}))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout"}))
             await websocket.close()
             return
-
         try:
             auth_data = json.loads(auth_raw)
             token = auth_data.get("token", "")
         except Exception:
             token = auth_raw.strip()
-
         user_id = _decode_ws_token(token)
         if not user_id:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Authentication failed — token is missing, expired, or invalid. Please log in again."
-            }))
+            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
             await websocket.close()
             return
-
         active_agents[user_id] = websocket
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "message": "Desktop agent connected",
-            "user_id": user_id
-        }))
-
-        # Main message loop
+        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
                 msg = json.loads(data)
                 msg_type = msg.get("type", "")
-
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
                 elif msg_type == "pong":
@@ -1522,10 +1461,8 @@ async def desktop_websocket(websocket: WebSocket):
                     future = pending_task_results.get(user_id)
                     if future and not future.done():
                         future.set_result(msg)
-                elif msg_type in ("result", "screenshot_before", "screenshot_after",
-                                  "system_info", "error", "voice_result"):
+                elif msg_type in ("result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"):
                     agent_results[user_id] = msg
-
             except asyncio.TimeoutError:
                 try:
                     await websocket.send_text(json.dumps({"type": "ping"}))
@@ -1535,7 +1472,6 @@ async def desktop_websocket(websocket: WebSocket):
                 break
             except Exception:
                 break
-
     except Exception:
         pass
     finally:
@@ -1549,11 +1485,12 @@ async def desktop_websocket(websocket: WebSocket):
 
 @router.get("/download/windows")
 async def download_windows_agent():
-    """Serve the Windows installer bat file."""
-    crlf = "\r\n"
-    q = '"'
     py_url = "https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py"
     py_inst = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+
+    # Build bat content using chr(13)+chr(10) for CRLF to avoid string literal issues in setup.py
+    crlf = chr(13) + chr(10)
+    q = chr(34)
 
     lines = [
         "@echo off",
@@ -1563,107 +1500,70 @@ async def download_windows_agent():
         "echo.",
         "echo  ================================",
         "echo   DACEXY Desktop Agent v11.0",
-        "echo   Installer for Windows",
         "echo  ================================",
         "echo.",
-        "",
-        ":: Step 1 - Check Python, auto-install if missing",
         "echo [1/5] Checking Python...",
         "python --version >nul 2>&1",
         "if errorlevel 1 (",
         "    echo  Python not found. Downloading Python 3.11 automatically...",
-        "    echo  Please wait, this takes 2-3 minutes...",
-        f"    powershell -Command {q}try {{ Write-Host '  Downloading...'; Invoke-WebRequest -Uri '{py_inst}' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing; Write-Host '  Done.' }} catch {{ Write-Host '  ERROR:' $_.Exception.Message; exit 1 }}{q}",
-        "    if errorlevel 1 (",
-        "        echo  ERROR: Could not download Python. Please install from https://python.org/downloads",
-        "        start https://python.org/downloads",
-        "        pause",
-        "        exit /b 1",
-        "    )",
-        "    echo  Installing Python silently...",
+        "    powershell -Command " + q + "try { Invoke-WebRequest -Uri '" + py_inst + "' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing } catch { exit 1 }" + q,
+        "    if errorlevel 1 ( echo  ERROR: Download failed. Visit https://python.org/downloads && pause && exit /b 1 )",
+        "    echo  Installing Python...",
         "    %TEMP%\\python_installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
         "    timeout /t 20 /nobreak >nul",
         "    if exist %TEMP%\\python_installer.exe del %TEMP%\\python_installer.exe",
-        "    for /f \"tokens=2*\" %%a in ('reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" /v PATH 2^>nul') do set \"SYSPATH=%%b\"",
-        "    set \"PATH=%SYSPATH%;%LOCALAPPDATA%\\Programs\\Python\\Python311;%LOCALAPPDATA%\\Programs\\Python\\Python311\\Scripts\"",
+        "    for /f " + q + "tokens=2*" + q + " %%a in ('reg query " + q + "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" + q + " /v PATH 2^>nul') do set " + q + "SYSPATH=%%b" + q,
+        "    set " + q + "PATH=%SYSPATH%;%LOCALAPPDATA%\\Programs\\Python\\Python311;%LOCALAPPDATA%\\Programs\\Python\\Python311\\Scripts" + q,
         "    python --version >nul 2>&1",
-        "    if errorlevel 1 (",
-        "        echo  Python installed. Please close and re-run this installer.",
-        "        pause",
-        "        exit /b 1",
-        "    )",
-        "    echo  Python installed successfully!",
+        "    if errorlevel 1 ( echo  Please close and re-run this installer. && pause && exit /b 1 )",
+        "    echo  Python installed!",
         ")",
-        "for /f \"tokens=*\" %%i in ('python --version 2^>^&1') do echo  OK: %%i",
-        "",
-        ":: Step 2 - Create folder",
+        "for /f " + q + "tokens=*" + q + " %%i in ('python --version 2^>^&1') do echo  OK: %%i",
         "echo.",
         "echo [2/5] Creating agent folder...",
-        "if not exist \"%USERPROFILE%\\DacexyAgent\" mkdir \"%USERPROFILE%\\DacexyAgent\"",
-        "echo  OK: %USERPROFILE%\\DacexyAgent",
-        "",
-        ":: Step 3 - Install packages",
+        "if not exist " + q + "%USERPROFILE%\\DacexyAgent" + q + " mkdir " + q + "%USERPROFILE%\\DacexyAgent" + q,
+        "echo  OK",
         "echo.",
-        "echo [3/5] Installing packages (may take 2-3 minutes)...",
+        "echo [3/5] Installing packages...",
         "python -m pip install --upgrade pip --quiet",
         "python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard --quiet",
-        "if errorlevel 1 (",
-        "    python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard",
-        ")",
         "echo  OK: Packages installed",
-        "",
-        ":: Step 4 - Download agent script",
         "echo.",
         "echo [4/5] Downloading Dacexy Agent...",
-        "if exist \"%USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" del \"%USERPROFILE%\\DacexyAgent\\dacexy_agent.py\"",
-        f"powershell -Command {q}try {{ Invoke-WebRequest -Uri '{py_url}' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing; Write-Host ' OK: Agent downloaded' }} catch {{ Write-Host ' ERROR:' $_.Exception.Message; exit 1 }}{q}",
-        "if errorlevel 1 (",
-        "    echo  ERROR: Could not download agent. Check internet connection.",
-        "    pause",
-        "    exit /b 1",
-        ")",
-        "if exist \"%USERPROFILE%\\.dacexy_agent.json\" del \"%USERPROFILE%\\.dacexy_agent.json\"",
-        "echo  OK: Ready",
-        "",
-        ":: Step 5 - Desktop shortcut",
+        "if exist " + q + "%USERPROFILE%\\DacexyAgent\\dacexy_agent.py" + q + " del " + q + "%USERPROFILE%\\DacexyAgent\\dacexy_agent.py" + q,
+        "powershell -Command " + q + "try { Invoke-WebRequest -Uri '" + py_url + "' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing; Write-Host ' OK' } catch { Write-Host ' ERROR:' $_.Exception.Message; exit 1 }" + q,
+        "if errorlevel 1 ( echo  ERROR: Download failed. Check internet. && pause && exit /b 1 )",
+        "if exist " + q + "%USERPROFILE%\\.dacexy_agent.json" + q + " del " + q + "%USERPROFILE%\\.dacexy_agent.json" + q,
         "echo.",
         "echo [5/5] Creating desktop shortcut...",
-        "set SCRIPT=\"%TEMP%\\dacexy_sc.vbs\"",
-        "echo Set oWS = WScript.CreateObject(\"WScript.Shell\") > %SCRIPT%",
-        "echo Set oLink = oWS.CreateShortcut(\"%USERPROFILE%\\Desktop\\Dacexy Agent.lnk\") >> %SCRIPT%",
-        "echo oLink.TargetPath = \"cmd.exe\" >> %SCRIPT%",
-        "echo oLink.Arguments = \"/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py\" >> %SCRIPT%",
-        "echo oLink.WorkingDirectory = \"%USERPROFILE%\\DacexyAgent\" >> %SCRIPT%",
-        "echo oLink.Description = \"Dacexy Desktop Agent\" >> %SCRIPT%",
-        "echo oLink.IconLocation = \"shell32.dll,15\" >> %SCRIPT%",
+        "set SCRIPT=" + q + "%TEMP%\\dacexy_sc.vbs" + q,
+        "echo Set oWS = WScript.CreateObject(" + q + "WScript.Shell" + q + ") > %SCRIPT%",
+        "echo Set oLink = oWS.CreateShortcut(" + q + "%USERPROFILE%\\Desktop\\Dacexy Agent.lnk" + q + ") >> %SCRIPT%",
+        "echo oLink.TargetPath = " + q + "cmd.exe" + q + " >> %SCRIPT%",
+        "echo oLink.Arguments = " + q + "/k python %USERPROFILE%\\DacexyAgent\\dacexy_agent.py" + q + " >> %SCRIPT%",
+        "echo oLink.WorkingDirectory = " + q + "%USERPROFILE%\\DacexyAgent" + q + " >> %SCRIPT%",
         "echo oLink.Save >> %SCRIPT%",
         "cscript /nologo %SCRIPT%",
         "del %SCRIPT%",
-        "echo  OK: Shortcut on Desktop",
-        "",
         "echo.",
         "echo  ================================",
         "echo   Installation Complete!",
         "echo  ================================",
         "echo.",
-        "echo  Launching Dacexy Agent now...",
+        "echo  Launching Dacexy Agent...",
         "echo  Enter your Dacexy email and password when asked.",
         "echo.",
-        "echo  VOICE CONTROL: Say 'Hey Dacexy' anytime!",
-        "echo  CHAT CONTROL: Use the Agent panel in the Dacexy web app.",
-        "echo.",
         "pause",
-        "cd \"%USERPROFILE%\\DacexyAgent\"",
+        "cd " + q + "%USERPROFILE%\\DacexyAgent" + q,
         "python dacexy_agent.py",
         "pause",
     ]
 
-    bat_content = crlf.join(lines)
-    bat_bytes = bat_content.encode("utf-8")
+    bat_bytes = crlf.join(lines).encode("utf-8")
     resp = Response(content=bat_bytes, media_type="application/octet-stream")
     resp.headers["Content-Disposition"] = "attachment; filename=install_dacexy_agent.bat"
     return resp
-    
+
 ''')
 
 w("src/interfaces/http/routes/voice.py", """
