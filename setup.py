@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
-    WAVESPEED_API_KEY: str = ""
+    STABILITY_API_KEY: str = ""
     PLATFORM_URL: str = "https://dacexy-backend-v7ku.onrender.com"
     APP_BASE_URL: str = "https://dacexy.vercel.app"
     GOOGLE_CLIENT_ID: str = ""
@@ -1760,6 +1760,7 @@ async def delete_memory(memory_id: str, user: User = Depends(_get_current_user),
 # ── FIX 2: media.py — complete rewrite with robust video generation ──────────
 w("src/interfaces/http/routes/media.py", '''from __future__ import annotations
 import asyncio
+import base64
 import logging
 import urllib.parse
 from fastapi import APIRouter, Depends, HTTPException
@@ -1844,116 +1845,107 @@ async def _image_fallback(prompt: str) -> str:
     return url
 
 
-# ── VIDEO ─────────────────────────────────────────────────────────────────────
-# WaveSpeed model endpoints to try in order (first valid one wins)
-WAVESPEED_MODELS = [
-    "wavespeed-ai/wan2.1-t2v-480p",
-    "wavespeed-ai/wan2.1-t2v-720p",
-    "wavespeed-ai/wan-t2v",
-    "wavespeed-ai/wan2-t2v-480p",
-]
+# ── STABILITY AI VIDEO ────────────────────────────────────────────────────────
+# Flow: prompt → generate image via Pollinations → send image to Stability AI
+# image-to-video endpoint → poll for result → return video URL
+#
+# Stability AI image-to-video docs:
+#   POST https://api.stability.ai/v2beta/image-to-video
+#   GET  https://api.stability.ai/v2beta/image-to-video/result/{id}
 
+async def _try_stability_video(prompt: str, key: str) -> str:
+    """
+    1. Generate a seed image from the prompt via Pollinations (free, no key needed).
+    2. Send that image to Stability AI image-to-video endpoint.
+    3. Poll until complete and return the video URL (data URI or hosted URL).
+    """
+    headers_auth = {"authorization": f"Bearer {key}"}
 
-async def _try_wavespeed(prompt: str, key: str) -> str:
-    """Try each WaveSpeed model until one works. Returns video URL or raises."""
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "prompt": prompt,
-        "duration": "5",
-        "ratio": "16:9",
-        "seed": abs(hash(prompt)) % 99999
-    }
+    # ── Step 1: get seed image bytes from Pollinations ─────────────────────
+    encoded = urllib.parse.quote(f"cinematic high quality {prompt[:120]}")
+    seed = abs(hash(prompt)) % 99999
+    pollinations_url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1024&height=576&seed={seed}&nologo=true&model=flux"
+    )
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        img_resp = await client.get(pollinations_url)
+        if img_resp.status_code not in (200, 206):
+            raise Exception(f"Seed image fetch failed: HTTP {img_resp.status_code}")
+        image_bytes = img_resp.content
+        image_content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
 
-    request_id = ""
-    used_model = ""
+    log.info("Stability seed image fetched: %d bytes (%s)", len(image_bytes), image_content_type)
 
-    # Try each model endpoint
-    async with httpx.AsyncClient(timeout=30) as client:
-        for model in WAVESPEED_MODELS:
-            url = f"https://api.wavespeed.ai/api/v2/{model}"
-            try:
-                resp = await client.post(url, headers=headers, json=payload)
-                log.info("WaveSpeed model %s → HTTP %s", model, resp.status_code)
+    # ── Step 2: submit image-to-video job ─────────────────────────────────
+    submit_url = "https://api.stability.ai/v2beta/image-to-video"
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            submit_url,
+            headers=headers_auth,
+            files={"image": ("image.jpg", image_bytes, image_content_type)},
+            data={
+                "seed": seed % 4294967295,   # must be 0–4294967295
+                "cfg_scale": 1.8,
+                "motion_bucket_id": 127,     # 1–255; higher = more motion
+            },
+        )
 
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    rid = (
-                        data.get("data", {}).get("id")
-                        or data.get("id")
-                        or data.get("request_id")
-                        or ""
-                    )
-                    if rid:
-                        request_id = rid
-                        used_model = model
-                        log.info("WaveSpeed job submitted via %s: %s", model, request_id)
-                        break
-                elif resp.status_code in (401, 403):
-                    # Key is invalid — no point trying other models
-                    raise Exception(f"WaveSpeed key invalid: HTTP {resp.status_code}")
-                # 400 = model not found, try next
-                else:
-                    log.warning("WaveSpeed model %s failed: %s — %s", model, resp.status_code, resp.text[:100])
-                    continue
-            except Exception as e:
-                if "key invalid" in str(e):
-                    raise
-                log.warning("WaveSpeed model %s error: %s", model, e)
-                continue
+    log.info("Stability submit → HTTP %s: %s", resp.status_code, resp.text[:200])
 
-    if not request_id:
-        raise Exception("No WaveSpeed model accepted the request")
+    if resp.status_code in (401, 403):
+        raise Exception(f"Stability AI key invalid: HTTP {resp.status_code}")
+    if resp.status_code not in (200, 202):
+        raise Exception(f"Stability AI submit failed: HTTP {resp.status_code} — {resp.text[:200]}")
 
-    # Poll for result
-    poll_url = f"https://api.wavespeed.ai/api/v2/predictions/{request_id}/result"
-    async with httpx.AsyncClient(timeout=15) as poll_client:
-        for attempt in range(60):
+    generation_id = resp.json().get("id", "")
+    if not generation_id:
+        raise Exception("Stability AI returned no generation id")
+
+    log.info("Stability video job submitted: %s", generation_id)
+
+    # ── Step 3: poll for result ────────────────────────────────────────────
+    result_url = f"https://api.stability.ai/v2beta/image-to-video/result/{generation_id}"
+    poll_headers = {**headers_auth, "accept": "video/*"}
+
+    async with httpx.AsyncClient(timeout=30) as poll_client:
+        for attempt in range(60):          # up to 5 minutes (60 × 5s)
             await asyncio.sleep(5)
             try:
-                poll = await poll_client.get(poll_url, headers=headers)
-                pdata = poll.json()
-                status = (
-                    pdata.get("data", {}).get("status")
-                    or pdata.get("status", "")
-                )
-                log.info("WaveSpeed poll %d/60 [%s] — status: %s", attempt + 1, used_model, status)
+                poll = await poll_client.get(result_url, headers=poll_headers)
+                log.info("Stability poll %d/60 → HTTP %s", attempt + 1, poll.status_code)
 
-                if status in ("completed", "succeeded", "success"):
-                    outputs = (
-                        pdata.get("data", {}).get("outputs")
-                        or pdata.get("outputs", [])
-                    )
-                    video_url = outputs[0] if outputs else ""
-                    if not video_url:
-                        video_url = (
-                            pdata.get("data", {}).get("video_url")
-                            or pdata.get("data", {}).get("url")
-                            or pdata.get("video_url", "")
-                            or pdata.get("url", "")
-                        )
-                    if video_url:
-                        return video_url
-                    raise Exception("Video completed but no URL in response")
+                if poll.status_code == 202:
+                    # Still processing — check finish-reason header
+                    finish = poll.headers.get("finish-reason", "")
+                    log.info("Stability still processing (finish-reason: %s)", finish)
+                    continue
 
-                elif status in ("failed", "error", "cancelled"):
-                    err = (
-                        pdata.get("data", {}).get("error")
-                        or pdata.get("error", "Unknown error")
-                    )
-                    raise Exception(f"WaveSpeed job failed: {err}")
+                if poll.status_code == 200:
+                    # Response is raw video bytes
+                    video_bytes = poll.content
+                    if not video_bytes:
+                        raise Exception("Stability returned 200 but empty video body")
+
+                    # Encode as base64 data URI so the frontend can play it directly
+                    b64 = base64.b64encode(video_bytes).decode("utf-8")
+                    video_url = f"data:video/mp4;base64,{b64}"
+                    log.info("Stability video complete: %d bytes", len(video_bytes))
+                    return video_url
+
+                raise Exception(f"Stability poll unexpected HTTP {poll.status_code}: {poll.text[:200]}")
 
             except Exception as poll_err:
-                if "completed but no URL" in str(poll_err) or "job failed" in str(poll_err):
+                if "Stability video complete" in str(poll_err) or "Stability returned 200" in str(poll_err):
                     raise
-                log.warning("Poll %d error: %s", attempt + 1, poll_err)
+                # transient network error — keep retrying
+                log.warning("Stability poll %d error: %s", attempt + 1, poll_err)
                 continue
 
-    raise Exception("WaveSpeed timed out after 5 minutes")
+    raise Exception("Stability AI timed out after 5 minutes")
 
 
+# ── VIDEO ─────────────────────────────────────────────────────────────────────
 @router.post("/video")
 async def generate_video(
     body: VideoRequest,
@@ -1968,25 +1960,25 @@ async def generate_video(
     await db.flush()
     await db.commit()
 
-    wavespeed_key = (getattr(settings, "WAVESPEED_API_KEY", "") or "").strip()
+    stability_key = (getattr(settings, "STABILITY_API_KEY", "") or "").strip()
 
-    wavespeed_ok = bool(
-        wavespeed_key
-        and len(wavespeed_key) > 10
-        and wavespeed_key not in ("your_key_here", "WAVESPEED_API_KEY", "changeme", "xxx")
+    stability_ok = bool(
+        stability_key
+        and len(stability_key) > 10
+        and stability_key not in ("your_key_here", "STABILITY_API_KEY", "changeme", "xxx")
     )
 
-    # ── Try WaveSpeed if key looks valid ──────────────────────────────────────
-    if wavespeed_ok:
+    # ── Try Stability AI if key looks valid ───────────────────────────────────
+    if stability_ok:
         try:
-            video_url = await _try_wavespeed(body.prompt, wavespeed_key)
+            video_url = await _try_stability_video(body.prompt, stability_key)
             record.url = video_url
             record.status = "completed"
             await db.commit()
-            log.info("WaveSpeed video done: %s", video_url)
+            log.info("Stability AI video done")
             return {"id": str(record.id), "url": video_url, "status": "completed"}
         except Exception as e:
-            log.warning("WaveSpeed failed (%s), using image fallback", e)
+            log.warning("Stability AI failed (%s), using image fallback", e)
             # Fall through to image fallback below
 
     # ── FALLBACK: Pollinations cinematic image (always works) ─────────────────
@@ -2000,7 +1992,7 @@ async def generate_video(
             "id": str(record.id),
             "url": fallback_url,
             "status": "completed",
-            "note": "Set a valid WAVESPEED_API_KEY in Render env for real video generation"
+            "note": "Set a valid STABILITY_API_KEY in Render env for real video generation"
         }
     except Exception as e:
         record.status = "failed"
