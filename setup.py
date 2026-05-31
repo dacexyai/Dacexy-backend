@@ -71,7 +71,6 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
-    STABILITY_API_KEY: str = ""
     PLATFORM_URL: str = "https://dacexy-backend-v7ku.onrender.com"
     APP_BASE_URL: str = "https://dacexy.vercel.app"
     GOOGLE_CLIENT_ID: str = ""
@@ -1999,7 +1998,7 @@ async def generate_video(
         await db.commit()
         log.error("Fallback also failed: %s", e)
         raise HTTPException(500, f"Video generation failed: {str(e)}")
-  
+                                
 ''')
 
 w("src/main.py", '''
