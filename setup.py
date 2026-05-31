@@ -2007,7 +2007,7 @@ async def generate_video(
         await db.commit()
         log.error("Fallback also failed: %s", e)
         raise HTTPException(500, f"Video generation failed: {str(e)}")
-                 
+  
 ''')
 
 w("src/main.py", '''
