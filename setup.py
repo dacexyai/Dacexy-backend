@@ -71,7 +71,6 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
-    
     PLATFORM_URL: str = "https://dacexy-backend-v7ku.onrender.com"
     APP_BASE_URL: str = "https://dacexy.vercel.app"
     GOOGLE_CLIENT_ID: str = ""
