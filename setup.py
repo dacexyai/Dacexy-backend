@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 3
-    BYTEZ_API_KEY: str = ""
+    REPLICATE_API_TOKEN: str = ""
     SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
+    
     PLATFORM_URL: str = "https://dacexy-backend-v7ku.onrender.com"
     APP_BASE_URL: str = "https://dacexy.vercel.app"
     GOOGLE_CLIENT_ID: str = ""
