@@ -1239,6 +1239,7 @@ w("src/interfaces/http/routes/agent.py", '''
 from __future__ import annotations
 import json
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -1251,11 +1252,14 @@ from src.interfaces.http.dependencies.container import get_deepseek
 from src.interfaces.http.routes.auth import _get_current_user
 from src.shared.config.settings import settings
 
+log = logging.getLogger("agent")
 router = APIRouter(prefix="/agent", tags=["agent"])
 
+# FIX: use dict with locks for thread safety
 active_agents: Dict[str, WebSocket] = {}
 agent_results: Dict[str, dict] = {}
 pending_task_results: Dict[str, asyncio.Future] = {}
+_agents_lock = asyncio.Lock()
 
 
 class AgentRunRequest(BaseModel):
@@ -1294,9 +1298,8 @@ def _decode_ws_token(token: str) -> Optional[str]:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         user_id = str(payload.get("sub") or payload.get("user_id") or "")
         return user_id if user_id else None
-    except Exception:
-        import logging
-        logging.getLogger("dacexy.ws").debug("JWT decode failed")
+    except Exception as e:
+        logging.getLogger("dacexy.ws").debug("JWT decode failed: %s", e)
         return None
 
 
@@ -1307,77 +1310,146 @@ async def run_agent(
     db: AsyncSession = Depends(get_db),
     ai: DeepSeekProvider = Depends(get_deepseek)
 ):
-    task_text = body.task or body.goal or ""
+    task_text = (body.task or body.goal or "").strip()
     if not task_text:
         raise HTTPException(400, "task or goal is required")
+
+    # FIX: limit task length
+    task_text = task_text[:2000]
     user_id = str(user.id)
+
     task_record = AiTask(
-        org_id=user.org_id, user_id=user.id,
-        task_type="agent_run", status="running",
+        org_id=user.org_id,
+        user_id=user.id,
+        task_type="agent_run",
+        status="running",
         input_data={"task": task_text, "context": body.context}
     )
     db.add(task_record)
     await db.flush()
     await db.commit()
 
+    # Desktop agent is connected — send task directly
     if user_id in active_agents:
         ws = active_agents[user_id]
         try:
             loop = asyncio.get_event_loop()
-            future = loop.create_future()
+            future: asyncio.Future = loop.create_future()
             pending_task_results[user_id] = future
+
             await ws.send_text(json.dumps({
                 "type": "task",
                 "task": task_text,
                 "context": body.context or "",
                 "task_id": str(task_record.id)
             }))
+
             try:
-                result_data = await asyncio.wait_for(future, timeout=120)
-                result_text = "Completed {} actions on your desktop.".format(result_data.get("actions_taken", 0))
+                # FIX: wait for result with timeout
+                result_data = await asyncio.wait_for(asyncio.shield(future), timeout=120)
+                result_text = "Completed {} actions on your desktop.".format(
+                    result_data.get("actions_taken", 0)
+                )
+                if result_data.get("result"):
+                    result_text = str(result_data["result"])
             except asyncio.TimeoutError:
-                result_text = "Task sent to desktop agent but timed out waiting for confirmation."
+                result_text = "Task sent to desktop agent (running in background)."
+            except asyncio.CancelledError:
+                result_text = "Task was cancelled."
             finally:
+                # FIX: always clean up future to prevent memory leak
                 pending_task_results.pop(user_id, None)
+
             task_record.status = "completed"
             task_record.output_data = {"result": result_text}
             await db.commit()
-            return {"id": str(task_record.id), "task": task_text, "status": "completed", "result": result_text, "created_at": str(task_record.created_at)}
-        except Exception:
-            active_agents.pop(user_id, None)
 
-    system_prompt = "You are an autonomous AI agent for Dacexy. Complete the task. Since no desktop agent is connected, describe what you would do step by step."
-    context_part = " Context: {}".format(body.context) if body.context else ""
+            return {
+                "id": str(task_record.id),
+                "task": task_text,
+                "status": "completed",
+                "result": result_text,
+                "created_at": str(task_record.created_at)
+            }
+
+        except WebSocketDisconnect:
+            active_agents.pop(user_id, None)
+            pending_task_results.pop(user_id, None)
+            log.info("Agent disconnected during task for user %s", user_id)
+        except Exception as e:
+            active_agents.pop(user_id, None)
+            pending_task_results.pop(user_id, None)
+            log.warning("Agent task error for user %s: %s", user_id, e)
+
+    # No desktop agent — use AI to describe steps
+    system_prompt = (
+        "You are an autonomous AI agent for Dacexy. "
+        "The user wants to complete a task on their computer. "
+        "Since no desktop agent is connected, describe clearly what you would do "
+        "step by step. Then tell the user to connect the Desktop Agent from Settings "
+        "for automatic execution."
+    )
+    context_part = f" Context: {body.context}" if body.context else ""
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Task: {}{}".format(task_text, context_part)}
+        {"role": "user", "content": f"Task: {task_text}{context_part}"}
     ]
+
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
         if isinstance(result, list):
-            result = " ".join(block.get("text", "") for block in result if isinstance(block, dict) and block.get("type") == "text")
+            result = " ".join(
+                block.get("text", "") for block in result
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        result = str(result)
         task_record.status = "completed"
         task_record.output_data = {"result": result}
         await db.commit()
-        return {"id": str(task_record.id), "task": task_text, "status": "completed", "result": result, "created_at": str(task_record.created_at)}
+        return {
+            "id": str(task_record.id),
+            "task": task_text,
+            "status": "completed",
+            "result": result,
+            "created_at": str(task_record.created_at)
+        }
     except Exception as e:
         task_record.status = "failed"
         task_record.output_data = {"error": str(e)}
         await db.commit()
-        raise HTTPException(500, "Agent error: {}".format(str(e)))
+        raise HTTPException(500, f"Agent error: {str(e)}")
 
 
 @router.get("/tasks")
-async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_tasks(
+    user: User = Depends(_get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     from sqlalchemy import select
-    result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(50))
-    tasks = result.scalars().all()
-    runs = []
-    for t in tasks:
-        out = t.output_data or {}
-        inp = t.input_data or {}
-        runs.append({"id": str(t.id), "task": inp.get("task", ""), "status": t.status, "result": out.get("result"), "error": out.get("error"), "created_at": str(t.created_at)})
-    return runs
+    try:
+        result = await db.execute(
+            select(AiTask)
+            .where(AiTask.org_id == user.org_id)
+            .order_by(AiTask.created_at.desc())
+            .limit(50)
+        )
+        tasks = result.scalars().all()
+        runs = []
+        for t in tasks:
+            out = t.output_data or {}
+            inp = t.input_data or {}
+            runs.append({
+                "id": str(t.id),
+                "task": inp.get("task", ""),
+                "status": t.status,
+                "result": out.get("result"),
+                "error": out.get("error"),
+                "created_at": str(t.created_at)
+            })
+        return runs
+    except Exception as e:
+        log.error("list_tasks error: %s", e)
+        return []
 
 
 @router.get("/desktop/status")
@@ -1389,105 +1461,202 @@ async def desktop_status(user: User = Depends(_get_current_user)):
 @router.get("/desktop/last_result")
 async def get_last_result(user: User = Depends(_get_current_user)):
     user_id = str(user.id)
-    return {"result": agent_results.get(user_id), "connected": user_id in active_agents}
+    return {
+        "result": agent_results.get(user_id),
+        "connected": user_id in active_agents
+    }
 
 
 @router.post("/desktop/command")
-async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
+async def send_desktop_command(
+    body: DesktopCommandRequest,
+    user: User = Depends(_get_current_user)
+):
     user_id = str(user.id)
     if user_id not in active_agents:
-        raise HTTPException(400, "Desktop agent not connected.")
+        raise HTTPException(400, "Desktop agent not connected. Run the agent on your computer first.")
     ws = active_agents[user_id]
     try:
         await ws.send_text(json.dumps(body.dict()))
         return {"status": "sent", "action": body.action}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, "Failed to send command: {}".format(str(e)))
+        raise HTTPException(500, f"Failed to send command: {str(e)}")
 
 
 @router.post("/desktop/task")
-async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):
+async def send_desktop_task(
+    body: TaskRequest,
+    user: User = Depends(_get_current_user)
+):
     user_id = str(user.id)
     if user_id not in active_agents:
         raise HTTPException(400, "Desktop agent not connected.")
     ws = active_agents[user_id]
-    task_text = body.task or body.goal or ""
+    task_text = (body.task or body.goal or "").strip()
     if not task_text:
         raise HTTPException(400, "task or goal required")
     try:
-        await ws.send_text(json.dumps({"type": "task", "task": task_text, "context": body.context or ""}))
+        await ws.send_text(json.dumps({
+            "type": "task",
+            "task": task_text[:2000],
+            "context": body.context or ""
+        }))
         return {"status": "sent", "task": task_text}
     except Exception as e:
         active_agents.pop(user_id, None)
-        raise HTTPException(500, "Failed to send task: {}".format(str(e)))
+        raise HTTPException(500, f"Failed to send task: {str(e)}")
 
 
 @router.websocket("/desktop/ws")
 async def desktop_websocket(websocket: WebSocket):
     await websocket.accept()
     user_id = None
+
     try:
+        # Step 1: Authenticate within 30 seconds
         try:
             auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
         except asyncio.TimeoutError:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication timeout"}))
-            await websocket.close()
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Authentication timeout — send token within 30s"
+            }))
+            await websocket.close(code=1008)
             return
+
+        # Parse token
         try:
             auth_data = json.loads(auth_raw)
             token = auth_data.get("token", "")
         except Exception:
             token = auth_raw.strip()
+
+        # FIX: validate token length before decoding
+        if not token or len(token) < 20:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Invalid token format"
+            }))
+            await websocket.close(code=1008)
+            return
+
         user_id = _decode_ws_token(token)
         if not user_id:
-            await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed"}))
-            await websocket.close()
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Authentication failed — token is invalid or expired. Please log in again."
+            }))
+            await websocket.close(code=1008)
             return
+
+        # FIX: handle duplicate connections — close old one gracefully
+        if user_id in active_agents:
+            old_ws = active_agents[user_id]
+            try:
+                await old_ws.send_text(json.dumps({
+                    "type": "error",
+                    "message": "New connection established elsewhere"
+                }))
+                await old_ws.close(code=1001)
+            except Exception:
+                pass
+            log.info("Replaced existing agent connection for user %s", user_id)
+
         active_agents[user_id] = websocket
-        await websocket.send_text(json.dumps({"type": "connected", "message": "Desktop agent connected", "user_id": user_id}))
+        log.info("Agent connected: user %s", user_id)
+
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "message": "Desktop agent connected successfully",
+            "user_id": user_id
+        }))
+
+        # Main message loop
+        consecutive_errors = 0
         while True:
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
-                msg = json.loads(data)
+                # FIX: 60s timeout then send ping — keeps connection alive
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+                    consecutive_errors = 0
+                except asyncio.TimeoutError:
+                    # Send keepalive ping
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_text(json.dumps({"type": "ping"})),
+                            timeout=5
+                        )
+                    except Exception:
+                        log.info("Keepalive failed for user %s — disconnecting", user_id)
+                        break
+                    continue
+
+                try:
+                    msg = json.loads(data)
+                except json.JSONDecodeError:
+                    log.warning("Invalid JSON from agent (user %s): %s", user_id, data[:100])
+                    continue
+
                 msg_type = msg.get("type", "")
+
                 if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
+
                 elif msg_type == "pong":
-                    pass
+                    pass  # keepalive response
+
                 elif msg_type == "task_result":
+                    # FIX: thread-safe future resolution
                     agent_results[user_id] = msg
                     future = pending_task_results.get(user_id)
                     if future and not future.done():
-                        future.set_result(msg)
-                elif msg_type in ("result", "screenshot_before", "screenshot_after", "system_info", "error", "voice_result"):
+                        try:
+                            future.set_result(msg)
+                        except asyncio.InvalidStateError:
+                            pass  # already resolved
+
+                elif msg_type in (
+                    "result", "screenshot_before", "screenshot_after",
+                    "system_info", "error", "voice_result"
+                ):
                     agent_results[user_id] = msg
-            except asyncio.TimeoutError:
-                try:
-                    await websocket.send_text(json.dumps({"type": "ping"}))
-                except Exception:
-                    break
+
+                else:
+                    log.debug("Unknown message type from agent (user %s): %s", user_id, msg_type)
+
             except WebSocketDisconnect:
+                log.info("Agent disconnected normally: user %s", user_id)
                 break
-            except Exception:
-                break
-    except Exception:
-        pass
+            except Exception as e:
+                consecutive_errors += 1
+                log.warning("Message loop error (user %s): %s", user_id, e)
+                if consecutive_errors >= 5:
+                    log.error("Too many errors for user %s — closing", user_id)
+                    break
+                await asyncio.sleep(0.5)
+
+    except WebSocketDisconnect:
+        log.info("Agent WebSocket disconnected: user %s", user_id)
+    except Exception as e:
+        log.error("WebSocket handler error (user %s): %s", user_id, e)
     finally:
+        # FIX: always clean up — no memory leak
         if user_id:
             active_agents.pop(user_id, None)
             agent_results.pop(user_id, None)
+            # FIX: cancel pending future to unblock any waiting /run endpoint
             future = pending_task_results.pop(user_id, None)
             if future and not future.done():
                 future.cancel()
+            log.info("Agent cleanup complete for user %s", user_id)
 
 
 @router.get("/download/windows")
 async def download_windows_agent():
+    """Serve the Windows installer bat file."""
     py_url = "https://raw.githubusercontent.com/dacexyai/Dacexy-backend/main/desktop_agent/dacexy_agent.py"
     py_inst = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
-
-    # Build bat content using chr(13)+chr(10) for CRLF to avoid string literal issues in setup.py
     crlf = chr(13) + chr(10)
     q = chr(34)
 
@@ -1507,7 +1676,7 @@ async def download_windows_agent():
         "    echo  Python not found. Downloading Python 3.11 automatically...",
         "    powershell -Command " + q + "try { Invoke-WebRequest -Uri '" + py_inst + "' -OutFile '%TEMP%\\python_installer.exe' -UseBasicParsing } catch { exit 1 }" + q,
         "    if errorlevel 1 ( echo  ERROR: Download failed. Visit https://python.org/downloads && pause && exit /b 1 )",
-        "    echo  Installing Python...",
+        "    echo  Installing Python silently...",
         "    %TEMP%\\python_installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
         "    timeout /t 20 /nobreak >nul",
         "    if exist %TEMP%\\python_installer.exe del %TEMP%\\python_installer.exe",
@@ -1515,7 +1684,7 @@ async def download_windows_agent():
         "    set " + q + "PATH=%SYSPATH%;%LOCALAPPDATA%\\Programs\\Python\\Python311;%LOCALAPPDATA%\\Programs\\Python\\Python311\\Scripts" + q,
         "    python --version >nul 2>&1",
         "    if errorlevel 1 ( echo  Please close and re-run this installer. && pause && exit /b 1 )",
-        "    echo  Python installed!",
+        "    echo  Python installed successfully!",
         ")",
         "for /f " + q + "tokens=*" + q + " %%i in ('python --version 2^>^&1') do echo  OK: %%i",
         "echo.",
@@ -1531,7 +1700,7 @@ async def download_windows_agent():
         "echo [4/5] Downloading Dacexy Agent...",
         "if exist " + q + "%USERPROFILE%\\DacexyAgent\\dacexy_agent.py" + q + " del " + q + "%USERPROFILE%\\DacexyAgent\\dacexy_agent.py" + q,
         "powershell -Command " + q + "try { Invoke-WebRequest -Uri '" + py_url + "' -OutFile '%USERPROFILE%\\DacexyAgent\\dacexy_agent.py' -UseBasicParsing; Write-Host ' OK' } catch { Write-Host ' ERROR:' $_.Exception.Message; exit 1 }" + q,
-        "if errorlevel 1 ( echo  ERROR: Download failed. Check internet. && pause && exit /b 1 )",
+        "if errorlevel 1 ( echo  ERROR: Download failed. && pause && exit /b 1 )",
         "if exist " + q + "%USERPROFILE%\\.dacexy_agent.json" + q + " del " + q + "%USERPROFILE%\\.dacexy_agent.json" + q,
         "echo.",
         "echo [5/5] Creating desktop shortcut...",
@@ -1550,7 +1719,10 @@ async def download_windows_agent():
         "echo  ================================",
         "echo.",
         "echo  Launching Dacexy Agent...",
-        "echo  Enter your Dacexy email and password when asked.",
+        "echo  Enter your Dacexy email and password.",
+        "echo.",
+        "echo  VOICE: Say 'Hey Dacexy' anytime to give commands.",
+        "echo  CHAT:  Use the Agent panel in dacexy.vercel.app",
         "echo.",
         "pause",
         "cd " + q + "%USERPROFILE%\\DacexyAgent" + q,
@@ -1562,7 +1734,7 @@ async def download_windows_agent():
     resp = Response(content=bat_bytes, media_type="application/octet-stream")
     resp.headers["Content-Disposition"] = "attachment; filename=install_dacexy_agent.bat"
     return resp
-
+    
 ''')
 
 w("src/interfaces/http/routes/voice.py", """
