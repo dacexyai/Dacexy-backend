@@ -1103,8 +1103,10 @@ def update_voice_token(token: str):
 
 # ═══════════════════════════════════════════════════════════════════════
 # WEBSOCKET CLIENT
-# FIX: exponential backoff, proper future cleanup, auth retry handling,
-#      thread-safe future resolution, ping/pong keepalive
+# FIX: extra_headers → additional_headers (websockets v10+/v12+)
+#      Removed open_timeout and close_timeout kwargs (version-dependent)
+#      Fixed lambda capture bug in executor call
+#      Kept exponential backoff, auth retry handling, ping/pong keepalive
 # ═══════════════════════════════════════════════════════════════════════
 async def run_websocket(token: str):
     retry_delay = 3.0
@@ -1115,16 +1117,25 @@ async def run_websocket(token: str):
         try:
             log.info("Connecting to Dacexy backend...")
 
-            # FIX: explicit timeout on connect
-            async with websockets.connect(
+            # FIX: wrap connect in wait_for for timeout (works across all websockets versions)
+            # FIX: use additional_headers instead of extra_headers (websockets v10+)
+            ws_connect = websockets.connect(
                 BACKEND_WS,
                 ping_interval=25,
                 ping_timeout=20,
-                close_timeout=10,
-                open_timeout=connect_timeout,
-                extra_headers={"User-Agent": f"DacexyAgent/{VERSION}"},
+                additional_headers={"User-Agent": f"DacexyAgent/{VERSION}"},
                 max_size=10 * 1024 * 1024,  # 10MB max message
-            ) as ws:
+            )
+
+            try:
+                ws = await asyncio.wait_for(ws_connect, timeout=connect_timeout)
+            except asyncio.TimeoutError:
+                log.error("Connection timeout after %ds — reconnecting in %.0fs", connect_timeout, retry_delay)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 1.5, max_delay)
+                continue
+
+            async with ws:
                 # Authenticate
                 await ws.send(json.dumps({"token": token}))
                 try:
@@ -1201,7 +1212,6 @@ async def run_websocket(token: str):
                         print(f"\n  📋 Remote task: {task_text}")
                         speak(f"Got it. Working on: {task_text[:50]}")
 
-                        # FIX: run task in executor so it doesn't block event loop
                         loop = asyncio.get_event_loop()
 
                         def _run_remote_task_sync(t, task, tid):
@@ -1235,10 +1245,11 @@ async def run_websocket(token: str):
 
                     elif msg_type not in ("pong", "connected"):
                         if "action" in msg:
-                            # FIX: run command in executor — never blocks event loop
+                            # FIX: capture msg by value to avoid lambda closure bug
                             loop = asyncio.get_event_loop()
+                            captured_msg = dict(msg)
                             result = await loop.run_in_executor(
-                                _executor, lambda: execute_command(msg, token)
+                                _executor, lambda m=captured_msg: execute_command(m, token)
                             )
                             await send_fn({"type": "result", "result": result})
 
