@@ -5235,14 +5235,18 @@ async def ws_connect_loop(
                 "Authorization": f"Bearer {token}"
             }
             _info("Connecting to Dacexy backend...")
-            async with websockets.connect(
-                    BACKEND_WS,
-                    extra_headers=headers,
-                    ping_interval=20,
-                    ping_timeout=15,
-                    max_size=50 * 1024 * 1024,
-                    open_timeout=30) as ws:
-                _ws_connection = ws
+            try:
+    import importlib.metadata as _im
+    _ws_ver = tuple(int(x) for x in _im.version("websockets").split(".")[:2])
+except Exception:
+    _ws_ver = (0, 0)
+_ws_kw = {"ping_interval": 20, "ping_timeout": 15,
+          "max_size": 50*1024*1024, "open_timeout": 30}
+if _ws_ver >= (10, 0):
+    _ws_kw["additional_headers"] = headers
+else:
+    _ws_kw["extra_headers"] = headers
+async with websockets.connect(BACKEND_WS, **_ws_kw) as ws:
                 retry_delay    = 2
                 try:
                     await ws.send(json.dumps({
