@@ -712,15 +712,17 @@ def check_token_valid(token: str) -> bool:
 def check_internet() -> bool:
     if not req_lib:
         return False
-    for url in ["https://www.google.com",
-                "https://1.1.1.1", "https://8.8.8.8"]:
+    for _url in ["https://www.google.com",
+                 "https://1.1.1.1",
+                 "https://8.8.8.8"]:
         try:
-            r = req_lib.get(url, timeout=5, verify=False)
+            r = req_lib.get(_url, timeout=5, verify=False)
             if r.status_code < 500:
                 return True
         except Exception:
             continue
     return False
+    
     try:
         req_lib.get("https://www.google.com", timeout=5)
         return True
@@ -5219,11 +5221,26 @@ async def ws_connect_loop(
     Persistent WebSocket reconnection.
     NEVER raises — always retries.
     Agent stays alive even if backend is down.
+    Works with websockets v8, v9, v10, v11, v12, v13+
     """
+    # Detect websockets version ONCE at startup
+    try:
+        import importlib.metadata as _im
+        _ws_ver = tuple(
+            int(x) for x in
+            _im.version("websockets").split(".")[:2])
+    except Exception:
+        try:
+            _ws_ver = tuple(
+                int(x) for x in
+                websockets.__version__.split(".")[:2])
+        except Exception:
+            _ws_ver = (0, 0)
+ 
     retry_delay  = 2
     max_delay    = 120
     global _ws_connection
-
+ 
     while _agent_running:
         try:
             if websockets is None:
@@ -5232,25 +5249,15 @@ async def ws_connect_loop(
                     "retrying in 30s")
                 await asyncio.sleep(30)
                 continue
-
+ 
             if not check_internet():
                 _warn(
                     "No internet - "
                     "waiting 15s before WS connect...")
                 await asyncio.sleep(15)
                 continue
-
-            headers = {
-                "Authorization": f"Bearer {token}"
-            }
-            _info("Connecting to Dacexy backend...")
-            try:
-    try:
-                import importlib.metadata as _im
-                _ws_ver = tuple(int(x) for x in
-                    _im.version("websockets").split(".")[:2])
-            except Exception:
-                _ws_ver = (0, 0)
+ 
+            # Build kwargs — version-safe header param
             _ws_kw = {
                 "ping_interval": 20,
                 "ping_timeout":  15,
@@ -5258,11 +5265,19 @@ async def ws_connect_loop(
                 "open_timeout":  30,
             }
             if _ws_ver >= (10, 0):
-                _ws_kw["additional_headers"] = headers
+                _ws_kw["additional_headers"] = {
+                    "Authorization": f"Bearer {token}"
+                }
             else:
-                _ws_kw["extra_headers"] = headers
+                _ws_kw["extra_headers"] = {
+                    "Authorization": f"Bearer {token}"
+                }
+ 
+            _info("Connecting to Dacexy backend...")
             async with websockets.connect(
                     BACKEND_WS, **_ws_kw) as ws:
+                _ws_connection = ws
+                retry_delay    = 2
                 try:
                     await ws.send(json.dumps({
                         "type":    "init",
@@ -5299,11 +5314,12 @@ async def ws_connect_loop(
             log.warning("WS connect error: %s", e)
         finally:
             _ws_connection = None
-
+ 
         if _agent_running:
             _warn(f"Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
+ 
 
 # ============================================================
 # BLOCK 29 - HOTKEYS
