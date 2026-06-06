@@ -2119,19 +2119,16 @@ async def track_email_open(
 
 
 from pathlib import Path
-from fastapi import HTTPException
 from fastapi.responses import FileResponse
+from fastapi import HTTPException
 
 @router.get("/download/windows")
 async def download_windows_installer():
-    # Project root
-    base_dir = Path(__file__).resolve().parents[4]
-
-    # Installer location
-    installer_path = base_dir / "desktop_agent" / "install_dacexy_agent.bat"
-
-    print(f"Installer path: {installer_path}")
-    print(f"Exists: {installer_path.exists()}")
+    installer_path = (
+        Path(__file__).resolve().parents[4]
+        / "desktop_agent"
+        / "install_dacexy_agent.bat"
+    )
 
     if not installer_path.exists():
         raise HTTPException(
@@ -2144,6 +2141,7 @@ async def download_windows_installer():
         filename="install_dacexy_agent.bat",
         media_type="application/octet-stream"
     )
+    
 @router.get("/download/mac")
 async def download_mac_installer():
     sh_content = b"#!/bin/bash\necho 'Dacexy Agent Installer'\n"
