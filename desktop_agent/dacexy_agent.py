@@ -7,30 +7,126 @@
 
 # ════════════════════════════════════════════════════════════════════════════
 # BLOCK 1 — STARTUP LOG (first thing — captures ALL errors from line 1)
+# FIX: Encoding forced to UTF-8 on Windows console before anything else.
+#      File logging wrapped so PermissionError never crashes startup.
+#      Console StreamHandler uses utf-8 with errors='replace' on Windows.
 # ════════════════════════════════════════════════════════════════════════════
 import os, sys, platform
 from pathlib import Path
 
+# ── FIX #1: Force UTF-8 on Windows console BEFORE any print/log call ──────
+if platform.system() == "Windows":
+    try:
+        # Sets the Windows console code page to UTF-8 (65001)
+        os.system("chcp 65001 > nul 2>&1")
+    except Exception:
+        pass
+    try:
+        import ctypes as _ctypes
+        _ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        _ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    # Reconfigure stdout/stderr to UTF-8 with replacement for un-encodable chars
+    try:
+        import io as _io
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            sys.stdout = _io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            sys.stderr = _io.TextIOWrapper(
+                sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 _AGENT_DIR   = Path.home() / "DacexyAgent"
 _LOG_DIR     = _AGENT_DIR / "logs"
 _STARTUP_LOG = _LOG_DIR / "startup.log"
-_AGENT_DIR.mkdir(exist_ok=True)
-_LOG_DIR.mkdir(exist_ok=True)
+
+# ── FIX #2: Directory creation wrapped — never crash if already exists ─────
+try:
+    _AGENT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+try:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 import logging, datetime
 
-# ── Root logger: file + console ───────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(str(_STARTUP_LOG), encoding="utf-8", mode="a"),
-        logging.FileHandler(
-            str(Path.home() / "dacexy_agent.log"),
-            encoding="utf-8", mode="a"),
-    ]
-)
+# ── FIX #3: Logging initialization fully hardened ─────────────────────────
+# Each handler is added individually so a single failure doesn't kill all logging.
+# PermissionError on startup.log → falls back to temp file → falls back to console only.
+
+def _make_file_handler(path: str, label: str) -> logging.Handler:
+    """Try to create a FileHandler; returns None on any failure."""
+    try:
+        h = logging.FileHandler(str(path), encoding="utf-8", mode="a")
+        h.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        return h
+    except PermissionError:
+        pass
+    except Exception:
+        pass
+    # Fallback: try a timestamped temp file next to original
+    try:
+        import tempfile
+        tmp_path = Path(tempfile.gettempdir()) / \
+            f"dacexy_{label}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        h = logging.FileHandler(str(tmp_path), encoding="utf-8", mode="a")
+        h.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        return h
+    except Exception:
+        return None
+
+
+def _make_console_handler() -> logging.Handler:
+    """Console handler that is always safe — falls back to ASCII if needed."""
+    try:
+        # FIX: Use utf-8 StreamHandler with errors='replace'
+        import io
+        if hasattr(sys.stdout, 'buffer'):
+            stream = io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace",
+                line_buffering=True)
+        else:
+            stream = sys.stdout
+        h = logging.StreamHandler(stream)
+    except Exception:
+        h = logging.StreamHandler(sys.stdout)
+    h.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    return h
+
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.DEBUG)
+
+# Remove any default handlers
+for _h in list(_root_logger.handlers):
+    _root_logger.removeHandler(_h)
+
+# Add console handler (always)
+_root_logger.addHandler(_make_console_handler())
+
+# Add startup.log handler (with fallback)
+_startup_handler = _make_file_handler(str(_STARTUP_LOG), "startup")
+if _startup_handler:
+    _root_logger.addHandler(_startup_handler)
+
+# Add home log handler (with fallback)
+_home_handler = _make_file_handler(
+    str(Path.home() / "dacexy_agent.log"), "agent")
+if _home_handler:
+    _root_logger.addHandler(_home_handler)
+
 log = logging.getLogger("dacexy")
 log.info("=" * 60)
 log.info("Dacexy Agent v14.0 starting: %s", datetime.datetime.now().isoformat())
@@ -83,7 +179,7 @@ try:
     log.info("PyAudio OK")
 except Exception:
     PYAUDIO_OK = False
-    log.warning("PyAudio not available — voice will be disabled")
+    log.warning("PyAudio not available -- voice will be disabled")
     for _cmd in [
         [sys.executable, "-m", "pip", "install", "PyAudio", "-q"],
         [sys.executable, "-m", "pip", "install", "pipwin", "-q"],
@@ -322,7 +418,7 @@ VERSION       = "14.0 ULTIMATE"
 WAKE_WORDS    = ["hey dacexy", "dacexy", "assistant"]
 
 for _d in [PLUGINS_DIR, COOKIES_DIR, NOTES_DIR, BACKUP_DIR, RESEARCH_DIR]:
-    try: _d.mkdir(exist_ok=True)
+    try: _d.mkdir(parents=True, exist_ok=True)
     except Exception: pass
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -346,12 +442,14 @@ MEMORY = {
     "conversation": deque(maxlen=100),
 }
 
+# ── FIX #4: Audit log handler also wrapped safely ─────────────────────────
 audit_log = logging.getLogger("dacexy.audit")
 audit_log.setLevel(logging.INFO)
 try:
-    _ah = logging.FileHandler(str(AUDIT_FILE), encoding="utf-8", mode="a")
-    _ah.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
-    audit_log.addHandler(_ah)
+    _ah = _make_file_handler(str(AUDIT_FILE), "audit")
+    if _ah:
+        _ah.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+        audit_log.addHandler(_ah)
 except Exception as e:
     log.warning("Audit log setup failed: %s", e)
 
@@ -455,20 +553,88 @@ class LearnedSkill:
 # ════════════════════════════════════════════════════════════════════════════
 # BLOCK 7 — UTILITY FUNCTIONS
 # ════════════════════════════════════════════════════════════════════════════
+
+# ── FIX #5: Banner uses only ASCII-safe box-drawing characters.
+# On Windows CMD/PowerShell, box-drawing Unicode chars (U+2550 etc.)
+# often corrupt because the legacy console font doesn't support them,
+# or the code page was not UTF-8 at startup.  We detect whether the
+# console can actually render them and fall back gracefully.
+def _can_unicode() -> bool:
+    """Return True only if the current stdout can safely encode box chars."""
+    try:
+        enc = getattr(sys.stdout, "encoding", "") or ""
+        "\u2550\u2554\u2557\u255a\u255d\u2551".encode(enc)
+        return True
+    except Exception:
+        return False
+
+_UNICODE_SAFE = _can_unicode()
+
 def _banner():
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║   DACEXY v14.0 ULTIMATE — AI Desktop Agent                  ║
-║   Wake Words: "Hey Dacexy" / "Dacexy" / "Assistant"        ║
-║   Log: ~/DacexyAgent/logs/startup.log                       ║
-╚══════════════════════════════════════════════════════════════╝
+    if _UNICODE_SAFE:
+        print("""
++==============================================================+
+|   DACEXY v14.0 ULTIMATE -- AI Desktop Agent                 |
+|   Wake Words: "Hey Dacexy" / "Dacexy" / "Assistant"        |
+|   Log: ~/DacexyAgent/logs/startup.log                       |
++==============================================================+
+""")
+    else:
+        print("""
++==============================================================+
+|   DACEXY v14.0 ULTIMATE -- AI Desktop Agent                 |
+|   Wake Words: "Hey Dacexy" / "Dacexy" / "Assistant"        |
+|   Log: ~/DacexyAgent/logs/startup.log                       |
++==============================================================+
 """)
 
-def _ok(m):   print(f"  ✅ {m}"); log.info("OK: %s", m)
-def _err(m):  print(f"  ❌ {m}"); log.error("ERR: %s", m)
-def _info(m): print(f"  ℹ️  {m}"); log.info("%s", m)
-def _warn(m): print(f"  ⚠️  {m}"); log.warning("%s", m)
-def _task(m): print(f"  🤖 {m}"); log.info("TASK: %s", m)
+# ── FIX #6: Status helpers use ASCII fallback symbols when Unicode unsafe ──
+def _ok(m):
+    sym = "[OK]" if not _UNICODE_SAFE else "  [+]"
+    try:
+        print(f"  {sym} {m}")
+    except UnicodeEncodeError:
+        print(f"  [OK] {m}".encode("ascii", errors="replace").decode())
+    log.info("OK: %s", m)
+
+def _err(m):
+    sym = "[ERR]" if not _UNICODE_SAFE else "  [x]"
+    try:
+        print(f"  {sym} {m}")
+    except UnicodeEncodeError:
+        print(f"  [ERR] {m}".encode("ascii", errors="replace").decode())
+    log.error("ERR: %s", m)
+
+def _info(m):
+    try:
+        print(f"  [i] {m}")
+    except UnicodeEncodeError:
+        print(f"  [i] {m}".encode("ascii", errors="replace").decode())
+    log.info("%s", m)
+
+def _warn(m):
+    try:
+        print(f"  [!] {m}")
+    except UnicodeEncodeError:
+        print(f"  [!] {m}".encode("ascii", errors="replace").decode())
+    log.warning("%s", m)
+
+def _task(m):
+    try:
+        print(f"  [>] {m}")
+    except UnicodeEncodeError:
+        print(f"  [>] {m}".encode("ascii", errors="replace").decode())
+    log.info("TASK: %s", m)
+
+def _safe_print(text: str):
+    """Print with encoding fallback — never raises."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        try:
+            print(text.encode("ascii", errors="replace").decode())
+        except Exception:
+            pass
 
 def generate_id(prefix: str = "") -> str:
     return f"{prefix}{hashlib.md5(f'{time.time()}{random.random()}'.encode()).hexdigest()[:10]}"
@@ -536,7 +702,11 @@ def _tts_worker():
 def speak(text: str, priority: bool = False):
     if not text: return
     safe = str(text)[:400]
-    print(f"  🔊 Dacexy: {safe}")
+    # FIX #7: speak() print wrapped for encoding safety
+    try:
+        print(f"  [Dacexy] {safe}")
+    except UnicodeEncodeError:
+        print(f"  [Dacexy] {safe}".encode("ascii", errors="replace").decode())
     log.info("SPEAK: %s", safe)
     try:
         if priority:
@@ -597,6 +767,12 @@ def check_token_valid(token: str) -> bool:
         return False
 
 def check_internet() -> bool:
+    if not req_lib:
+        try:
+            socket.create_connection(("www.google.com", 80), timeout=5)
+            return True
+        except Exception:
+            return False
     try:
         req_lib.get("https://www.google.com", timeout=5)
         return True
@@ -608,7 +784,6 @@ def setup_autostart():
         if not WINREG_OK: return
         launch_bat = str(_AGENT_DIR / "launch_dacexy.bat")
         if not os.path.exists(launch_bat):
-            # fallback: direct python call
             agent_path = str(Path(__file__).resolve())
             cmd = f'"{sys.executable}" "{agent_path}"'
         else:
@@ -626,13 +801,13 @@ def setup_autostart():
 def login() -> Optional[str]:
     """
     Interactive login. Returns token string or None.
-    NEVER calls sys.exit() — caller decides what to do.
+    NEVER calls sys.exit() -- caller decides what to do.
     """
-    print("\n╔══════════════════════════════════╗")
-    print("║   Dacexy Agent v14.0 — Login     ║")
-    print("╚══════════════════════════════════╝")
-    print("  Enter your Dacexy account credentials.")
-    print("  (Register free at dacexy.vercel.app)\n")
+    _safe_print("\n+==================================+")
+    _safe_print("||   Dacexy Agent v14.0 -- Login   ||")
+    _safe_print("+==================================+")
+    _safe_print("  Enter your Dacexy account credentials.")
+    _safe_print("  (Register free at dacexy.vercel.app)\n")
     try:
         email    = input("  Email   : ").strip()
         password = input("  Password: ").strip()
@@ -671,7 +846,7 @@ def login() -> Optional[str]:
                 audit("LOGIN", mask_pii(email), "SUCCESS")
                 return token
             else:
-                _err("Server returned 200 but no token — check backend")
+                _err("Server returned 200 but no token -- check backend")
         else:
             try:
                 d = r.json().get("detail", r.text)
@@ -679,33 +854,35 @@ def login() -> Optional[str]:
             except Exception:
                 d = r.text[:200]
             _err(f"Login failed: {d}")
-    except req_lib.exceptions.ConnectionError:
-        _err("Cannot connect to server. Check internet connection.")
-        log.error("Login ConnectionError")
-    except req_lib.exceptions.Timeout:
-        _err("Server timeout. Try again.")
-        log.error("Login Timeout")
-    except Exception as e:
-        _err(f"Login error: {e}")
-        log.exception("Login unexpected error")
+    except Exception as conn_err:
+        # FIX #8: Catch all request exceptions generically (req_lib may vary)
+        err_str = str(conn_err)
+        if "ConnectionError" in type(conn_err).__name__:
+            _err("Cannot connect to server. Check internet connection.")
+            log.error("Login ConnectionError")
+        elif "Timeout" in type(conn_err).__name__:
+            _err("Server timeout. Try again.")
+            log.error("Login Timeout")
+        else:
+            _err(f"Login error: {conn_err}")
+            log.exception("Login unexpected error")
     return None
 
 def login_loop() -> str:
     """
     Keep prompting for login until success.
-    Never exits — agent stays open.
+    Never exits -- agent stays open.
     """
     while True:
         token = login()
         if token:
             return token
-        print("\n  Login failed. Press Enter to try again, or Ctrl+C to exit.")
+        _safe_print("\n  Login failed. Press Enter to try again, or Ctrl+C to exit.")
         try:
             input()
         except KeyboardInterrupt:
-            print("\n  Exiting. Goodbye!")
+            _safe_print("\n  Exiting. Goodbye!")
             log.info("User chose to exit at login")
-            # Don't sys.exit — let main() handle graceful shutdown
             raise SystemExit(0)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -895,13 +1072,14 @@ class MemorySystem:
         try:
             SKILLS_FILE.write_text(
                 json.dumps({k: asdict(v) for k,v in self.skills.items()},
-                           indent=2))
+                           indent=2), encoding="utf-8")
         except Exception: pass
 
     def _load_skills(self):
         try:
             if SKILLS_FILE.exists():
-                for k, v in json.loads(SKILLS_FILE.read_text()).items():
+                for k, v in json.loads(
+                        SKILLS_FILE.read_text(encoding="utf-8")).items():
                     try:
                         self.skills[k] = LearnedSkill(**v)
                     except Exception:
@@ -1635,7 +1813,9 @@ class FileEngine:
     def get_disk_usage(self)->Dict[str,Any]:
         if not psutil: return {}
         try:
-            u = psutil.disk_usage("/")
+            # FIX #9: Use correct root for Windows vs Linux
+            root = "C:\\" if platform.system() == "Windows" else "/"
+            u = psutil.disk_usage(root)
             return {"total_gb":round(u.total/1e9,2),
                     "used_gb":round(u.used/1e9,2),
                     "free_gb":round(u.free/1e9,2),
@@ -1693,7 +1873,7 @@ class EmailCampaignManager:
             CAMPAIGN_FILE.write_text(
                 json.dumps({cid: asdict(c)
                             for cid,c in self.campaigns.items()},
-                           indent=2))
+                           indent=2), encoding="utf-8")
         except Exception: pass
 
     def setup_gmail(self, email: str, app_password: str):
@@ -1790,7 +1970,7 @@ class EmailCampaignManager:
                                         "utf-8"))
                     server.sendmail(from_email, to, msg.as_string())
                     sent += 1; camp.sent = sent
-                    print(f"  📧 [{i+1}/{len(camp.recipients)}] → {to}")
+                    _safe_print(f"  [Email] [{i+1}/{len(camp.recipients)}] -> {to}")
                     time.sleep(camp.delay_sec+random.uniform(0.1,0.4))
                     if (i+1) % 100 == 0:
                         try: server.quit()
@@ -1907,7 +2087,7 @@ class EnterpriseBrowserAgent:
     def start(self, browser: str = "chrome", headless: bool = False,
                profile: str = None) -> bool:
         if not SELENIUM_OK:
-            _err("Selenium not available — install selenium webdriver-manager")
+            _err("Selenium not available -- install selenium webdriver-manager")
             return False
         self.browser_type = browser.lower()
         self.headless     = headless
@@ -1964,14 +2144,15 @@ class EnterpriseBrowserAgent:
         try:
             domain = urlparse(self.driver.current_url).netloc.replace("www.","")
             cf = COOKIES_DIR/f"{domain.replace('.','_')}.json"
-            cf.write_text(json.dumps(self.driver.get_cookies()))
+            cf.write_text(json.dumps(self.driver.get_cookies()),
+                          encoding="utf-8")
         except Exception: pass
 
     def _load_cookies(self, domain: str = ""):
         try:
             cf = COOKIES_DIR/f"{domain.replace('.','_')}.json"
             if cf.exists():
-                for c in json.loads(cf.read_text()):
+                for c in json.loads(cf.read_text(encoding="utf-8")):
                     try: self.driver.add_cookie(c)
                     except Exception: pass
         except Exception: pass
@@ -2052,7 +2233,7 @@ class EnterpriseBrowserAgent:
         if self.detect_captcha():
             speak("CAPTCHA detected. Please solve it then press Enter.",
                   priority=True)
-            _warn("CAPTCHA detected — waiting for manual solve...")
+            _warn("CAPTCHA detected -- waiting for manual solve...")
             try: input("  Press Enter after solving CAPTCHA... ")
             except Exception: time.sleep(30)
             return True
@@ -2167,7 +2348,7 @@ class EnterpriseBrowserAgent:
                 except Exception: pass
         except Exception: pass
         fn = RESEARCH_DIR/f"research_{int(time.time())}.json"
-        try: fn.write_text(json.dumps(research,indent=2))
+        try: fn.write_text(json.dumps(research,indent=2),encoding="utf-8")
         except Exception: pass
         return research
 
@@ -2223,7 +2404,7 @@ class EnterpriseBrowserAgent:
                     mb.click(); mb.send_keys(message)
                     time.sleep(0.5); mb.send_keys(Keys.ENTER); time.sleep(1)
                 sent += 1
-                print(f"  💬 [{i+1}/{len(contacts)}] → {contact}")
+                _safe_print(f"  [WA] [{i+1}/{len(contacts)}] -> {contact}")
                 time.sleep(delay+random.uniform(0.5,1.5))
             except Exception as e:
                 failed += 1
@@ -2387,38 +2568,38 @@ class EnterpriseBrowserAgent:
 PERMISSION_RULES = {
     "delete_files":  {"triggers":[["delete","erase","wipe"],
                                    ["file","folder","data"]],
-                      "icon":"🗑️","label":"DELETE FILES",
+                      "icon":"[DEL]","label":"DELETE FILES",
                       "warn":"Will permanently delete files."},
     "banking":       {"triggers":[["bank","upi","transfer","gpay","paytm"],
                                    ["any"]],
-                      "icon":"🏦","label":"BANKING",
+                      "icon":"[BANK]","label":"BANKING",
                       "warn":"Accessing financial services."},
     "payment":       {"triggers":[["pay","purchase","credit card","cvv"],
                                    ["any"]],
-                      "icon":"💳","label":"PAYMENT",
+                      "icon":"[PAY]","label":"PAYMENT",
                       "warn":"Making a payment."},
     "passwords":     {"triggers":[["password","credentials"],["any"]],
-                      "icon":"🔑","label":"PASSWORDS",
+                      "icon":"[KEY]","label":"PASSWORDS",
                       "warn":"Accessing passwords."},
     "email_bulk":    {"triggers":[["bulk email","mass email","send email"],
                                    ["any"]],
-                      "icon":"📧","label":"BULK EMAIL",
+                      "icon":"[EMAIL]","label":"BULK EMAIL",
                       "warn":"Sending bulk emails."},
     "social_post":   {"triggers":[["post on","tweet","publish"],
                                    ["facebook","instagram","twitter",
                                     "linkedin","tiktok","youtube"]],
-                      "icon":"📱","label":"SOCIAL POST",
+                      "icon":"[SOCIAL]","label":"SOCIAL POST",
                       "warn":"Posting to social media."},
     "whatsapp_bulk": {"triggers":[["whatsapp bulk","bulk whatsapp"],
                                    ["any"]],
-                      "icon":"💬","label":"BULK WHATSAPP",
+                      "icon":"[WA]","label":"BULK WHATSAPP",
                       "warn":"Sending bulk WhatsApp messages."},
     "shutdown":      {"triggers":[["shutdown","restart","reboot"],["any"]],
-                      "icon":"⚡","label":"SHUTDOWN",
+                      "icon":"[PWR]","label":"SHUTDOWN",
                       "warn":"Shutting down computer."},
     "format_disk":   {"triggers":[["format disk","format drive","wipe drive"],
                                    ["any"]],
-                      "icon":"☢️","label":"FORMAT DISK",
+                      "icon":"[!!!]","label":"FORMAT DISK",
                       "warn":"DANGER: Erases ALL disk data!"},
 }
 
@@ -2434,7 +2615,7 @@ def emergency_stop():
     _agent_running = False
     speak("Emergency stop. All tasks halted.", priority=True)
     audit("EMERGENCY_STOP","","TRIGGERED")
-    print("\n  🛑 EMERGENCY STOP ACTIVATED\n")
+    _safe_print("\n  [STOP] EMERGENCY STOP ACTIVATED\n")
 
 def needs_permission(task: str) -> Tuple[bool,str]:
     tl = task.lower()
@@ -2447,23 +2628,23 @@ def needs_permission(task: str) -> Tuple[bool,str]:
 
 def ask_permission(task: str, ptype: str) -> bool:
     rule  = PERMISSION_RULES.get(ptype,{})
-    icon  = rule.get("icon","⚠️")
+    icon  = rule.get("icon","[!]")
     label = rule.get("label","ACTION")
     warn  = rule.get("warn","Needs approval.")
-    sep   = "═"*52
-    print(f"\n  {sep}")
-    print(f"  {icon}  PERMISSION REQUIRED: {label}")
-    print(f"  {sep}")
-    print(f"  ⚠  {warn}")
-    print(f'  Task: "{task[:80]}"')
-    print(f"  {sep}")
+    sep   = "="*52
+    _safe_print(f"\n  {sep}")
+    _safe_print(f"  {icon}  PERMISSION REQUIRED: {label}")
+    _safe_print(f"  {sep}")
+    _safe_print(f"  WARNING: {warn}")
+    _safe_print(f'  Task: "{task[:80]}"')
+    _safe_print(f"  {sep}")
     speak(f"Permission needed: {warn}")
-    print("\n  Type YES to allow or NO to deny: ",end="",flush=True)
+    _safe_print("\n  Type YES to allow or NO to deny: ", end="")
     try:
         r = input().strip().lower()
         granted = r in ["yes","y","allow","ok","sure","proceed"]
         speak("Permission granted." if granted else "Task cancelled.")
-        print(f"  {'✅ Permitted' if granted else '❌ Denied'}\n")
+        _safe_print(f"  {'[OK] Permitted' if granted else '[DENY] Denied'}\n")
         audit("PERM",mask_pii(f"{ptype}: {task[:80]}"),
               "GRANTED" if granted else "DENIED")
         return granted
@@ -2695,7 +2876,8 @@ class HibernationSystem:
         try:
             data = asdict(ctx)
             data["saved_at"] = datetime.datetime.now().isoformat()
-            HIBERNATE_FILE.write_text(json.dumps(data,indent=2))
+            HIBERNATE_FILE.write_text(json.dumps(data,indent=2),
+                                      encoding="utf-8")
             _ok(f"Task hibernated: '{ctx.task_name}'")
         except Exception as e:
             log.warning("Hibernate save: %s",e)
@@ -2703,7 +2885,7 @@ class HibernationSystem:
     def load(self) -> Optional[ExecutionContext]:
         try:
             if HIBERNATE_FILE.exists():
-                data = json.loads(HIBERNATE_FILE.read_text())
+                data = json.loads(HIBERNATE_FILE.read_text(encoding="utf-8"))
                 ctx  = ExecutionContext(
                     task_id=data["task_id"],
                     task_name=data["task_name"],
@@ -2739,12 +2921,15 @@ class AutonomousScheduler:
     def _load(self):
         try:
             if SCHEDULE_FILE.exists():
-                self.jobs = json.loads(SCHEDULE_FILE.read_text())
+                self.jobs = json.loads(
+                    SCHEDULE_FILE.read_text(encoding="utf-8"))
         except Exception as e:
             log.warning("Scheduler load: %s",e)
 
     def _save(self):
-        try: SCHEDULE_FILE.write_text(json.dumps(self.jobs,indent=2))
+        try:
+            SCHEDULE_FILE.write_text(json.dumps(self.jobs,indent=2),
+                                     encoding="utf-8")
         except Exception: pass
 
     def add_job(self, name:str, command:Dict, schedule_type:str,
@@ -2841,7 +3026,9 @@ class SelfHealingEngine:
         try:
             cpu  = psutil.cpu_percent(interval=0.3)
             ram  = psutil.virtual_memory()
-            disk = psutil.disk_usage("/")
+            # FIX #10: Use Windows-correct disk path
+            root = "C:\\" if platform.system() == "Windows" else "/"
+            disk = psutil.disk_usage(root)
             return {
                 "cpu":cpu,"ram":ram.percent,"disk":disk.percent,
                 "ram_used_gb":round(ram.used/1e9,2),
@@ -2859,10 +3046,10 @@ class SelfHealingEngine:
             _warn(f"High CPU: {h['cpu']}%")
             time.sleep(2)
         if h.get("ram",0) > self.THRESHOLDS["ram"]:
-            _warn(f"High RAM: {h['ram']}% — clearing caches")
+            _warn(f"High RAM: {h['ram']}% -- clearing caches")
             _result_cache.clear(); gc.collect()
         if h.get("disk",0) > self.THRESHOLDS["disk"]:
-            _warn(f"Low disk — cleaning trash")
+            _warn(f"Low disk -- cleaning trash")
             try:
                 trash = Path.home()/".dacexy_trash"
                 if trash.exists(): shutil.rmtree(str(trash)); trash.mkdir()
@@ -2874,7 +3061,7 @@ class SelfHealingEngine:
                     pname.lower() in (p.name() or "").lower()
                     for p in psutil.process_iter(["name"]))
                 if not running and rcmd:
-                    log.warning("Process '%s' died — restarting",pname)
+                    log.warning("Process '%s' died -- restarting",pname)
                     subprocess.Popen(rcmd,shell=True)
             except Exception: pass
 
@@ -3004,7 +3191,7 @@ class VoiceAssistant3:
 
     def start(self):
         if not VOICE_AVAILABLE:
-            _warn("Voice disabled — PyAudio/SpeechRecognition not available")
+            _warn("Voice disabled -- PyAudio/SpeechRecognition not available")
             return
         threading.Thread(target=self._voice_loop,daemon=True,
                          name="Voice3").start()
@@ -3022,13 +3209,14 @@ def load_macros():
     global _macros
     try:
         if MACRO_FILE.exists():
-            _macros = json.loads(MACRO_FILE.read_text())
+            _macros = json.loads(MACRO_FILE.read_text(encoding="utf-8"))
         log.info("Macros loaded: %d",len(_macros))
     except Exception as e:
         log.warning("Macros load: %s",e)
 
 def save_macros():
-    try: MACRO_FILE.write_text(json.dumps(_macros,indent=2))
+    try:
+        MACRO_FILE.write_text(json.dumps(_macros,indent=2),encoding="utf-8")
     except Exception: pass
 
 def create_macro(name:str, steps:List[Dict]):
@@ -3054,7 +3242,9 @@ def get_system_info() -> Dict[str,Any]:
     try:
         cpu  = psutil.cpu_percent(interval=0.3)
         ram  = psutil.virtual_memory()
-        disk = psutil.disk_usage("/")
+        # FIX #11: Windows disk path fix
+        root = "C:\\" if platform.system() == "Windows" else "/"
+        disk = psutil.disk_usage(root)
         net  = psutil.net_io_counters()
         batt = None
         try:
@@ -3688,6 +3878,8 @@ def execute_command(cmd:dict, token:str=None,
 
 # ════════════════════════════════════════════════════════════════════════════
 # BLOCK 27 — WEBSOCKET (resilient — never kills agent)
+# FIX #12: websockets API compat — newer versions use 'additional_headers'
+#          instead of 'extra_headers'. Auto-detect which to use.
 # ════════════════════════════════════════════════════════════════════════════
 async def ws_recv_loop(ws, token, browser, email_mgr,
                        swarm, operator, scheduler):
@@ -3729,7 +3921,7 @@ async def ws_recv_loop(ws, token, browser, email_mgr,
                     except Exception: pass
 
         except asyncio.TimeoutError:
-            # Heartbeat — keeps connection alive
+            # Heartbeat -- keeps connection alive
             try:
                 health = get_system_info()
                 await ws.send(json.dumps({
@@ -3744,21 +3936,51 @@ async def ws_recv_loop(ws, token, browser, email_mgr,
                 }))
             except Exception:
                 break
-        except websockets.exceptions.ConnectionClosed:
-            log.warning("WS connection closed")
-            break
-        except json.JSONDecodeError as e:
-            log.warning("WS JSON error: %s",e)
         except Exception as e:
-            log.error("WS recv error: %s",e)
-            await asyncio.sleep(1)
+            # FIX #13: Handle both old and new websockets exception paths
+            ename = type(e).__name__
+            if "ConnectionClosed" in ename or "ConnectionClose" in ename:
+                log.warning("WS connection closed")
+                break
+            elif isinstance(e, json.JSONDecodeError):
+                log.warning("WS JSON error: %s", e)
+            else:
+                log.error("WS recv error: %s", e)
+                await asyncio.sleep(1)
+
+
+def _ws_connect_kwargs(token: str) -> dict:
+    """
+    Build websockets.connect() kwargs compatible with both old (<11) and
+    new (>=11) versions of the websockets library.
+    In websockets >=11 'extra_headers' was renamed to 'additional_headers'.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    base = {
+        "ping_interval": 20,
+        "ping_timeout":  15,
+        "max_size":      50 * 1024 * 1024,
+        "open_timeout":  30,
+    }
+    # Probe which kwarg name the installed version accepts
+    try:
+        import inspect
+        sig = inspect.signature(websockets.connect)
+        if "additional_headers" in sig.parameters:
+            base["additional_headers"] = headers
+        else:
+            base["extra_headers"] = headers
+    except Exception:
+        # Fallback: try extra_headers (older API)
+        base["extra_headers"] = headers
+    return base
 
 
 async def ws_connect_loop(token, browser, email_mgr,
                            swarm, operator, scheduler):
     """
     Persistent WebSocket reconnection.
-    NEVER raises — always retries.
+    NEVER raises -- always retries.
     Agent stays alive even if backend is down.
     """
     retry_delay = 2
@@ -3768,25 +3990,18 @@ async def ws_connect_loop(token, browser, email_mgr,
     while _agent_running:
         try:
             if websockets is None:
-                log.error("websockets not installed — retrying in 30s")
+                log.error("websockets not installed -- retrying in 30s")
                 await asyncio.sleep(30)
                 continue
 
             if not check_internet():
-                _warn("No internet — waiting 15s before WS connect...")
+                _warn("No internet -- waiting 15s before WS connect...")
                 await asyncio.sleep(15)
                 continue
 
-            headers = {"Authorization": f"Bearer {token}"}
             _info("Connecting to Dacexy backend...")
-            async with websockets.connect(
-                BACKEND_WS,
-                extra_headers=headers,
-                ping_interval=20,
-                ping_timeout=15,
-                max_size=50*1024*1024,
-                open_timeout=30
-            ) as ws:
+            connect_kwargs = _ws_connect_kwargs(token)
+            async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
                 _ws_connection = ws
                 retry_delay    = 2
                 try:
@@ -3804,7 +4019,7 @@ async def ws_connect_loop(token, browser, email_mgr,
                                     "social_all","ocr","multi_monitor"],
                         "memory_context": get_memory_context()[:300]
                     }))
-                    _ok("Connected to Dacexy backend ✅")
+                    _ok("Connected to Dacexy backend")
                     speak("Dacexy is online and ready.",priority=True)
                     await ws_recv_loop(
                         ws,token,browser,email_mgr,swarm,operator,scheduler)
@@ -3849,25 +4064,25 @@ def register_hotkeys(voice: VoiceAssistant3 = None):
 # BLOCK 29 — INTERACTIVE SHELL
 # ════════════════════════════════════════════════════════════════════════════
 def print_menu():
-    print("""
-  ╔══════════════════════════════════════════════════════════╗
-  ║       DACEXY v14.0 ULTIMATE — COMMAND CENTER             ║
-  ╠══════════════════════════════════════════════════════════╣
-  ║  📧  bulk email / setup gmail <email> <app_password>    ║
-  ║  💬  whatsapp bulk                                       ║
-  ║  📱  twitter / linkedin / facebook / instagram          ║
-  ║      youtube / tiktok / post all                        ║
-  ║  🌐  browser <url> / google <query> / research <topic>  ║
-  ║  👁   ocr / detect ui / app state / screenshot          ║
-  ║  🖥   click <x> <y> / type <text>                       ║
-  ║  📁  files / read <path> / backup <folder>              ║
-  ║  🧠  memory / skills / remember <fact>                  ║
-  ║  🤖  plan <task> / swarm <task>                         ║
-  ║  ⏰  jobs / schedule                                     ║
-  ║  📊  sysinfo / health                                    ║
-  ║  🛑  stop (emergency stop)                               ║
-  ║  ❓  help / menu                                         ║
-  ╚══════════════════════════════════════════════════════════╝
+    _safe_print("""
+  +========================================================+
+  |       DACEXY v14.0 ULTIMATE -- COMMAND CENTER          |
+  +========================================================+
+  |  bulk email / setup gmail <email> <app_password>       |
+  |  whatsapp bulk                                         |
+  |  twitter / linkedin / facebook / instagram             |
+  |      youtube / tiktok / post all                       |
+  |  browser <url> / google <query> / research <topic>     |
+  |  ocr / detect ui / app state / screenshot              |
+  |  click <x> <y> / type <text>                           |
+  |  files / read <path> / backup <folder>                 |
+  |  memory / skills / remember <fact>                     |
+  |  plan <task> / swarm <task>                            |
+  |  jobs / schedule                                       |
+  |  sysinfo / health                                      |
+  |  stop (emergency stop)                                 |
+  |  help / menu                                           |
+  +========================================================+
 """)
 
 def interactive_shell(token, browser, email_mgr,
@@ -3879,9 +4094,9 @@ def interactive_shell(token, browser, email_mgr,
 
     while _agent_running:
         try:
-            inp = input("  🤖 Dacexy> ").strip()
+            inp = input("  Dacexy> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n  Goodbye!"); break
+            _safe_print("\n  Goodbye!"); break
         except Exception as e:
             log.debug("Shell input: %s",e); time.sleep(0.5); continue
         if not inp: continue
@@ -3894,29 +4109,29 @@ def interactive_shell(token, browser, email_mgr,
                 print_menu()
             elif il in ("sysinfo","health","system info"):
                 info = get_system_info()
-                print(f"  CPU:{info.get('cpu_percent','?')}% "
+                _safe_print(f"  CPU:{info.get('cpu_percent','?')}% "
                       f"RAM:{info.get('ram_percent','?')}% "
                       f"Disk:{info.get('disk_percent','?')}%")
             elif il == "memory":
-                print(f"  🧠\n{get_memory_context()}")
+                _safe_print(f"  [Memory]\n{get_memory_context()}")
             elif il == "skills":
                 skills = get_mem().list_skills()
                 if skills:
                     for s in skills:
-                        print(f"  ⚡ {s['name']} — {s['use_count']}x")
+                        _safe_print(f"  [Skill] {s['name']} -- {s['use_count']}x")
                 else:
-                    print("  No skills yet — they auto-learn from tasks.")
+                    _safe_print("  No skills yet -- they auto-learn from tasks.")
             elif il.startswith("remember "):
                 remember(inp[9:]); speak("Remembered.")
             elif il in ("macros","list macros"):
-                print(f"  Macros: {list_macros() or 'None'}")
+                _safe_print(f"  Macros: {list_macros() or 'None'}")
             elif il.startswith("run macro "):
                 run_macro(inp[10:].strip(),_exec)
             elif il == "jobs":
                 if scheduler:
                     for j in scheduler.list_jobs():
-                        print(f"  [{j['type']}] {j['name']} @ "
-                              f"{j['time']} — {j['run_count']}x")
+                        _safe_print(f"  [{j['type']}] {j['name']} @ "
+                              f"{j['time']} -- {j['run_count']}x")
             elif il.startswith("setup gmail "):
                 parts = inp.split()
                 if len(parts)>=4 and email_mgr:
@@ -3944,7 +4159,7 @@ def interactive_shell(token, browser, email_mgr,
             elif il.startswith("twitter "):
                 username = input("  Username: ").strip()
                 password = input("  Password: ").strip()
-                text     = input("  Tweet (≤280): ").strip()
+                text     = input("  Tweet (<=280): ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.twitter_post(username,password,text[:280])
             elif il.startswith("linkedin "):
@@ -3995,14 +4210,14 @@ def interactive_shell(token, browser, email_mgr,
                 q = inp[7:].strip()
                 if not browser.driver: browser.start("chrome")
                 for r in browser.google_search(q)[:5]:
-                    print(f"  • {r}")
+                    _safe_print(f"  * {r}")
             elif il.startswith("research "):
                 topic = inp[9:].strip()
                 if not browser.driver: browser.start("chrome")
                 result = browser.research_topic(topic)
-                print(f"  🔍 {len(result.get('sources',[]))} sources found")
+                _safe_print(f"  [Search] {len(result.get('sources',[]))} sources found")
                 for r in result.get("results",[])[:5]:
-                    print(f"  • {r}")
+                    _safe_print(f"  * {r}")
             elif il == "screenshot":
                 ss    = get_vision().capture()
                 fname = Path.home()/f"dacexy_ss_{int(time.time())}.jpg"
@@ -4010,17 +4225,17 @@ def interactive_shell(token, browser, email_mgr,
                     fname.write_bytes(base64.b64decode(ss))
                     _ok(f"Saved: {fname}")
             elif il == "ocr":
-                print(f"  📝\n{get_vision().ocr()[:600]}")
+                _safe_print(f"  [OCR]\n{get_vision().ocr()[:600]}")
             elif il == "detect ui":
                 els = get_vision().detect_ui_elements()
-                print(f"  {len(els)} UI elements")
+                _safe_print(f"  {len(els)} UI elements")
                 for e in els[:5]:
-                    print(f"  [{e.elem_type}] '{e.text[:30]}' "
+                    _safe_print(f"  [{e.elem_type}] '{e.text[:30]}' "
                           f"at ({e.x},{e.y})")
             elif il == "app state":
                 state = get_vision().track_application_state()
                 for k,v in state.items():
-                    print(f"  {k}: {v}")
+                    _safe_print(f"  {k}: {v}")
             elif il.startswith("click "):
                 try:
                     p = inp.split()
@@ -4035,7 +4250,7 @@ def interactive_shell(token, browser, email_mgr,
                 steps = swarm.planner.run({"task":task})
                 _task(f"Plan ({len(steps)} steps):")
                 for s in steps:
-                    print(f"  {s.get('step')}. "
+                    _safe_print(f"  {s.get('step')}. "
                           f"{s.get('description',s.get('action',''))}")
                 if input(
                         f"\n  Execute {len(steps)} steps? (y/n): "
@@ -4058,12 +4273,12 @@ def interactive_shell(token, browser, email_mgr,
                 try:
                     cmd_json = json.loads(inp)
                     result   = _exec(cmd_json)
-                    print(f"  Result: {result}")
+                    _safe_print(f"  Result: {result}")
                 except json.JSONDecodeError:
                     _task(f"Processing: {inp}")
                     swarm.plan_and_execute(inp,_exec)
         except KeyboardInterrupt:
-            print("\n  Interrupted. Type 'stop' to exit or continue.")
+            _safe_print("\n  Interrupted. Type 'stop' to exit or continue.")
         except Exception as e:
             log.error("Shell error: %s",e)
             _err(f"Error: {e}")
@@ -4114,7 +4329,6 @@ async def main_async(token: str):
         log.info("Core agents created OK")
     except Exception as e:
         log.error("Agent creation failed: %s\n%s",e,traceback.format_exc())
-        # Create minimal stubs so agent stays running
         browser   = EnterpriseBrowserAgent()
         email_mgr = EmailCampaignManager()
         swarm     = AgentSwarm(token, browser, email_mgr)
@@ -4189,7 +4403,6 @@ async def main_async(token: str):
                               swarm,operator,scheduler)
     except Exception as e:
         log.error("WS loop crashed (keeping agent alive): %s",e)
-        # Keep agent alive even if WS permanently fails
         while _agent_running:
             await asyncio.sleep(5)
 
@@ -4209,16 +4422,15 @@ def main():
                 clear_token()
                 token = None
         if not token:
-            token = login_loop()  # Never exits — keeps prompting
+            token = login_loop()
     except SystemExit:
-        # User pressed Ctrl+C at login
-        print("\n  Goodbye!")
+        _safe_print("\n  Goodbye!")
         log.info("User exited at login")
         return
     except Exception as e:
         log.error("Auth flow error: %s",e)
         _err(f"Auth error: {e}")
-        print("  Press Enter to try login again...")
+        _safe_print("  Press Enter to try login again...")
         try: input()
         except: pass
         try: token = login_loop()
@@ -4232,15 +4444,20 @@ def main():
 
     # ── MAIN ASYNC LOOP ───────────────────────────────────────────────
     try:
+        # FIX #14: On Windows Python 3.8+ the default event loop policy
+        # changed to ProactorEventLoop. Set it explicitly for compatibility
+        # with asyncio.run() and subprocesses.
+        if platform.system() == "Windows":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main_async(token))
     except KeyboardInterrupt:
-        print("\n\n  👋 Dacexy stopped by user.")
+        _safe_print("\n\n  Dacexy stopped by user.")
         log.info("Stopped by KeyboardInterrupt")
     except Exception as e:
         log.error("Fatal error in main: %s\n%s",e,traceback.format_exc())
-        print(f"\n  ❌ Fatal error: {e}")
-        print(f"  Check log: {_STARTUP_LOG}")
-        print("\n  Press Enter to exit...")
+        _safe_print(f"\n  Fatal error: {e}")
+        _safe_print(f"  Check log: {_STARTUP_LOG}")
+        _safe_print("\n  Press Enter to exit...")
         try: input()
         except: pass
     finally:
@@ -4250,7 +4467,7 @@ def main():
         except Exception: pass
         audit("SHUTDOWN",f"v{VERSION}","CLEAN")
         log.info("Shutdown complete")
-        print("  💾 State saved. Goodbye!")
+        _safe_print("  State saved. Goodbye!")
 
 
 if __name__ == "__main__":
