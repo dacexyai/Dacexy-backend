@@ -712,6 +712,15 @@ def check_token_valid(token: str) -> bool:
 def check_internet() -> bool:
     if not req_lib:
         return False
+    for url in ["https://www.google.com",
+                "https://1.1.1.1", "https://8.8.8.8"]:
+        try:
+            r = req_lib.get(url, timeout=5, verify=False)
+            if r.status_code < 500:
+                return True
+        except Exception:
+            continue
+    return False
     try:
         req_lib.get("https://www.google.com", timeout=5)
         return True
@@ -5236,18 +5245,24 @@ async def ws_connect_loop(
             }
             _info("Connecting to Dacexy backend...")
             try:
-    import importlib.metadata as _im
-    _ws_ver = tuple(int(x) for x in _im.version("websockets").split(".")[:2])
-except Exception:
-    _ws_ver = (0, 0)
-_ws_kw = {"ping_interval": 20, "ping_timeout": 15,
-          "max_size": 50*1024*1024, "open_timeout": 30}
-if _ws_ver >= (10, 0):
-    _ws_kw["additional_headers"] = headers
-else:
-    _ws_kw["extra_headers"] = headers
-async with websockets.connect(BACKEND_WS, **_ws_kw) as ws:
-                retry_delay    = 2
+    try:
+                import importlib.metadata as _im
+                _ws_ver = tuple(int(x) for x in
+                    _im.version("websockets").split(".")[:2])
+            except Exception:
+                _ws_ver = (0, 0)
+            _ws_kw = {
+                "ping_interval": 20,
+                "ping_timeout":  15,
+                "max_size":      50 * 1024 * 1024,
+                "open_timeout":  30,
+            }
+            if _ws_ver >= (10, 0):
+                _ws_kw["additional_headers"] = headers
+            else:
+                _ws_kw["extra_headers"] = headers
+            async with websockets.connect(
+                    BACKEND_WS, **_ws_kw) as ws:
                 try:
                     await ws.send(json.dumps({
                         "type":    "init",
