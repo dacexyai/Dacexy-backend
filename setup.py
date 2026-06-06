@@ -2118,18 +2118,25 @@ async def track_email_open(
     )
 
 
+from pathlib import Path
+from fastapi.responses import FileResponse
+from fastapi import HTTPException
+
 @router.get("/download/windows")
 async def download_windows_installer():
-    bat_content = b"@echo off\r\necho Dacexy Agent Installer\r\npause\r\n"
-    resp = Response(
-        content=bat_content,
+    installer_path = Path("install_dacexy_agent.bat")
+
+    if not installer_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Installer file not found"
+        )
+
+    return FileResponse(
+        path=str(installer_path),
+        filename="install_dacexy_agent.bat",
         media_type="application/octet-stream"
     )
-    resp.headers["Content-Disposition"] = (
-        "attachment; filename=install_dacexy_agent.bat"
-    )
-    return resp
-
 
 @router.get("/download/mac")
 async def download_mac_installer():
