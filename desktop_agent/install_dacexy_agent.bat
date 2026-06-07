@@ -29,8 +29,8 @@ if errorlevel 1 (
 
 :: ── Ensure websockets is up to date ───────────────────────────
 :: Upgrade silently so extra_headers / additional_headers is stable
-python -m pip install --upgrade websockets -q --no-warn-script-location >nul 2>&1
-
+python -m pip install --upgrade websockets -q --no-warn-script-location
+python -c "import websockets; print('  [OK] websockets', websockets.__version__)"
 :LAUNCH
 python dacexy_agent.py
 set EXIT_CODE=%ERRORLEVEL%
