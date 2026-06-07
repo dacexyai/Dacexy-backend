@@ -3920,6 +3920,27 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
     max_delay    = 120
     global _ws_connection
 
+    # Upgrade websockets silently at runtime to ensure correct version
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "websockets",
+             "-q", "--no-warn-script-location"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        log.info("websockets upgraded OK")
+    except Exception as _upe:
+        log.warning("websockets upgrade skipped: %s", _upe)
+
+    # Detect exact installed version
+    try:
+        import importlib.metadata as _im
+        _ws_ver = tuple(int(x) for x in _im.version("websockets").split(".")[:2])
+    except Exception:
+        try:
+            _ws_ver = tuple(int(x) for x in websockets.__version__.split(".")[:2])
+        except Exception:
+            _ws_ver = (99, 0)   # assume modern if unknown
+    log.info("websockets version tuple: %s", _ws_ver)
+
     while _agent_running:
         try:
             if websockets is None:
@@ -3932,14 +3953,25 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
                 await asyncio.sleep(15)
                 continue
 
+            _info("Connecting to Dacexy backend...")
+
+            # Build correct kwargs based on actual installed version
             _ws_kw = {
-                "ping_interval":      20,
-                "ping_timeout":       15,
-                "max_size":           50 * 1024 * 1024,
-                "additional_headers": {"Authorization": f"Bearer {token}"},
+                "ping_interval": 20,
+                "ping_timeout":  15,
+                "max_size":      50 * 1024 * 1024,
             }
 
-            _info("Connecting to Dacexy backend...")
+            # open_timeout removed in websockets >= 13
+            if _ws_ver < (13, 0):
+                _ws_kw["open_timeout"] = 30
+
+            # additional_headers added in websockets 10, extra_headers used before that
+            if _ws_ver >= (10, 0):
+                _ws_kw["additional_headers"] = {"Authorization": f"Bearer {token}"}
+            else:
+                _ws_kw["extra_headers"] = {"Authorization": f"Bearer {token}"}
+
             async with websockets.connect(BACKEND_WS, **_ws_kw) as ws:
                 _ws_connection = ws
                 retry_delay    = 2
@@ -3962,6 +3994,7 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
                     await ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler)
                 except Exception as e:
                     log.warning("WS session error: %s", e)
+
         except Exception as e:
             log.warning("WS connect error: %s", e)
         finally:
@@ -3971,6 +4004,8 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
             _warn(f"Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
+
+
 # ============================================================
 # BLOCK 29 - HOTKEYS
 # ============================================================
