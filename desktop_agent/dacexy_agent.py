@@ -3916,16 +3916,6 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler
 # Permanent fix — no external scripts needed
 # ============================================================
 async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler):
-    # Detect websockets version ONCE at startup
-    try:
-        import importlib.metadata as _im
-        _ws_ver = tuple(int(x) for x in _im.version("websockets").split(".")[:2])
-    except Exception:
-        try:
-            _ws_ver = tuple(int(x) for x in websockets.__version__.split(".")[:2])
-        except Exception:
-            _ws_ver = (0, 0)
-
     retry_delay  = 2
     max_delay    = 120
     global _ws_connection
@@ -3942,17 +3932,12 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
                 await asyncio.sleep(15)
                 continue
 
-            # Version-safe: websockets >= 10 uses additional_headers
             _ws_kw = {
-                "ping_interval": 20,
-                "ping_timeout":  15,
-                "max_size":      50 * 1024 * 1024,
-                "open_timeout":  30,
+                "ping_interval":      20,
+                "ping_timeout":       15,
+                "max_size":           50 * 1024 * 1024,
+                "additional_headers": {"Authorization": f"Bearer {token}"},
             }
-            if _ws_ver >= (10, 0):
-                _ws_kw["additional_headers"] = {"Authorization": f"Bearer {token}"}
-            else:
-                _ws_kw["extra_headers"] = {"Authorization": f"Bearer {token}"}
 
             _info("Connecting to Dacexy backend...")
             async with websockets.connect(BACKEND_WS, **_ws_kw) as ws:
@@ -3986,7 +3971,6 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
             _warn(f"Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
-
 # ============================================================
 # BLOCK 29 - HOTKEYS
 # ============================================================
