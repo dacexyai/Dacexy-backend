@@ -3934,37 +3934,36 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
 
             _info("Connecting to Dacexy backend...")
 
-            # NO header kwargs at all — avoids extra_headers/additional_headers
-            # version incompatibility entirely. Auth is done via first message.
-            _ws_kw = {
-                "ping_interval": 20,
-                "ping_timeout":  15,
-                "max_size":      50 * 1024 * 1024,
-            }
-
-            async with websockets.connect(BACKEND_WS, **_ws_kw) as ws:
+            async with websockets.connect(
+                BACKEND_WS,
+                ping_interval=20,
+                ping_timeout=15,
+                max_size=50 * 1024 * 1024,
+            ) as ws:
                 _ws_connection = ws
                 retry_delay    = 2
 
-                # Send token as first message — backend reads this for auth
                 await ws.send(json.dumps({
-                    "token":   token,
-                    "type":    "init",
-                    "version": VERSION,
+                    "token":    token,
+                    "type":     "init",
+                    "version":  VERSION,
                     "platform": platform.system(),
                     "machine":  platform.machine(),
                     "hostname": socket.gethostname(),
-                    "features": ["voice3", "vision_super", "browser_enterprise",
-                                 "email_enterprise", "whatsapp", "marketing",
-                                 "memory_vector", "swarm10", "operator", "hibernation",
-                                 "scheduler", "self_healing", "file_engine",
-                                 "social_all", "ocr", "multi_monitor"],
+                    "features": [
+                        "voice3", "vision_super", "browser_enterprise",
+                        "email_enterprise", "whatsapp", "marketing",
+                        "memory_vector", "swarm10", "operator", "hibernation",
+                        "scheduler", "self_healing", "file_engine",
+                        "social_all", "ocr", "multi_monitor"
+                    ],
                     "memory_context": get_memory_context()[:300]
                 }))
 
                 _ok("Connected to Dacexy backend")
                 speak("Dacexy is online and ready.", priority=True)
-                await ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler)
+                await ws_recv_loop(
+                    ws, token, browser, email_mgr, swarm, operator, scheduler)
 
         except Exception as e:
             log.warning("WS connect error: %s", e)
@@ -3975,7 +3974,6 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
             _warn(f"Reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
-
 
 # ============================================================
 # BLOCK 29 - HOTKEYS
