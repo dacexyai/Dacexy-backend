@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     DEEPSEEK_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 3
     REPLICATE_API_TOKEN: str = ""
+    STABILITY_API_KEY: str = ""
+    BYTEZ_API_KEY: str = ""
     SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
