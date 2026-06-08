@@ -2146,7 +2146,7 @@ async def download_windows_installer():
 
 @router.get("/download/mac")
 async def download_mac_installer():
-    sh_content = b"#!/bin/bash\necho 'Dacexy Agent Installer'\n"
+   sh_content = b"#!/bin/bash\x0aecho 'Dacexy Agent Installer'\x0a"
     resp = Response(content=sh_content, media_type="application/octet-stream")
     resp.headers["Content-Disposition"] = (
         "attachment; filename=install_dacexy_agent.sh"
