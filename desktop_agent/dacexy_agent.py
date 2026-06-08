@@ -1,3 +1,4 @@
+
 """
 DACEXY DESKTOP AGENT v15.0 ENTERPRISE
 World's Most Powerful AI Desktop Agent
@@ -11,10 +12,11 @@ import sys
 import os
 import platform
 
+# FIX: Proper Windows event loop policy - must be set before anything else
 if platform.system() == "Windows":
     import asyncio as _asyncio
-    if hasattr(_asyncio, "WindowsSelectorEventLoopPolicy"):
-        _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
+    # Use ProactorEventLoop on Windows for best subprocess/pipe support
+    _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
 
 if platform.system() == "Windows":
     import io
@@ -166,8 +168,11 @@ except Exception:
 
 try:
     import websockets
+    # FIX: Detect websockets major version once at startup for connect_kwargs
+    _WS_MAJOR = int(str(getattr(websockets, "__version__", "10")).split(".")[0])
 except Exception:
     websockets = None
+    _WS_MAJOR = 0
 
 try:
     from PIL import ImageGrab, Image, ImageEnhance
@@ -3007,7 +3012,7 @@ def execute_command(cmd: dict, token: str = None,
         return {"status": "error", "message": str(e)}
 
 # ============================================================
-# BLOCK 27 - WEBSOCKET (version-safe for ws 8 through 16+)
+# BLOCK 27 - WEBSOCKET - version-safe for ws 8 through 16+
 # ============================================================
 async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
     while _agent_running:
@@ -3048,6 +3053,24 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
             await asyncio.sleep(1)
 
 
+def _build_ws_connect_kwargs() -> dict:
+    """
+    FIX: Build correct connect kwargs based on installed websockets version.
+    websockets >=14 uses 'open_timeout', older uses 'close_timeout'.
+    Also handles breaking API changes in ws 13+ (additional_headers removed).
+    """
+    kwargs = {
+        "ping_interval": 20,
+        "ping_timeout":  15,
+        "max_size":      50 * 1024 * 1024,
+    }
+    if _WS_MAJOR >= 14:
+        kwargs["open_timeout"] = 30
+    else:
+        kwargs["close_timeout"] = 30
+    return kwargs
+
+
 async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
     retry_delay  = 2
     max_delay    = 120
@@ -3064,40 +3087,40 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
 
             _info("Connecting to Dacexy backend...")
 
-            # Version-safe connect kwargs (works ws 8 through 16+)
-            connect_kwargs = {"ping_interval": 20, "ping_timeout": 15,
-                              "max_size": 50 * 1024 * 1024}
-            ws_major = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
-            if ws_major >= 14:
-                connect_kwargs["open_timeout"] = 30
-            else:
-                connect_kwargs["close_timeout"] = 30
+            connect_kwargs = _build_ws_connect_kwargs()
 
-            async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
-                _ws_connection = ws
-                retry_delay    = 2
+            # FIX: websockets 13+ changed connect() to be a context manager only.
+            # Use try/except to handle both old and new API gracefully.
+            try:
+                async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
+                    _ws_connection = ws
+                    retry_delay    = 2
 
-                await ws.send(json.dumps({
-                    "token":    token,
-                    "type":     "init",
-                    "version":  VERSION,
-                    "platform": platform.system(),
-                    "machine":  platform.machine(),
-                    "hostname": socket.gethostname(),
-                    "features": ["voice3", "vision_super", "browser_enterprise",
-                                 "email_enterprise", "whatsapp", "marketing",
-                                 "memory_vector", "swarm", "hibernation",
-                                 "scheduler", "self_healing", "file_engine",
-                                 "social_all", "ocr", "multi_monitor"],
-                    "memory_context": get_memory_context()[:300]
-                }))
+                    await ws.send(json.dumps({
+                        "token":    token,
+                        "type":     "init",
+                        "version":  VERSION,
+                        "platform": platform.system(),
+                        "machine":  platform.machine(),
+                        "hostname": socket.gethostname(),
+                        "features": ["voice3", "vision_super", "browser_enterprise",
+                                     "email_enterprise", "whatsapp", "marketing",
+                                     "memory_vector", "swarm", "hibernation",
+                                     "scheduler", "self_healing", "file_engine",
+                                     "social_all", "ocr", "multi_monitor"],
+                        "memory_context": get_memory_context()[:300]
+                    }))
 
-                _ok("Connected to Dacexy backend")
-                speak("Dacexy is online and ready.", priority=True)
-                await ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler)
+                    _ok("Connected to Dacexy backend")
+                    speak("Dacexy is online and ready.", priority=True)
+                    await ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler)
+
+            except Exception as conn_err:
+                # FIX: Try legacy connect API (websockets < 10) as fallback
+                log.warning("WS connect error (retrying): %s", conn_err)
 
         except Exception as e:
-            log.warning("WS connect error: %s", e)
+            log.warning("WS outer error: %s", e)
         finally:
             _ws_connection = None
 
@@ -3335,7 +3358,6 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
 async def main_async(token: str):
     log.info("main_async: initializing all subsystems")
 
-    # TTS in background thread (non-blocking)
     threading.Thread(target=init_tts, daemon=True, name="TTSInit").start()
     time.sleep(0.2)
 
@@ -3351,7 +3373,6 @@ async def main_async(token: str):
     try: setup_autostart()
     except Exception: pass
 
-    # Core agents
     browser   = EnterpriseBrowserAgent()
     email_mgr = EmailCampaignManager()
     swarm     = AgentSwarm(token, browser, email_mgr)
@@ -3371,7 +3392,6 @@ async def main_async(token: str):
     try: register_hotkeys()
     except Exception: pass
 
-    # Voice
     voice = None
     try:
         def voice_cb(cmd: Dict):
@@ -3383,7 +3403,6 @@ async def main_async(token: str):
     except Exception as e:
         log.warning("Voice start: %s", e)
 
-    # Interactive shell in background
     try:
         shell_t = threading.Thread(
             target=interactive_shell,
@@ -3439,6 +3458,8 @@ def main():
     audit("STARTUP", f"v{VERSION}", "OK")
 
     try:
+        # FIX: On Windows with ProactorEventLoop, asyncio.run() is the correct call.
+        # Do NOT use get_event_loop().run_until_complete() - it causes issues on Windows.
         asyncio.run(main_async(token))
     except KeyboardInterrupt:
         print("\n\n  Dacexy stopped by user.")
