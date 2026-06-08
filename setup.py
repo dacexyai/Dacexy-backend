@@ -1,3 +1,6 @@
+import sys, pathlib
+raw = pathlib.Path(__file__).read_bytes().replace(b'\x00', b'')
+pathlib.Path(__file__).write_bytes(raw)
 import os, sys, subprocess
 
 def w(path, content):
