@@ -3,22 +3,16 @@ setlocal enabledelayedexpansion
 title Dacexy Desktop Agent v15.0 ENTERPRISE
 color 0A
 
-:: ============================================================
-:: FIX 1: Force UTF-8 output so no garbled characters
-:: ============================================================
 chcp 65001 > nul 2>&1
 
-:: ============================================================
-:: FIX 2: Always work from DacexyAgent folder
-:: ============================================================
 if not exist "%USERPROFILE%\DacexyAgent" (
     mkdir "%USERPROFILE%\DacexyAgent"
 )
+if not exist "%USERPROFILE%\DacexyAgent\logs" (
+    mkdir "%USERPROFILE%\DacexyAgent\logs"
+)
 cd /d "%USERPROFILE%\DacexyAgent"
 
-:: ============================================================
-:: STARTUP BANNER
-:: ============================================================
 echo.
 echo  ============================================================
 echo    DACEXY Desktop Agent v15.0 ENTERPRISE
@@ -26,9 +20,6 @@ echo    Starting...
 echo  ============================================================
 echo.
 
-:: ============================================================
-:: FIX 3: Check Python exists before anything else
-:: ============================================================
 python --version > nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found in PATH.
@@ -42,26 +33,13 @@ if errorlevel 1 (
 for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
 echo  [OK] %PYVER%
 
-:: ============================================================
-:: FIX 4: Upgrade pip silently first
-:: ============================================================
 echo  [INFO] Checking pip...
 python -m pip install --upgrade pip -q --no-warn-script-location > nul 2>&1
 
-:: ============================================================
-:: FIX 5: Upgrade websockets - show version to confirm alive
-:: ============================================================
 echo  [INFO] Checking websockets...
 python -m pip install --upgrade websockets -q --no-warn-script-location > nul 2>&1
 python -c "import websockets; print('  [OK] websockets', websockets.__version__)" 2>nul
-if errorlevel 1 (
-    echo  [WARN] websockets check failed, will retry on agent start
-)
 
-:: ============================================================
-:: FIX 6: Install critical packages upfront to avoid
-::        long install delays mid-run that look like hangs
-:: ============================================================
 echo  [INFO] Verifying core packages...
 python -c "import requests" > nul 2>&1
 if errorlevel 1 (
@@ -83,17 +61,11 @@ if errorlevel 1 (
 
 echo  [OK] Core packages ready
 
-:: ============================================================
-:: FIX 7: Apply any patches if patch file exists
-:: ============================================================
 if exist "patch.py" (
     echo  [INFO] Applying patch...
     python patch.py > nul 2>&1
 )
 
-:: ============================================================
-:: FIX 8: Copy latest agent if update exists
-:: ============================================================
 if exist "dacexy_agent_new.py" (
     echo  [INFO] Applying agent update...
     copy /y "dacexy_agent_new.py" "dacexy_agent.py" > nul
@@ -102,20 +74,41 @@ if exist "dacexy_agent_new.py" (
 )
 
 :: ============================================================
-:: CHECK: Is agent file present?
+:: DOWNLOAD AGENT IF MISSING
 :: ============================================================
 if not exist "dacexy_agent.py" (
     echo.
-    echo  [ERROR] dacexy_agent.py not found in %USERPROFILE%\DacexyAgent
-    echo  Please re-download the Dacexy installer package.
+    echo  [INFO] Agent file not found. Downloading from server...
+    python -c "
+import urllib.request, sys, os
+url = 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent'
+dest = os.path.join(os.path.expanduser('~'), 'DacexyAgent', 'dacexy_agent.py')
+try:
+    urllib.request.urlretrieve(url, dest)
+    print('  [OK] Agent downloaded successfully.')
+except Exception as e:
+    print('  [WARN] Auto-download failed:', e)
+    print('  [INFO] Will try to create minimal agent...')
+" 2>&1
+)
+
+:: If still missing after download attempt, show clear error and keep window open
+if not exist "dacexy_agent.py" (
+    echo.
+    echo  ============================================================
+    echo  [ERROR] dacexy_agent.py not found in:
+    echo  %USERPROFILE%\DacexyAgent\
+    echo.
+    echo  Please place dacexy_agent.py in that folder and
+    echo  run this installer again.
+    echo  ============================================================
     echo.
     pause
     exit /b 1
 )
 
 :: ============================================================
-:: FIX 9: Login check and handling
-:: Uses a temp file to avoid pipe/stdin issues
+:: LOGIN CHECK
 :: ============================================================
 python -c "
 import json, pathlib, sys
@@ -143,14 +136,12 @@ if "!LOGIN_STATUS!"=="NEED_LOGIN" (
     echo    Register free at: dacexy.vercel.app
     echo  ============================================================
     echo.
-    
-    :: FIX: Use SET /P for clean console input (not redirected)
+
     set /p DACEXY_EMAIL="  Email   : "
     set /p DACEXY_PASS="  Password: "
     echo.
     echo  [INFO] Logging in...
-    
-    :: Write credentials to temp file to avoid quoting/special char issues
+
     python -c "
 import requests, json, sys
 from pathlib import Path
@@ -211,7 +202,7 @@ except Exception as e:
     print(f'  [ERROR] {e}')
     sys.exit(1)
 "
-    
+
     if errorlevel 1 (
         echo.
         echo  Login failed. Press any key to exit.
@@ -222,40 +213,28 @@ except Exception as e:
 )
 
 :: ============================================================
-:: ALL CHECKS PASSED - LAUNCH AGENT
+:: LAUNCH AGENT
 :: ============================================================
 echo  [INFO] Starting Dacexy Agent...
 echo  [INFO] Log: %USERPROFILE%\DacexyAgent\logs\startup.log
 echo.
 
 :LAUNCH
-:: FIX 10: Use explicit UTF-8 env var for Python subprocess
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 
 python dacexy_agent.py
 set EXIT_CODE=%ERRORLEVEL%
 
-:: ============================================================
-:: EXIT CODE HANDLING
-:: ============================================================
 if %EXIT_CODE% EQU 0 (
     echo.
     echo  Dacexy Agent exited cleanly.
     goto END
 )
 
-if %EXIT_CODE% EQU 1 (
-    echo.
-    echo  [WARN] Agent exited with code 1 (possible startup error)
-    echo  Check log: %USERPROFILE%\DacexyAgent\logs\startup.log
-    goto RESTART_PROMPT
-)
-
 if %EXIT_CODE% EQU 2 (
     echo.
-    echo  [WARN] Agent exited with code 2 (auth expired)
-    echo  Clearing saved session...
+    echo  [WARN] Session expired. Clearing token and re-logging in...
     python -c "
 import json
 from pathlib import Path
@@ -265,7 +244,6 @@ if f.exists():
         d = json.loads(f.read_text())
         d.pop('access_token', None)
         f.write_text(json.dumps(d, indent=2))
-        print('  [INFO] Session cleared. Please login again.')
     except: pass
 "
     goto LAUNCH
@@ -286,7 +264,7 @@ choice /c RLE /n /m "  Choice: "
 
 if errorlevel 3 goto END
 if errorlevel 2 (
-    type "%USERPROFILE%\DacexyAgent\logs\startup.log" | more
+    type "%USERPROFILE%\DacexyAgent\logs\startup.log" 2>nul | more
     goto RESTART_PROMPT
 )
 if errorlevel 1 goto LAUNCH
@@ -295,3 +273,5 @@ if errorlevel 1 goto LAUNCH
 echo.
 echo  Thank you for using Dacexy!
 pause
+ENDOFFILE
+echo "Done"
