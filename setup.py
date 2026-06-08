@@ -1236,7 +1236,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 """)
 
 
-w("src/interfaces/http/routes/agent.py",'''_agent_route_content)
+w("src/interfaces/http/routes/agent.py",'''
 from __future__ import annotations
 import json
 import asyncio
