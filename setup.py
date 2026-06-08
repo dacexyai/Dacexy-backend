@@ -1522,11 +1522,11 @@ async def run_agent(
         "End by telling the user to install and run the Dacexy Desktop Agent "
         "from their Settings page for fully automatic execution."
     )
-    ctx_part = f"\nContext: {body.context}" if body.context else ""
+    ctx_part = ("\nContext: " + body.context) if body.context else ""
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": f"Task: {task_text}{ctx_part}"},
-    ]
+    {"role": "system", "content": system_prompt},
+    {"role": "user",   "content": f"Task: {task_text}{ctx_part}"},
+]
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
         if isinstance(result, list):
