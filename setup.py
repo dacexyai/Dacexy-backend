@@ -1235,7 +1235,9 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
     return {"plan_tier": org.plan_tier if org else "free", "credits_balance": org.credits_balance if org else 0, "monthly_ai_calls": org.monthly_ai_calls if org else 0}
 """)
 
-_agent_route_content = r'''from __future__ import annotations
+
+w("src/interfaces/http/routes/agent.py",'''_agent_route_content)
+from __future__ import annotations
 import json
 import asyncio
 import logging
@@ -1315,7 +1317,7 @@ class DesktopCommandRequest(BaseModel):
     retries:      Optional[int]   = 3
     expected:     Optional[str]   = None
     job_id:       Optional[str]   = None
-    schedule_type:Optional[str]   = None
+    schedule_type: Optional[str]  = None
     time_str:     Optional[str]   = None
     days:         Optional[list]  = None
     steps:        Optional[list]  = None
@@ -1346,7 +1348,7 @@ class DesktopCommandRequest(BaseModel):
     task_name:    Optional[str]   = None
     notes:        Optional[list]  = None
     repeat_every_minutes: Optional[int] = 0
-    run_on_startup: Optional[bool] = False
+    run_on_startup: Optional[bool]      = False
     day_of_month: Optional[int]   = None
     enabled:      Optional[bool]  = True
     value:        Optional[Any]   = None
@@ -1378,9 +1380,9 @@ class CampaignRequest(BaseModel):
     subject:      str
     body:         str
     recipients:   List[str]
-    html:         bool  = True
-    delay_sec:    float = 1.0
-    tags:         List[str] = []
+    html:         bool        = True
+    delay_sec:    float       = 1.0
+    tags:         List[str]   = []
     scheduled_at: Optional[str] = None
 
 
@@ -1421,7 +1423,7 @@ async def run_agent(
     body: AgentRunRequest,
     user: User             = Depends(_get_current_user),
     db:   AsyncSession     = Depends(get_db),
-    ai:   DeepSeekProvider = Depends(get_deepseek)
+    ai:   DeepSeekProvider = Depends(get_deepseek),
 ):
     task_text = (body.task or body.goal or "").strip()[:2000]
     if not task_text:
@@ -1438,8 +1440,8 @@ async def run_agent(
             "task":      task_text,
             "context":   body.context,
             "use_swarm": body.use_swarm,
-            "max_steps": body.max_steps
-        }
+            "max_steps": body.max_steps,
+        },
     )
     db.add(task_record)
     await db.flush()
@@ -1457,13 +1459,14 @@ async def run_agent(
                 "task":    task_text,
                 "action":  "swarm_task" if body.use_swarm else "speak",
                 "context": body.context or "",
-                "task_id": str(task_record.id)
+                "task_id": str(task_record.id),
             }
             await ws.send_text(json.dumps(payload))
 
             try:
                 result_data = await asyncio.wait_for(
-                    asyncio.shield(future), timeout=300)
+                    asyncio.shield(future), timeout=300
+                )
                 ok    = result_data.get("ok", result_data.get("total", 0))
                 total = result_data.get("total", 0)
                 raw   = result_data.get("result", "")
@@ -1471,8 +1474,8 @@ async def run_agent(
                     result_text = json.dumps(raw)
                 else:
                     result_text = (
-                        str(raw) if raw else
-                        f"Completed {ok}/{total} steps on your desktop."
+                        str(raw) if raw
+                        else f"Completed {ok}/{total} steps on your desktop."
                     )
             except asyncio.TimeoutError:
                 result_text = (
@@ -1494,7 +1497,7 @@ async def run_agent(
                 "status":        "completed",
                 "result":        result_text,
                 "created_at":    str(task_record.created_at),
-                "agent_version": agent_metadata.get(user_id, {}).get("version", "")
+                "agent_version": agent_metadata.get(user_id, {}).get("version", ""),
             }
 
         except WebSocketDisconnect:
@@ -1507,8 +1510,8 @@ async def run_agent(
             log.warning("Agent task error for %s: %s", user_id, e)
 
     system_prompt = (
-        "You are Dacexy AI, the world most advanced autonomous desktop agent. "
-        "The user Desktop Agent is not currently connected to their computer. "
+        "You are Dacexy AI, the world's most advanced autonomous desktop agent. "
+        "The user's Desktop Agent is not currently connected to their computer. "
         "Describe exactly what you would do step by step to complete this task, "
         "with specific actions like: click coordinates, type text, open apps, etc. "
         "End by telling the user to install and run the Dacexy Desktop Agent "
@@ -1517,7 +1520,7 @@ async def run_agent(
     ctx_part = f"\nContext: {body.context}" if body.context else ""
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": f"Task: {task_text}{ctx_part}"}
+        {"role": "user",   "content": f"Task: {task_text}{ctx_part}"},
     ]
     try:
         result = await ai.chat(messages, model="deepseek-chat", stream=False)
@@ -1539,7 +1542,7 @@ async def run_agent(
             "note": (
                 "Desktop Agent not connected. "
                 "Connect your Desktop Agent for automatic execution."
-            )
+            ),
         }
     except Exception as e:
         task_record.status      = "failed"
@@ -1551,7 +1554,7 @@ async def run_agent(
 @router.get("/tasks")
 async def list_tasks(
     user: User         = Depends(_get_current_user),
-    db:   AsyncSession = Depends(get_db)
+    db:   AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import select
     try:
@@ -1570,7 +1573,7 @@ async def list_tasks(
                 "result":     (t.output_data or {}).get("result"),
                 "error":      (t.output_data or {}).get("error"),
                 "type":       t.task_type,
-                "created_at": str(t.created_at)
+                "created_at": str(t.created_at),
             }
             for t in tasks
         ]
@@ -1583,14 +1586,14 @@ async def list_tasks(
 async def get_task(
     task_id: str,
     user: User         = Depends(_get_current_user),
-    db:   AsyncSession = Depends(get_db)
+    db:   AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import select
     try:
         result = await db.execute(
             select(AiTask).where(
-                AiTask.id == task_id,
-                AiTask.org_id == user.org_id
+                AiTask.id     == task_id,
+                AiTask.org_id == user.org_id,
             )
         )
         task = result.scalar_one_or_none()
@@ -1604,7 +1607,7 @@ async def get_task(
             "error":      (task.output_data or {}).get("error"),
             "input":      task.input_data,
             "output":     task.output_data,
-            "created_at": str(task.created_at)
+            "created_at": str(task.created_at),
         }
     except HTTPException:
         raise
@@ -1614,8 +1617,8 @@ async def get_task(
 
 @router.get("/desktop/status")
 async def desktop_status(user: User = Depends(_get_current_user)):
-    uid  = str(user.id)
-    meta = agent_metadata.get(uid, {})
+    uid      = str(user.id)
+    meta     = agent_metadata.get(uid, {})
     features = meta.get("features", [])
     return {
         "connected":       uid in active_agents,
@@ -1626,18 +1629,18 @@ async def desktop_status(user: User = Depends(_get_current_user)):
         "features":        features,
         "connected_since": meta.get("connected_since", ""),
         "capabilities": {
-            "vision":        "vision_super"        in features,
-            "voice":         "voice3"              in features,
-            "browser":       "browser_enterprise"  in features,
-            "email":         "email_enterprise"    in features,
-            "swarm":         "swarm10"             in features,
-            "memory":        "memory_vector"       in features,
-            "social":        "social_all"          in features,
-            "multi_monitor": "multi_monitor"       in features,
-            "self_healing":  "self_healing"        in features,
-            "scheduler":     "scheduler"           in features,
-            "plugins":       "plugins"             in features,
-        }
+            "vision":        "vision_super"       in features,
+            "voice":         "voice3"             in features,
+            "browser":       "browser_enterprise" in features,
+            "email":         "email_enterprise"   in features,
+            "swarm":         "swarm10"            in features,
+            "memory":        "memory_vector"      in features,
+            "social":        "social_all"         in features,
+            "multi_monitor": "multi_monitor"      in features,
+            "self_healing":  "self_healing"       in features,
+            "scheduler":     "scheduler"          in features,
+            "plugins":       "plugins"            in features,
+        },
     }
 
 
@@ -1647,21 +1650,21 @@ async def get_last_result(user: User = Depends(_get_current_user)):
     return {
         "result":        agent_results.get(uid),
         "connected":     uid in active_agents,
-        "agent_version": agent_metadata.get(uid, {}).get("version", "")
+        "agent_version": agent_metadata.get(uid, {}).get("version", ""),
     }
 
 
 @router.post("/desktop/command")
 async def send_desktop_command(
     body: DesktopCommandRequest,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid = str(user.id)
     if uid not in active_agents:
         raise HTTPException(
             400,
             "Desktop agent not connected. "
-            "Please run the Dacexy Desktop Agent on your computer first."
+            "Please run the Dacexy Desktop Agent on your computer first.",
         )
     ws = active_agents[uid]
     try:
@@ -1679,7 +1682,7 @@ async def send_desktop_command(
 @router.post("/desktop/task")
 async def send_desktop_task(
     body: TaskRequest,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid       = str(user.id)
     task_text = (body.task or body.goal or "").strip()[:2000]
@@ -1693,7 +1696,7 @@ async def send_desktop_task(
             "type":    "task",
             "task":    task_text,
             "action":  "swarm_task",
-            "context": body.context or ""
+            "context": body.context or "",
         }))
         return {"status": "sent", "task": task_text}
     except Exception as e:
@@ -1732,7 +1735,7 @@ async def ocr_screen(user: User = Depends(_get_current_user)):
 @router.post("/desktop/email/campaign")
 async def create_email_campaign(
     body: CampaignRequest,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid = str(user.id)
     if uid not in active_agents:
@@ -1747,7 +1750,7 @@ async def create_email_campaign(
             "html":         body.html,
             "delay":        body.delay_sec,
             "tags":         body.tags,
-            "scheduled_at": body.scheduled_at
+            "scheduled_at": body.scheduled_at,
         }))
         await asyncio.sleep(1)
         result      = agent_results.get(uid, {})
@@ -1755,12 +1758,12 @@ async def create_email_campaign(
         if campaign_id:
             await active_agents[uid].send_text(json.dumps({
                 "action":      "send_campaign",
-                "campaign_id": campaign_id
+                "campaign_id": campaign_id,
             }))
         return {
-            "status":     "ok",
+            "status":      "ok",
             "campaign_id": campaign_id,
-            "recipients": len(body.recipients)
+            "recipients":  len(body.recipients),
         }
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1769,7 +1772,7 @@ async def create_email_campaign(
 @router.post("/desktop/whatsapp/bulk")
 async def whatsapp_bulk(
     body: BulkWhatsAppRequest,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid = str(user.id)
     if uid not in active_agents:
@@ -1779,7 +1782,7 @@ async def whatsapp_bulk(
             "action":   "whatsapp_bulk",
             "contacts": body.contacts,
             "message":  body.message,
-            "delay":    body.delay
+            "delay":    body.delay,
         }))
         return {"status": "sent", "contacts": len(body.contacts)}
     except Exception as e:
@@ -1789,7 +1792,7 @@ async def whatsapp_bulk(
 @router.post("/desktop/social/post")
 async def social_post(
     body: SocialPostRequest,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid = str(user.id)
     if uid not in active_agents:
@@ -1816,7 +1819,7 @@ async def social_post(
             "caption":     body.caption,
             "title":       body.title,
             "description": body.description,
-            "page_id":     body.page_id
+            "page_id":     body.page_id,
         }))
         return {"status": "sent", "platform": body.platform}
     except Exception as e:
@@ -1826,7 +1829,7 @@ async def social_post(
 @router.post("/desktop/social/post_all")
 async def post_all_social(
     body: dict,
-    user: User = Depends(_get_current_user)
+    user: User = Depends(_get_current_user),
 ):
     uid = str(user.id)
     if uid not in active_agents:
@@ -1835,11 +1838,11 @@ async def post_all_social(
         await active_agents[uid].send_text(json.dumps({
             "action":      "post_all_social",
             "text":        body.get("text", ""),
-            "credentials": body.get("credentials", {})
+            "credentials": body.get("credentials", {}),
         }))
         return {
             "status":    "sent",
-            "platforms": list(body.get("credentials", {}).keys())
+            "platforms": list(body.get("credentials", {}).keys()),
         }
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1851,8 +1854,7 @@ async def agent_health(user: User = Depends(_get_current_user)):
     if uid not in active_agents:
         raise HTTPException(400, "Desktop agent not connected.")
     try:
-        await active_agents[uid].send_text(
-            json.dumps({"action": "health_check"}))
+        await active_agents[uid].send_text(json.dumps({"action": "health_check"}))
         await asyncio.sleep(2)
         result = agent_results.get(uid, {})
         return {"status": "ok", "health": result.get("health", {})}
@@ -1867,7 +1869,8 @@ async def get_agent_memory(user: User = Depends(_get_current_user)):
         raise HTTPException(400, "Desktop agent not connected.")
     try:
         await active_agents[uid].send_text(
-            json.dumps({"action": "get_memory", "query": ""}))
+            json.dumps({"action": "get_memory", "query": ""})
+        )
         await asyncio.sleep(1.5)
         result = agent_results.get(uid, {})
         return {"status": "ok", "memory": result.get("memory", "")}
@@ -1882,7 +1885,8 @@ async def get_agent_skills(user: User = Depends(_get_current_user)):
         raise HTTPException(400, "Desktop agent not connected.")
     try:
         await active_agents[uid].send_text(
-            json.dumps({"action": "list_skills"}))
+            json.dumps({"action": "list_skills"})
+        )
         await asyncio.sleep(1.5)
         result = agent_results.get(uid, {})
         return {"status": "ok", "skills": result.get("skills", [])}
@@ -1898,11 +1902,12 @@ async def desktop_websocket(websocket: WebSocket):
     try:
         try:
             auth_raw = await asyncio.wait_for(
-                websocket.receive_text(), timeout=30)
+                websocket.receive_text(), timeout=30
+            )
         except asyncio.TimeoutError:
             await websocket.send_text(json.dumps({
                 "type":    "error",
-                "message": "Authentication timeout — send token within 30 seconds"
+                "message": "Authentication timeout — send token within 30 seconds",
             }))
             await websocket.close(code=1008)
             return
@@ -1910,15 +1915,14 @@ async def desktop_websocket(websocket: WebSocket):
         token = ""
         try:
             auth_data = json.loads(auth_raw)
-            token = (auth_data.get("token", "") or
-                     auth_data.get("access_token", ""))
+            token = auth_data.get("token", "") or auth_data.get("access_token", "")
         except json.JSONDecodeError:
             token = auth_raw.strip()
 
         if not token or len(token) < 20:
             await websocket.send_text(json.dumps({
                 "type":    "error",
-                "message": "Invalid token format. Please log in again."
+                "message": "Invalid token format. Please log in again.",
             }))
             await websocket.close(code=1008)
             return
@@ -1930,7 +1934,7 @@ async def desktop_websocket(websocket: WebSocket):
                 "message": (
                     "Authentication failed — token is invalid or expired. "
                     "Please log in again via the desktop agent."
-                )
+                ),
             }))
             await websocket.close(code=1008)
             return
@@ -1940,7 +1944,7 @@ async def desktop_websocket(websocket: WebSocket):
             try:
                 await old_ws.send_text(json.dumps({
                     "type":    "error",
-                    "message": "A newer connection has been established. Closing this one."
+                    "message": "A newer connection has been established. Closing this one.",
                 }))
                 await old_ws.close(code=1001)
             except Exception:
@@ -1948,20 +1952,20 @@ async def desktop_websocket(websocket: WebSocket):
             log.info("Replaced existing agent for user %s", user_id)
 
         import datetime as _dt
-        active_agents[user_id] = websocket
+        active_agents[user_id]  = websocket
         agent_metadata[user_id] = {
             "connected_since": _dt.datetime.now().isoformat(),
             "version":         "",
             "platform":        "",
             "hostname":        "",
-            "features":        []
+            "features":        [],
         }
         log.info("Agent connected: user=%s", user_id)
 
         await websocket.send_text(json.dumps({
             "type":    "connected",
             "message": "Desktop Agent connected successfully to Dacexy backend.",
-            "user_id": user_id
+            "user_id": user_id,
         }))
 
         consecutive_errors = 0
@@ -1969,14 +1973,14 @@ async def desktop_websocket(websocket: WebSocket):
             try:
                 try:
                     data = await asyncio.wait_for(
-                        websocket.receive_text(), timeout=60)
+                        websocket.receive_text(), timeout=60
+                    )
                     consecutive_errors = 0
                 except asyncio.TimeoutError:
                     try:
                         await asyncio.wait_for(
-                            websocket.send_text(
-                                json.dumps({"type": "ping"})),
-                            timeout=5
+                            websocket.send_text(json.dumps({"type": "ping"})),
+                            timeout=5,
                         )
                     except Exception:
                         log.info("Keepalive failed user=%s", user_id)
@@ -1986,8 +1990,7 @@ async def desktop_websocket(websocket: WebSocket):
                 try:
                     msg = json.loads(data)
                 except json.JSONDecodeError:
-                    log.warning("Bad JSON from agent user=%s: %s",
-                                user_id, data[:100])
+                    log.warning("Bad JSON from agent user=%s: %s", user_id, data[:100])
                     continue
 
                 msg_type = msg.get("type", "")
@@ -2004,18 +2007,18 @@ async def desktop_websocket(websocket: WebSocket):
                         "platform":       msg.get("platform", ""),
                         "hostname":       msg.get("hostname", ""),
                         "features":       msg.get("features", []),
-                        "memory_context": msg.get("memory_context", "")
+                        "memory_context": msg.get("memory_context", ""),
                     })
                     log.info(
                         "Agent init: user=%s version=%s features=%d",
                         user_id,
                         msg.get("version", ""),
-                        len(msg.get("features", []))
+                        len(msg.get("features", [])),
                     )
                     await websocket.send_text(json.dumps({
                         "type":    "init_ack",
                         "message": "Agent registered successfully.",
-                        "version": msg.get("version", "")
+                        "version": msg.get("version", ""),
                     }))
 
                 elif msg_type == "task_result":
@@ -2030,7 +2033,7 @@ async def desktop_websocket(websocket: WebSocket):
                         "Task result: user=%s ok=%s/%s",
                         user_id,
                         msg.get("ok", 0),
-                        msg.get("total", 0)
+                        msg.get("total", 0),
                     )
 
                 elif msg_type in (
@@ -2038,12 +2041,11 @@ async def desktop_websocket(websocket: WebSocket):
                     "screenshot_before", "screenshot_after",
                     "system_info", "error", "voice_result",
                     "ocr_result", "vision_result", "memory_result",
-                    "health_result", "skill_result", "heartbeat"
+                    "health_result", "skill_result", "heartbeat",
                 ):
                     agent_results[user_id] = msg
                     future = pending_task_results.get(user_id)
-                    if (future and not future.done()
-                            and msg_type == "result"):
+                    if future and not future.done() and msg_type == "result":
                         try:
                             future.set_result(msg)
                         except asyncio.InvalidStateError:
@@ -2063,14 +2065,11 @@ async def desktop_websocket(websocket: WebSocket):
                         "[AGENT:%s] %s: %s",
                         user_id,
                         msg.get("level", "INFO").upper(),
-                        msg.get("message", "")[:300]
+                        msg.get("message", "")[:300],
                     )
 
                 else:
-                    log.debug(
-                        "Unknown msg type user=%s: %s",
-                        user_id, msg_type
-                    )
+                    log.debug("Unknown msg type user=%s: %s", user_id, msg_type)
 
             except WebSocketDisconnect:
                 log.info("Agent disconnected: user=%s", user_id)
@@ -2102,10 +2101,9 @@ async def desktop_websocket(websocket: WebSocket):
 async def track_email_open(
     campaign_id:     str,
     recipient_index: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    log.info("Email opened: campaign=%s recipient=%d",
-             campaign_id, recipient_index)
+    log.info("Email opened: campaign=%s recipient=%d", campaign_id, recipient_index)
     gif_bytes = (
         b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff"
         b"\x00\x00\x00!\xf9\x04\x00\x00\x00\x00\x00,"
@@ -2114,13 +2112,13 @@ async def track_email_open(
     return Response(
         content=gif_bytes,
         media_type="image/gif",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
 
 from pathlib import Path
 from fastapi.responses import FileResponse
-from fastapi import HTTPException
+
 
 @router.get("/download/windows")
 async def download_windows_installer():
@@ -2129,34 +2127,29 @@ async def download_windows_installer():
         / "desktop_agent"
         / "install_dacexy_agent.bat"
     )
-
     if not installer_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Installer file not found: {installer_path}"
+            detail=f"Installer file not found: {installer_path}",
         )
-
     return FileResponse(
         path=str(installer_path),
         filename="install_dacexy_agent.bat",
-        media_type="application/octet-stream"
+        media_type="application/octet-stream",
     )
-    
+
+
 @router.get("/download/mac")
 async def download_mac_installer():
     sh_content = b"#!/bin/bash\necho 'Dacexy Agent Installer'\n"
-    resp = Response(
-        content=sh_content,
-        media_type="application/octet-stream"
-    )
+    resp = Response(content=sh_content, media_type="application/octet-stream")
     resp.headers["Content-Disposition"] = (
         "attachment; filename=install_dacexy_agent.sh"
     )
     return resp
-'''
+''')
 
-w("src/interfaces/http/routes/agent.py", _agent_route_content)
- 
+
 w("src/interfaces/http/routes/voice.py", """
 import io
 import base64
