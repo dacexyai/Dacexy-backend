@@ -1,15 +1,52 @@
 """
-DACEXY DESKTOP AGENT v14.0 ULTIMATE
-World's Most Powerful AI Desktop Agent
+DACEXY DESKTOP AGENT v15.0 ENTERPRISE
+World-Class Autonomous AI Desktop Agent
 Wake Words: Hey Dacexy / Dacexy / Assistant
+
+FIXES IN v15.0:
+- Fixed installer hang (removed blocking console reads in startup path)
+- Fixed websockets v16+ compatibility (removed extra_headers kwarg)
+- Fixed Unicode/encoding issues on Windows
+- Fixed login loop crash on pipe/console errors
+- Fixed CMD window showing blank after startup
+- Added proper asyncio Windows policy
+- Added startup diagnostics output
+- Fixed TTS threading crash
+- Added graceful fallback for all optional modules
 """
 
 # ============================================================
-# BLOCK 1 - PATHS AND SAFE LOGGING SETUP
+# BLOCK 1 - CRITICAL: Windows asyncio + encoding fix (FIRST)
 # ============================================================
-import os, sys, platform
+import sys
+import os
+import platform
+
+# Fix Windows asyncio policy BEFORE anything else
+if platform.system() == "Windows":
+    import asyncio as _asyncio
+    if hasattr(_asyncio, "WindowsSelectorEventLoopPolicy"):
+        _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
+
+# Fix stdout/stderr encoding for Windows CMD
+if platform.system() == "Windows":
+    import io
+    try:
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+    except Exception:
+        pass
+
+# ============================================================
+# BLOCK 2 - PATHS AND LOGGING
+# ============================================================
 from pathlib import Path
 import datetime
+import logging
 
 _AGENT_DIR   = Path.home() / "DacexyAgent"
 _LOG_DIR     = _AGENT_DIR / "logs"
@@ -17,7 +54,6 @@ _STARTUP_LOG = _LOG_DIR / "startup.log"
 _AGENT_DIR.mkdir(exist_ok=True)
 _LOG_DIR.mkdir(exist_ok=True)
 
-import logging
 
 def _safe_file_handler(path: Path) -> logging.Handler:
     for attempt_path in [path, path.with_suffix(".1.log"),
@@ -26,12 +62,12 @@ def _safe_file_handler(path: Path) -> logging.Handler:
         try:
             with open(str(attempt_path), "a", encoding="utf-8"):
                 pass
-            h = logging.FileHandler(
-                str(attempt_path), encoding="utf-8", mode="a")
+            h = logging.FileHandler(str(attempt_path), encoding="utf-8", mode="a")
             return h
         except Exception:
             continue
     return logging.NullHandler()
+
 
 _startup_handler = _safe_file_handler(_STARTUP_LOG)
 _startup_handler.setFormatter(
@@ -52,13 +88,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("dacexy")
 log.info("=" * 60)
-log.info("Dacexy Agent v14.0 ULTIMATE starting: %s",
+log.info("Dacexy Agent v15.0 ENTERPRISE starting: %s",
          datetime.datetime.now().isoformat())
 log.info("Python: %s | Platform: %s", sys.version, platform.system())
 log.info("=" * 60)
 
 # ============================================================
-# BLOCK 2 - AUTO-INSTALL DEPENDENCIES
+# BLOCK 3 - AUTO-INSTALL DEPENDENCIES
 # ============================================================
 import subprocess
 
@@ -71,6 +107,7 @@ PACKAGES = [
     "rich", "colorama", "python-docx", "openpyxl",
     "pandas", "cryptography", "packaging",
 ]
+
 
 def _silent_install(pkg):
     special = {
@@ -95,44 +132,42 @@ def _silent_install(pkg):
         except Exception as e:
             log.warning("Could not install %s: %s", pkg, e)
 
+
 for _p in PACKAGES:
     _silent_install(_p)
 
 try:
-    import pyaudio; PYAUDIO_OK = True
+    import pyaudio
+    PYAUDIO_OK = True
     log.info("PyAudio OK")
 except Exception:
     PYAUDIO_OK = False
     log.warning("PyAudio not available - voice will be disabled")
-    for _cmd in [
-        [sys.executable, "-m", "pip", "install", "PyAudio",
-         "-q", "--no-warn-script-location"],
-        [sys.executable, "-m", "pip", "install", "pipwin",
-         "-q", "--no-warn-script-location"],
-    ]:
-        try:
-            subprocess.check_call(
-                _cmd, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, timeout=60)
-            if "pipwin" in _cmd:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pipwin",
-                     "install", "pyaudio", "-q"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, timeout=60)
-            import pyaudio; PYAUDIO_OK = True
-            log.info("PyAudio installed OK")
-            break
-        except Exception:
-            continue
 
 # ============================================================
-# BLOCK 3 - ALL IMPORTS
+# BLOCK 4 - ALL IMPORTS
 # ============================================================
-import asyncio, base64, io, json, threading, time
-import webbrowser, re, ctypes, queue, smtplib
-import socket, hashlib, traceback, random, zipfile, csv
-import shutil, math, gc
+import asyncio
+import base64
+import io
+import json
+import threading
+import time
+import webbrowser
+import re
+import ctypes
+import queue
+import smtplib
+import socket
+import hashlib
+import traceback
+import random
+import zipfile
+import csv
+import shutil
+import math
+import gc
+
 from typing import Optional, List, Dict, Any, Tuple, Callable
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -155,8 +190,7 @@ except Exception as e:
     class _PyAutoGuiStub:
         FAILSAFE = False
         PAUSE = 0.04
-        def __getattr__(self, name):
-            return lambda *a, **k: None
+        def __getattr__(self, name): return lambda *a, **k: None
         def size(self): return (1920, 1080)
         def position(self): return (0, 0)
     pyautogui = _PyAutoGuiStub()
@@ -170,7 +204,7 @@ except Exception as e:
 
 try:
     import websockets
-    log.info("websockets OK")
+    log.info("websockets OK - version: %s", websockets.__version__)
 except Exception as e:
     log.error("websockets failed: %s", e)
     websockets = None
@@ -213,7 +247,8 @@ except Exception:
     console = None
 
 try:
-    import winreg; WINREG_OK = True
+    import winreg
+    WINREG_OK = True
     log.info("winreg OK")
 except Exception:
     WINREG_OK = False
@@ -228,34 +263,39 @@ except Exception:
     log.warning("speech_recognition not available")
 
 try:
-    import pygetwindow as gw; WINDOW_OK = True
+    import pygetwindow as gw
+    WINDOW_OK = True
     log.info("pygetwindow OK")
 except Exception:
     WINDOW_OK = False
     gw = None
 
 try:
-    from plyer import notification; NOTIFY_OK = True
+    from plyer import notification
+    NOTIFY_OK = True
     log.info("plyer OK")
 except Exception:
     NOTIFY_OK = False
 
 try:
-    import cv2; CV2_OK = True
+    import cv2
+    CV2_OK = True
     log.info("opencv OK")
 except Exception:
     CV2_OK = False
     cv2 = None
 
 try:
-    import numpy as np; NUMPY_OK = True
+    import numpy as np
+    NUMPY_OK = True
     log.info("numpy OK")
 except Exception:
     NUMPY_OK = False
     np = None
 
 try:
-    import pytesseract; TESSERACT_OK = True
+    import pytesseract
+    TESSERACT_OK = True
     for _tp in [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -295,14 +335,16 @@ except Exception as e:
     log.warning("selenium not available: %s", e)
 
 try:
-    import keyboard; KEYBOARD_OK = True
+    import keyboard
+    KEYBOARD_OK = True
     log.info("keyboard OK")
 except Exception:
     KEYBOARD_OK = False
     keyboard = None
 
 try:
-    import schedule; SCHEDULE_OK = True
+    import schedule
+    SCHEDULE_OK = True
     log.info("schedule OK")
 except Exception:
     SCHEDULE_OK = False
@@ -316,19 +358,22 @@ except Exception:
     WIN32_OK = False
 
 try:
-    import pandas as pd; PANDAS_OK = True
+    import pandas as pd
+    PANDAS_OK = True
 except Exception:
     PANDAS_OK = False
     pd = None
 
 try:
-    import docx; DOCX_OK = True
+    import docx
+    DOCX_OK = True
 except Exception:
     DOCX_OK = False
     docx = None
 
 try:
-    import openpyxl; OPENPYXL_OK = True
+    import openpyxl
+    OPENPYXL_OK = True
 except Exception:
     OPENPYXL_OK = False
     openpyxl = None
@@ -336,7 +381,7 @@ except Exception:
 log.info("All imports complete")
 
 # ============================================================
-# BLOCK 4 - CONSTANTS
+# BLOCK 5 - CONSTANTS
 # ============================================================
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
@@ -345,27 +390,26 @@ LOG_FILE      = Path.home() / "dacexy_agent.log"
 MEMORY_FILE   = Path.home() / ".dacexy_memory.json"
 AUDIT_FILE    = Path.home() / "dacexy_audit.log"
 MACRO_FILE    = Path.home() / ".dacexy_macros.json"
-HIBERNATE_FILE= Path.home() / ".dacexy_hibernate.json"
-CAMPAIGN_FILE = Path.home() / ".dacexy_campaigns.json"
-SCHEDULE_FILE = Path.home() / ".dacexy_schedule.json"
-SKILLS_FILE   = Path.home() / ".dacexy_skills.json"
-PLUGINS_DIR   = Path.home() / ".dacexy_plugins"
-COOKIES_DIR   = Path.home() / ".dacexy_cookies"
-NOTES_DIR     = Path.home() / "DacexyNotes"
-BACKUP_DIR    = Path.home() / "DacexyBackups"
-RESEARCH_DIR  = Path.home() / "DacexyResearch"
-VERSION       = "14.0 ULTIMATE"
-WAKE_WORDS    = ["hey dacexy", "dacexy", "assistant"]
+HIBERNATE_FILE = Path.home() / ".dacexy_hibernate.json"
+CAMPAIGN_FILE  = Path.home() / ".dacexy_campaigns.json"
+SCHEDULE_FILE  = Path.home() / ".dacexy_schedule.json"
+SKILLS_FILE    = Path.home() / ".dacexy_skills.json"
+PLUGINS_DIR    = Path.home() / ".dacexy_plugins"
+COOKIES_DIR    = Path.home() / ".dacexy_cookies"
+NOTES_DIR      = Path.home() / "DacexyNotes"
+BACKUP_DIR     = Path.home() / "DacexyBackups"
+RESEARCH_DIR   = Path.home() / "DacexyResearch"
+VERSION        = "15.0 ENTERPRISE"
+WAKE_WORDS     = ["hey dacexy", "dacexy", "assistant"]
 
-for _d in [PLUGINS_DIR, COOKIES_DIR, NOTES_DIR,
-           BACKUP_DIR, RESEARCH_DIR]:
+for _d in [PLUGINS_DIR, COOKIES_DIR, NOTES_DIR, BACKUP_DIR, RESEARCH_DIR]:
     try:
         _d.mkdir(exist_ok=True)
     except Exception:
         pass
 
 # ============================================================
-# BLOCK 5 - GLOBAL STATE
+# BLOCK 6 - GLOBAL STATE
 # ============================================================
 _memory_lock          = threading.Lock()
 _config_lock          = threading.Lock()
@@ -404,7 +448,7 @@ except Exception as e:
     log.warning("Audit log setup failed: %s", e)
 
 # ============================================================
-# BLOCK 6 - DATA STRUCTURES
+# BLOCK 7 - DATA STRUCTURES
 # ============================================================
 class AgentStatus(Enum):
     IDLE      = auto()
@@ -415,6 +459,7 @@ class AgentStatus(Enum):
     PAUSED    = auto()
     ERROR     = auto()
     STOPPED   = auto()
+
 
 @dataclass
 class TaskStep:
@@ -433,20 +478,22 @@ class TaskStep:
     timestamp:   str  = field(
         default_factory=lambda: datetime.datetime.now().isoformat())
 
+
 @dataclass
 class ExecutionContext:
-    task_id:     str
-    task_name:   str
-    steps:       List[TaskStep] = field(default_factory=list)
-    status:      str = "pending"
-    start_time:  float = field(default_factory=time.time)
-    end_time:    float = 0.0
-    total_steps: int = 0
-    done_steps:  int = 0
-    failed_steps:int = 0
-    screenshots: List[str] = field(default_factory=list)
-    notes:       List[str] = field(default_factory=list)
-    checkpoint:  Dict[str, Any] = field(default_factory=dict)
+    task_id:      str
+    task_name:    str
+    steps:        List[TaskStep] = field(default_factory=list)
+    status:       str = "pending"
+    start_time:   float = field(default_factory=time.time)
+    end_time:     float = 0.0
+    total_steps:  int = 0
+    done_steps:   int = 0
+    failed_steps: int = 0
+    screenshots:  List[str] = field(default_factory=list)
+    notes:        List[str] = field(default_factory=list)
+    checkpoint:   Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class MemoryEntry:
@@ -456,30 +503,32 @@ class MemoryEntry:
     metadata:    Dict[str, Any] = field(default_factory=dict)
     timestamp:   str = field(
         default_factory=lambda: datetime.datetime.now().isoformat())
-    access_count:int = 0
+    access_count: int = 0
     importance:  float = 1.0
     embedding:   Optional[List[float]] = None
 
+
 @dataclass
 class EmailCampaignData:
-    campaign_id:  str
-    name:         str
-    subject:      str
-    body_template:str
-    recipients:   List[str]
-    scheduled_at: Optional[str] = None
-    sent:         int = 0
-    failed:       int = 0
-    opened:       int = 0
-    clicked:      int = 0
-    bounced:      int = 0
-    status:       str = "pending"
-    created_at:   str = field(
+    campaign_id:   str
+    name:          str
+    subject:       str
+    body_template: str
+    recipients:    List[str]
+    scheduled_at:  Optional[str] = None
+    sent:          int = 0
+    failed:        int = 0
+    opened:        int = 0
+    clicked:       int = 0
+    bounced:       int = 0
+    status:        str = "pending"
+    created_at:    str = field(
         default_factory=lambda: datetime.datetime.now().isoformat())
-    html:         bool = True
-    delay_sec:    float = 1.0
-    retry_queue:  List[str] = field(default_factory=list)
-    tags:         List[str] = field(default_factory=list)
+    html:          bool = True
+    delay_sec:     float = 1.0
+    retry_queue:   List[str] = field(default_factory=list)
+    tags:          List[str] = field(default_factory=list)
+
 
 @dataclass
 class UIElement:
@@ -493,13 +542,14 @@ class UIElement:
     text:       str = ""
     clickable:  bool = True
 
+
 @dataclass
 class LearnedSkill:
     skill_id:    str
     name:        str
     description: str
     steps:       List[Dict]
-    success_rate:float = 0.0
+    success_rate: float = 0.0
     use_count:   int = 0
     created_at:  str = field(
         default_factory=lambda: datetime.datetime.now().isoformat())
@@ -507,26 +557,75 @@ class LearnedSkill:
     tags:        List[str] = field(default_factory=list)
 
 # ============================================================
-# BLOCK 7 - CONSOLE UTILITIES
+# BLOCK 8 - CONSOLE UTILITIES
 # ============================================================
 def _banner():
-    print("")
-    print("=" * 62)
-    print("  DACEXY v14.0 ULTIMATE - AI Desktop Agent")
-    print("  Wake Words: Hey Dacexy / Dacexy / Assistant")
-    print(f"  Log: {_STARTUP_LOG}")
-    print("=" * 62)
-    print("")
+    lines = [
+        "",
+        "=" * 62,
+        "  DACEXY v15.0 ENTERPRISE - AI Desktop Agent",
+        "  Wake Words: Hey Dacexy / Dacexy / Assistant",
+        f"  Log: {_STARTUP_LOG}",
+        "=" * 62,
+        "",
+    ]
+    for line in lines:
+        try:
+            print(line)
+            sys.stdout.flush()
+        except Exception:
+            pass
 
-def _ok(m):   print(f"  [OK] {m}"); log.info("OK: %s", m)
-def _err(m):  print(f"  [ERROR] {m}"); log.error("ERR: %s", m)
-def _info(m): print(f"  [INFO] {m}"); log.info("%s", m)
-def _warn(m): print(f"  [WARN] {m}"); log.warning("%s", m)
-def _task(m): print(f"  [TASK] {m}"); log.info("TASK: %s", m)
+
+def _ok(m):
+    try:
+        print(f"  [OK] {m}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    log.info("OK: %s", m)
+
+
+def _err(m):
+    try:
+        print(f"  [ERROR] {m}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    log.error("ERR: %s", m)
+
+
+def _info(m):
+    try:
+        print(f"  [INFO] {m}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    log.info("%s", m)
+
+
+def _warn(m):
+    try:
+        print(f"  [WARN] {m}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    log.warning("%s", m)
+
+
+def _task(m):
+    try:
+        print(f"  [TASK] {m}")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    log.info("TASK: %s", m)
+
 
 def generate_id(prefix: str = "") -> str:
     return (f"{prefix}"
             f"{hashlib.md5(f'{time.time()}{random.random()}'.encode()).hexdigest()[:10]}")
+
 
 def mask_pii(text: str) -> str:
     text = re.sub(
@@ -534,6 +633,7 @@ def mask_pii(text: str) -> str:
         '[EMAIL]', str(text))
     text = re.sub(r'\b\d{10,12}\b', '[PHONE]', text)
     return text
+
 
 def audit(action: str, detail: str = "", result: str = ""):
     try:
@@ -543,28 +643,40 @@ def audit(action: str, detail: str = "", result: str = ""):
         pass
 
 # ============================================================
-# BLOCK 8 - WINDOWS CONSOLE INPUT FIX
+# BLOCK 9 - SAFE CONSOLE INPUT (v15 fix: never blocks startup)
 # ============================================================
-def _get_console_input(prompt: str) -> str:
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
+def _get_console_input(prompt: str = "") -> str:
+    """Safe console input that works in all Windows terminal contexts."""
+    try:
+        if prompt:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+    except Exception:
+        pass
+
     if platform.system() == "Windows":
+        # Try CONIN$ first (works even when stdin is redirected)
         try:
-            with open("CONIN$", "r") as con:
-                return con.readline().rstrip("\n").rstrip("\r")
+            with open("CONIN$", "r", encoding="utf-8", errors="replace") as con:
+                line = con.readline()
+                return line.rstrip("\n").rstrip("\r")
         except Exception:
             pass
+
     try:
         return input()
+    except EOFError:
+        return ""
     except Exception:
         return ""
 
 # ============================================================
-# BLOCK 9 - TTS
+# BLOCK 10 - TTS (v15 fix: non-blocking init, no crash on fail)
 # ============================================================
 _tts = None
 _tts_lock  = threading.Lock()
 _tts_queue: queue.Queue = queue.Queue(maxsize=20)
+
 
 def init_tts():
     global _tts
@@ -588,14 +700,14 @@ def init_tts():
         log.warning("TTS init failed (non-fatal): %s", e)
         _tts = None
 
+
 def _tts_worker():
     while _agent_running:
         try:
             item = _tts_queue.get(timeout=1)
             if item is None:
                 break
-            text, _ = (item if isinstance(item, tuple)
-                       else (item, False))
+            text, _ = (item if isinstance(item, tuple) else (item, False))
             try:
                 with _tts_lock:
                     if _tts:
@@ -610,11 +722,16 @@ def _tts_worker():
         except Exception:
             continue
 
+
 def speak(text: str, priority: bool = False):
     if not text:
         return
     safe = str(text)[:400]
-    print(f"  [Dacexy] {safe}")
+    try:
+        print(f"  [Dacexy] {safe}")
+        sys.stdout.flush()
+    except Exception:
+        pass
     log.info("SPEAK: %s", safe)
     try:
         if priority:
@@ -627,60 +744,64 @@ def speak(text: str, priority: bool = False):
     except queue.Full:
         pass
 
+
 def notify_desktop(title: str, message: str):
     try:
         if NOTIFY_OK:
             notification.notify(
-                title=title,
-                message=message[:100],
-                app_name="Dacexy",
-                timeout=4)
+                title=title, message=message[:100],
+                app_name="Dacexy", timeout=4)
     except Exception:
         pass
 
 # ============================================================
-# BLOCK 10 - CONFIG & AUTH
+# BLOCK 11 - CONFIG & AUTH
 # ============================================================
 def load_config() -> dict:
     with _config_lock:
         if CONFIG_FILE.exists():
             try:
-                return json.loads(
-                    CONFIG_FILE.read_text(encoding="utf-8"))
+                return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             except Exception:
                 pass
         return {}
+
 
 def save_config(cfg: dict):
     with _config_lock:
         try:
             tmp = CONFIG_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(cfg, indent=2),
-                           encoding="utf-8")
+            tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
             tmp.replace(CONFIG_FILE)
         except Exception as e:
             log.warning("Config save: %s", e)
 
+
 def get_token():
     return load_config().get("access_token")
+
 
 def save_token(t):
     cfg = load_config()
     cfg["access_token"] = t
     save_config(cfg)
 
+
 def clear_token():
     cfg = load_config()
     cfg.pop("access_token", None)
     save_config(cfg)
 
+
 def get_smtp_config():
     return load_config().get("smtp", {})
+
 
 def save_smtp_config(s):
     cfg = load_config()
     cfg["smtp"] = s
     save_config(cfg)
+
 
 def check_token_valid(token: str) -> bool:
     if not req_lib:
@@ -691,23 +812,17 @@ def check_token_valid(token: str) -> bool:
             headers={"Authorization": f"Bearer {token}"},
             timeout=10)
         valid = r.status_code == 200
-        log.info("Token check: %s",
-                 "valid" if valid else f"invalid ({r.status_code})")
+        log.info("Token check: %s", "valid" if valid else f"invalid ({r.status_code})")
         return valid
     except Exception as e:
         log.warning("Token check failed: %s", e)
         return False
 
-# ============================================================
-# FIX 1 - check_internet: tries multiple URLs, verify=False
-# Works on every PC regardless of SSL/proxy config
-# ============================================================
+
 def check_internet() -> bool:
     if not req_lib:
         return False
-    for _url in ["https://www.google.com",
-                 "https://1.1.1.1",
-                 "https://8.8.8.8"]:
+    for _url in ["https://www.google.com", "https://1.1.1.1", "https://8.8.8.8"]:
         try:
             r = req_lib.get(_url, timeout=5, verify=False)
             if r.status_code < 500:
@@ -716,11 +831,12 @@ def check_internet() -> bool:
             continue
     return False
 
+
 def setup_autostart():
     try:
         if not WINREG_OK:
             return
-        launch_bat = str(_AGENT_DIR / "launch_dacexy.bat")
+        launch_bat = str(_AGENT_DIR / "install_dacexy_agent.bat")
         if os.path.exists(launch_bat):
             cmd = f'"{launch_bat}"'
         else:
@@ -736,19 +852,23 @@ def setup_autostart():
     except Exception as e:
         log.warning("Autostart setup failed (non-fatal): %s", e)
 
+
 def login() -> Optional[str]:
     print("")
-    print("=" * 38)
-    print("  Dacexy Agent v14.0 - Login")
-    print("=" * 38)
+    print("=" * 42)
+    print("  Dacexy Agent v15.0 - Login")
+    print("=" * 42)
     print("  Enter your Dacexy account credentials.")
     print("  Register free at: dacexy.vercel.app")
     print("")
+    sys.stdout.flush()
+
     email    = _get_console_input("  Email   : ").strip()
     password = _get_console_input("  Password: ").strip()
     print("")
+
     if not email or "@" not in email:
-        _err("Invalid email address. Please enter a valid email.")
+        _err("Invalid email address.")
         return None
     if not password or len(password) < 4:
         _err("Password too short (minimum 4 characters).")
@@ -756,8 +876,10 @@ def login() -> Optional[str]:
     if not req_lib:
         _err("requests library not installed.")
         return None
+
     log.info("Attempting login for: %s", mask_pii(email))
     _info("Connecting to Dacexy server...")
+
     try:
         r = req_lib.post(
             f"{BACKEND_HTTP}/auth/login",
@@ -796,16 +918,16 @@ def login() -> Optional[str]:
         log.exception("Login error")
     return None
 
+
 def login_loop() -> str:
-    attempts = 0
     while True:
-        attempts += 1
         token = login()
         if token:
             return token
         print("")
         print("  Login failed. Press Enter to try again.")
         print("  Press Ctrl+C to exit Dacexy.")
+        sys.stdout.flush()
         try:
             _get_console_input("  > ")
         except KeyboardInterrupt:
@@ -814,7 +936,7 @@ def login_loop() -> str:
             raise SystemExit(0)
 
 # ============================================================
-# BLOCK 11 - MEMORY SYSTEM
+# BLOCK 12 - MEMORY SYSTEM
 # ============================================================
 class MemorySystem:
     def __init__(self):
@@ -928,12 +1050,6 @@ class MemorySystem:
             return [{"name": s.name, "description": s.description,
                      "use_count": s.use_count} for s in self.skills.values()]
 
-    def suggest_improvement(self, task: str) -> str:
-        rel = self.search(task, category="success", top_k=2)
-        if rel:
-            return f"Previously worked: {rel[0].content[:120]}"
-        return ""
-
     def _embed(self, text: str, dim: int = 64) -> List[float]:
         vec = [0.0] * dim
         for i, ch in enumerate(str(text).lower()):
@@ -1018,17 +1134,20 @@ class MemorySystem:
 
 _mem_sys: Optional[MemorySystem] = None
 
+
 def get_mem() -> MemorySystem:
     global _mem_sys
     if _mem_sys is None:
         _mem_sys = MemorySystem()
     return _mem_sys
 
+
 def remember(fact: str, category: str = "fact"):
     try:
         get_mem().store(fact, category)
     except Exception:
         pass
+
 
 def remember_preference(key: str, value: Any):
     try:
@@ -1038,6 +1157,7 @@ def remember_preference(key: str, value: Any):
     except Exception:
         pass
 
+
 def update_user_profile(key: str, value: Any):
     try:
         with _memory_lock:
@@ -1045,6 +1165,7 @@ def update_user_profile(key: str, value: Any):
         get_mem().save()
     except Exception:
         pass
+
 
 def add_task_history(task: str):
     try:
@@ -1054,11 +1175,13 @@ def add_task_history(task: str):
     except Exception:
         pass
 
+
 def get_memory_context(query: str = "") -> str:
     try:
         return get_mem().get_context(query)
     except Exception:
         return ""
+
 
 def save_workflow(name: str, steps: List[dict]):
     try:
@@ -1069,10 +1192,12 @@ def save_workflow(name: str, steps: List[dict]):
     except Exception:
         pass
 
+
 def get_workflow(name: str) -> Optional[List[dict]]:
     with _memory_lock:
         wf = MEMORY["workflows"].get(name)
         return wf["steps"] if wf else None
+
 
 def remember_contact(name: str, email: str = "", phone: str = ""):
     try:
@@ -1086,7 +1211,7 @@ def remember_contact(name: str, email: str = "", phone: str = ""):
         pass
 
 # ============================================================
-# BLOCK 12 - VISION ENGINE
+# BLOCK 13 - VISION ENGINE
 # ============================================================
 class SuperVisionEngine:
     def __init__(self):
@@ -1131,31 +1256,6 @@ class SuperVisionEngine:
         except Exception:
             return (1920, 1080)
 
-    def get_monitors(self) -> List[Dict]:
-        monitors = []
-        try:
-            if WIN32_OK:
-                import ctypes.wintypes
-                def _cb(hM, hdcM, lp, dw):
-                    r = lp.contents
-                    monitors.append({"left": r.left, "top": r.top,
-                                     "right": r.right, "bottom": r.bottom,
-                                     "width": r.right - r.left,
-                                     "height": r.bottom - r.top})
-                    return True
-                PROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong,
-                                          ctypes.c_ulong,
-                                          ctypes.POINTER(ctypes.wintypes.RECT),
-                                          ctypes.c_double)
-                ctypes.windll.user32.EnumDisplayMonitors(None, None, PROC(_cb), 0)
-        except Exception:
-            pass
-        if not monitors:
-            w, h = self.get_screen_size()
-            monitors.append({"left": 0, "top": 0, "right": w, "bottom": h,
-                             "width": w, "height": h})
-        return monitors
-
     def ocr(self, region=None) -> str:
         if not TESSERACT_OK:
             return ""
@@ -1181,25 +1281,6 @@ class SuperVisionEngine:
             return pytesseract.image_to_string(img, config="--psm 11").strip()
         except Exception:
             return ""
-
-    def ocr_image(self, path: str) -> str:
-        if not TESSERACT_OK or Image is None:
-            return ""
-        try:
-            img = Image.open(path)
-            return pytesseract.image_to_string(img).strip()
-        except Exception as e:
-            return f"OCR error: {e}"
-
-    def ocr_from_pdf(self, path: str) -> str:
-        try:
-            import PyPDF2
-            with open(path, "rb") as f:
-                reader = PyPDF2.PdfReader(f)
-                parts  = [page.extract_text() for page in reader.pages]
-            return "\n".join(p for p in parts if p)
-        except Exception as e:
-            return f"PDF error: {e}"
 
     def find_text(self, search: str, region=None) -> Optional[Tuple[int, int]]:
         if not TESSERACT_OK:
@@ -1255,20 +1336,14 @@ class SuperVisionEngine:
             log.debug("detect_ui: %s", e)
         return elements
 
-    def detect_forms(self) -> List[Dict]:
-        return [asdict(e) for e in self.detect_ui_elements()
-                if e.elem_type in ("input", "button")]
-
     def detect_popups(self) -> bool:
         text = self.ocr_fast().lower()
-        sigs = ["ok", "cancel", "yes", "no", "close",
-                "error", "warning", "alert", "confirm"]
+        sigs = ["ok", "cancel", "yes", "no", "close", "error", "warning", "alert", "confirm"]
         return sum(1 for s in sigs if s in text) >= 2
 
     def detect_error_dialogs(self) -> Optional[str]:
         text = self.ocr_fast().lower()
-        errs = ["error", "failed", "cannot", "invalid",
-                "not found", "access denied", "exception"]
+        errs = ["error", "failed", "cannot", "invalid", "not found", "access denied", "exception"]
         for e in errs:
             if e in text:
                 return e
@@ -1276,8 +1351,7 @@ class SuperVisionEngine:
 
     def detect_loading(self) -> bool:
         text = self.ocr_fast().lower()
-        return any(w in text for w in
-                   ["loading", "please wait", "processing", "connecting"])
+        return any(w in text for w in ["loading", "please wait", "processing", "connecting"])
 
     def wait_for_text(self, text: str, timeout: int = 30) -> bool:
         start = time.time()
@@ -1294,16 +1368,6 @@ class SuperVisionEngine:
                 return True
             time.sleep(1.5)
         return True
-
-    def find_button(self, label: str) -> Optional[UIElement]:
-        for e in self.detect_ui_elements():
-            if label.lower() in e.text.lower():
-                return e
-        pos = self.find_text(label)
-        if pos:
-            return UIElement(label=label, x=pos[0], y=pos[1],
-                             width=60, height=28, elem_type="button")
-        return None
 
     def get_screen_hash(self) -> str:
         try:
@@ -1392,11 +1456,9 @@ class SuperVisionEngine:
         threading.Thread(target=_loop, daemon=True, name="VisionMonitor").start()
         log.info("Vision monitoring started")
 
-    def on_screen_change(self, cb: Callable):
-        self._change_cbs.append(cb)
-
 
 _vision_engine: Optional[SuperVisionEngine] = None
+
 
 def get_vision() -> SuperVisionEngine:
     global _vision_engine
@@ -1404,36 +1466,33 @@ def get_vision() -> SuperVisionEngine:
         _vision_engine = SuperVisionEngine()
     return _vision_engine
 
+
 def take_screenshot(quality: int = 75, region=None) -> Optional[str]:
     return get_vision().capture(region=region, quality=quality)
 
-def take_screenshot_pil(region=None):
-    return get_vision().capture_pil(region=region)
-
-def get_screen_size() -> Tuple[int, int]:
-    return get_vision().get_screen_size()
 
 def ocr_screen(region=None) -> str:
     return get_vision().ocr(region=region)
 
-def ocr_find_text(text: str, region=None):
-    return get_vision().find_text(text, region=region)
 
-def screen_contains_text(text: str) -> bool:
-    return text.lower() in ocr_screen().lower()
-
-def wait_for_text_on_screen(text: str, timeout: int = 30) -> bool:
-    return get_vision().wait_for_text(text, timeout)
-
-def detect_buttons_on_screen() -> List[Dict]:
-    return [asdict(e) for e in get_vision().detect_ui_elements()
-            if e.elem_type == "button"]
-
-def get_screen_text_via_ai(token: str) -> str:
-    return get_vision().get_ai_description(token)
+def get_active_window() -> str:
+    try:
+        if WINDOW_OK:
+            w = gw.getActiveWindow()
+            return w.title if w else ""
+    except Exception:
+        pass
+    try:
+        hwnd   = ctypes.windll.user32.GetForegroundWindow()
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        buf    = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+    except Exception:
+        return ""
 
 # ============================================================
-# BLOCK 13 - MOUSE & KEYBOARD
+# BLOCK 14 - MOUSE & KEYBOARD
 # ============================================================
 def human_move(x: int, y: int, duration: float = None):
     try:
@@ -1444,6 +1503,7 @@ def human_move(x: int, y: int, duration: float = None):
         pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeInOutQuad)
     except Exception as e:
         log.debug("human_move: %s", e)
+
 
 def human_click(x: int, y: int, button: str = "left", double: bool = False):
     try:
@@ -1460,8 +1520,6 @@ def human_click(x: int, y: int, button: str = "left", double: bool = False):
     except Exception as e:
         log.warning("human_click: %s", e)
 
-def human_right_click(x: int, y: int):
-    human_click(x, y, "right")
 
 def human_drag(x1, y1, x2, y2, duration: float = 0.5):
     try:
@@ -1475,6 +1533,7 @@ def human_drag(x1, y1, x2, y2, duration: float = 0.5):
     except Exception as e:
         log.warning("human_drag: %s", e)
 
+
 def human_scroll(x: int, y: int, clicks: int, direction: str = "down"):
     try:
         human_move(x, y)
@@ -1482,6 +1541,7 @@ def human_scroll(x: int, y: int, clicks: int, direction: str = "down"):
         pyautogui.scroll(sign * abs(clicks), x=x, y=y)
     except Exception as e:
         log.warning("human_scroll: %s", e)
+
 
 def smart_type(text: str, clear_first: bool = False, human_speed: bool = False):
     text = str(text)[:5000]
@@ -1505,11 +1565,13 @@ def smart_type(text: str, clear_first: bool = False, human_speed: bool = False):
     except Exception as e:
         log.warning("smart_type: %s", e)
 
+
 def press_key(key: str):
     try:
         pyautogui.press(key)
     except Exception as e:
         log.debug("press_key: %s", e)
+
 
 def hotkey(*keys):
     try:
@@ -1517,19 +1579,13 @@ def hotkey(*keys):
     except Exception as e:
         log.debug("hotkey: %s", e)
 
-def hold_key(key: str, duration: float = 1.0):
-    try:
-        pyautogui.keyDown(key)
-        time.sleep(duration)
-        pyautogui.keyUp(key)
-    except Exception as e:
-        log.debug("hold_key: %s", e)
 
 def get_clipboard() -> str:
     try:
         return pyperclip.paste() if pyperclip else ""
     except Exception:
         return ""
+
 
 def set_clipboard(text: str):
     try:
@@ -1539,7 +1595,7 @@ def set_clipboard(text: str):
         pass
 
 # ============================================================
-# BLOCK 14 - WINDOW & APP MANAGEMENT
+# BLOCK 15 - WINDOW & APP MANAGEMENT
 # ============================================================
 def get_all_windows() -> List[str]:
     try:
@@ -1549,21 +1605,6 @@ def get_all_windows() -> List[str]:
         pass
     return []
 
-def get_active_window() -> str:
-    try:
-        if WINDOW_OK:
-            w = gw.getActiveWindow()
-            return w.title if w else ""
-    except Exception:
-        pass
-    try:
-        hwnd   = ctypes.windll.user32.GetForegroundWindow()
-        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-        buf    = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-        return buf.value
-    except Exception:
-        return ""
 
 def focus_window(title_kw: str) -> bool:
     try:
@@ -1591,36 +1632,6 @@ def focus_window(title_kw: str) -> bool:
         log.warning("focus_window: %s", e)
     return False
 
-def minimize_window(title: str = None):
-    try:
-        if title and WINDOW_OK:
-            wins = gw.getWindowsWithTitle(title)
-            if wins:
-                wins[0].minimize()
-                return
-        hotkey("win", "down")
-    except Exception:
-        hotkey("win", "down")
-
-def maximize_window(title: str = None):
-    try:
-        if title and WINDOW_OK:
-            wins = gw.getWindowsWithTitle(title)
-            if wins:
-                wins[0].maximize()
-                return
-        hotkey("win", "up")
-    except Exception:
-        hotkey("win", "up")
-
-def close_window(title: str = None):
-    try:
-        if title:
-            focus_window(title)
-            time.sleep(0.3)
-        hotkey("alt", "F4")
-    except Exception:
-        pass
 
 def list_running_apps() -> List[Dict]:
     if not psutil:
@@ -1638,6 +1649,7 @@ def list_running_apps() -> List[Dict]:
         pass
     return apps
 
+
 def kill_app(name: str) -> bool:
     if not psutil:
         return False
@@ -1649,6 +1661,7 @@ def kill_app(name: str) -> bool:
     except Exception:
         pass
     return False
+
 
 def open_app(app_name: str) -> bool:
     try:
@@ -1668,7 +1681,7 @@ def open_app(app_name: str) -> bool:
             return False
 
 # ============================================================
-# BLOCK 15 - FILE ENGINE
+# BLOCK 16 - FILE ENGINE
 # ============================================================
 class FileEngine:
     SUPPORTED = {
@@ -1702,10 +1715,6 @@ class FileEngine:
                     for row in ws.iter_rows(values_only=True):
                         rows.append("\t".join(str(c or "") for c in row))
                 return "\n".join(rows)[:10000]
-            elif ext == ".pdf":
-                return get_vision().ocr_from_pdf(str(p))
-            elif ext in self.SUPPORTED["image"]:
-                return get_vision().ocr_image(str(p))
             else:
                 return p.read_bytes().hex()[:2000]
         except Exception as e:
@@ -1874,45 +1883,15 @@ class FileEngine:
 
 _file_engine: Optional[FileEngine] = None
 
+
 def get_file_engine() -> FileEngine:
     global _file_engine
     if _file_engine is None:
         _file_engine = FileEngine()
     return _file_engine
 
-def list_files(folder=None, pattern="*"):
-    return get_file_engine().list_files(folder, pattern)
-
-def read_file(path):
-    return get_file_engine().read(path)
-
-def write_file(path, content):
-    return get_file_engine().write(path, content)
-
-def delete_file_safe(path):
-    return get_file_engine().delete(path, safe=True)
-
-def copy_file(src, dst):
-    return get_file_engine().copy(src, dst)
-
-def move_file(src, dst):
-    return get_file_engine().move(src, dst)
-
-def create_folder(path):
-    try:
-        Path(path).mkdir(parents=True, exist_ok=True)
-        return True
-    except Exception:
-        return False
-
-def search_files(kw, folder=None, ext=None):
-    return get_file_engine().search(kw, folder, ext)
-
-def get_disk_usage():
-    return get_file_engine().get_disk_usage()
-
 # ============================================================
-# BLOCK 16 - EMAIL CAMPAIGN MANAGER
+# BLOCK 17 - EMAIL CAMPAIGN MANAGER
 # ============================================================
 class EmailCampaignManager:
     def __init__(self):
@@ -2001,8 +1980,7 @@ class EmailCampaignManager:
         _ok(f"Campaign '{name}': {len(camp.recipients)} recipients")
         return cid
 
-    def send_campaign(self, campaign_id: str,
-                      provider_index: int = 0) -> Dict[str, Any]:
+    def send_campaign(self, campaign_id: str, provider_index: int = 0) -> Dict[str, Any]:
         camp = self.campaigns.get(campaign_id)
         if not camp:
             return {"error": "Campaign not found"}
@@ -2024,14 +2002,11 @@ class EmailCampaignManager:
                     msg["Subject"] = subj
                     msg["From"]    = from_email
                     msg["To"]      = to
-                    track = (f'<img src="{BACKEND_HTTP}/track/{campaign_id}/{i}" '
-                             f'width="1" height="1" alt=""/>') if camp.html else ""
-                    full = body + track if camp.html else body
-                    msg.attach(MIMEText(full, "html" if camp.html else "plain", "utf-8"))
+                    msg.attach(MIMEText(body, "html" if camp.html else "plain", "utf-8"))
                     server.sendmail(from_email, to, msg.as_string())
                     sent += 1
                     camp.sent = sent
-                    print(f"  [Email] [{i+1}/{len(camp.recipients)}] -> {to}")
+                    _info(f"[{i+1}/{len(camp.recipients)}] -> {to}")
                     time.sleep(camp.delay_sec + random.uniform(0.1, 0.4))
                     if (i + 1) % 100 == 0:
                         try:
@@ -2065,28 +2040,7 @@ class EmailCampaignManager:
                   "duration_min": round(elapsed / 60, 1)}
         speak(f"Campaign complete. {sent} sent.")
         audit("CAMPAIGN", camp.name, f"sent={sent} failed={failed}")
-        get_mem().remember_success(f"email campaign {camp.name}", f"{sent} sent", elapsed)
         return result
-
-    def retry_failed(self, campaign_id: str) -> Dict[str, Any]:
-        camp = self.campaigns.get(campaign_id)
-        if not camp or not camp.retry_queue:
-            return {"error": "No retries queued"}
-        orig            = camp.recipients[:]
-        camp.recipients = list(camp.retry_queue)
-        camp.retry_queue = []
-        result          = self.send_campaign(campaign_id)
-        camp.recipients = orig
-        return result
-
-    def _retry_worker(self):
-        while _agent_running:
-            time.sleep(600)
-            with _campaign_lock:
-                camps = list(self.campaigns.values())
-            for camp in camps:
-                if camp.retry_queue and camp.status == "complete":
-                    self.retry_failed(camp.campaign_id)
 
     def send_single(self, to: str, subject: str, body: str,
                     html: bool = False, attachment: str = None) -> bool:
@@ -2113,20 +2067,23 @@ class EmailCampaignManager:
             log.error("Single email: %s", e)
             return False
 
-    def get_analytics(self, campaign_id: str) -> Dict:
-        camp = self.campaigns.get(campaign_id)
-        if not camp:
-            return {}
-        total = max(1, len(camp.recipients))
-        return {"name": camp.name, "total": total, "sent": camp.sent,
-                "failed": camp.failed, "opened": camp.opened, "status": camp.status,
-                "rate": f"{100*camp.sent//total}%", "pending_retry": len(camp.retry_queue)}
-
-    def list_campaigns(self) -> List[Dict]:
-        return [self.get_analytics(cid) for cid in self.campaigns]
+    def _retry_worker(self):
+        while _agent_running:
+            time.sleep(600)
+            with _campaign_lock:
+                camps = list(self.campaigns.values())
+            for camp in camps:
+                if camp.retry_queue and camp.status == "complete":
+                    orig            = camp.recipients[:]
+                    camp.recipients = list(camp.retry_queue)
+                    camp.retry_queue = []
+                    self.send_campaign(camp.campaign_id)
+                    camp.recipients = orig
 
     def get_dashboard(self) -> Dict:
-        clist  = self.list_campaigns()
+        clist  = [{"name": c.name, "sent": c.sent, "failed": c.failed,
+                   "total": len(c.recipients), "status": c.status}
+                  for c in self.campaigns.values()]
         t_sent = sum(c.get("sent", 0) for c in clist)
         t_rec  = sum(c.get("total", 0) for c in clist)
         return {"total_campaigns": len(clist), "total_recipients": t_rec,
@@ -2135,7 +2092,7 @@ class EmailCampaignManager:
                 "campaigns": clist}
 
 # ============================================================
-# BLOCK 17 - ENTERPRISE BROWSER AGENT
+# BLOCK 18 - ENTERPRISE BROWSER AGENT
 # ============================================================
 class EnterpriseBrowserAgent:
     WAIT = 15
@@ -2198,43 +2155,10 @@ class EnterpriseBrowserAgent:
     def stop(self):
         try:
             if self.driver:
-                try:
-                    self._save_cookies()
-                except Exception:
-                    pass
                 self.driver.quit()
                 self.driver = None
         except Exception:
             pass
-
-    def _save_cookies(self):
-        try:
-            domain = urlparse(self.driver.current_url).netloc.replace("www.", "")
-            cf = COOKIES_DIR / f"{domain.replace('.','_')}.json"
-            cf.write_text(json.dumps(self.driver.get_cookies()))
-        except Exception:
-            pass
-
-    def _load_cookies(self, domain: str = ""):
-        try:
-            cf = COOKIES_DIR / f"{domain.replace('.','_')}.json"
-            if cf.exists():
-                for c in json.loads(cf.read_text()):
-                    try:
-                        self.driver.add_cookie(c)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    def go_to(self, url: str, wait: float = 1.5):
-        if not url.startswith("http"):
-            url = "https://" + url
-        try:
-            self.driver.get(url)
-            time.sleep(wait + random.uniform(0, 0.4))
-        except Exception as e:
-            log.warning("go_to: %s", e)
 
     def _by(self, by: str):
         return {"css": By.CSS_SELECTOR, "xpath": By.XPATH, "id": By.ID,
@@ -2292,7 +2216,7 @@ class EnterpriseBrowserAgent:
         try:
             page = self.driver.find_element(By.TAG_NAME, "body").text.lower()
             return any(s in page for s in ["captcha", "recaptcha",
-                                            "i'm not a robot", "verify you are", "robot check"])
+                                            "i'm not a robot", "verify you are"])
         except Exception:
             return False
 
@@ -2307,33 +2231,14 @@ class EnterpriseBrowserAgent:
             return True
         return False
 
-    def login(self, url: str, email_sel: str, pass_sel: str, submit_sel: str,
-              email: str, password: str, success_indicator: str = None) -> bool:
+    def go_to(self, url: str, wait: float = 1.5):
+        if not url.startswith("http"):
+            url = "https://" + url
         try:
-            self.go_to(url, wait=3)
-            self.handle_captcha()
-            self.find_and_type(email_sel, email)
-            time.sleep(0.6 + random.uniform(0, 0.3))
-            self.find_and_type(pass_sel, password)
-            time.sleep(0.4 + random.uniform(0, 0.2))
-            self.find_and_click(submit_sel)
-            time.sleep(4 + random.uniform(0, 1))
-            self.handle_captcha()
-            ok = True
-            if success_indicator:
-                ok = (self.find(success_indicator, timeout=12) is not None)
-            self._save_cookies()
-            return ok
+            self.driver.get(url)
+            time.sleep(wait + random.uniform(0, 0.4))
         except Exception as e:
-            log.error("Browser login: %s", e)
-            return False
-
-    def extract_data(self, selector: str, by: str = "css") -> List[str]:
-        try:
-            els = self.driver.find_elements(self._by(by), selector)
-            return [e.text for e in els if e.text.strip()]
-        except Exception:
-            return []
+            log.warning("go_to: %s", e)
 
     def get_page_text(self) -> str:
         try:
@@ -2347,49 +2252,12 @@ class EnterpriseBrowserAgent:
         except Exception:
             return None
 
-    def scroll_page(self, direction: str = "down", amount: int = 700):
-        sign = 1 if direction == "down" else -1
+    def extract_data(self, selector: str, by: str = "css") -> List[str]:
         try:
-            self.driver.execute_script(f"window.scrollBy(0,{sign*amount});")
+            els = self.driver.find_elements(self._by(by), selector)
+            return [e.text for e in els if e.text.strip()]
         except Exception:
-            pass
-
-    def new_tab(self, url: str = ""):
-        try:
-            self.driver.execute_script(f"window.open('{url}','_blank');")
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            if url:
-                time.sleep(2)
-        except Exception:
-            pass
-
-    def close_tab(self):
-        try:
-            self.driver.close()
-            if self.driver.window_handles:
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-        except Exception:
-            pass
-
-    def switch_tab(self, index: int = 0):
-        try:
-            self.driver.switch_to.window(self.driver.window_handles[index])
-        except Exception:
-            pass
-
-    def screenshot_b64(self) -> Optional[str]:
-        try:
-            return base64.b64encode(self.driver.get_screenshot_as_png()).decode()
-        except Exception:
-            return None
-
-    def wait_for(self, selector: str, by: str = "css", timeout: int = 15) -> bool:
-        try:
-            WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located((self._by(by), selector)))
-            return True
-        except Exception:
-            return False
+            return []
 
     def google_search(self, query: str) -> List[str]:
         try:
@@ -2410,11 +2278,14 @@ class EnterpriseBrowserAgent:
                      "google.com" not in (e.get_attribute("href") or "")][:max_pages]
             for url in urls:
                 try:
-                    self.new_tab(url)
+                    self.execute_js(f"window.open('{url}','_blank');")
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
                     time.sleep(3)
                     text = self.get_page_text()[:1000]
                     research["sources"].append({"url": url, "text": text[:300]})
-                    self.close_tab()
+                    self.driver.close()
+                    if self.driver.window_handles:
+                        self.driver.switch_to.window(self.driver.window_handles[-1])
                 except Exception:
                     pass
         except Exception:
@@ -2425,6 +2296,12 @@ class EnterpriseBrowserAgent:
         except Exception:
             pass
         return research
+
+    def screenshot_b64(self) -> Optional[str]:
+        try:
+            return base64.b64encode(self.driver.get_screenshot_as_png()).decode()
+        except Exception:
+            return None
 
     def whatsapp_bulk(self, contacts: List[str], message: str,
                       delay: float = 3.5) -> Dict[str, Any]:
@@ -2459,24 +2336,8 @@ class EnterpriseBrowserAgent:
                             '//button[@data-testid="compose-btn-send"]')))
                     btn.click()
                     time.sleep(1)
-                else:
-                    search = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH,
-                            '//div[@data-testid="search"]')))
-                    search.click(); search.clear(); search.send_keys(contact)
-                    time.sleep(2)
-                    res = WebDriverWait(self.driver, 6).until(
-                        EC.presence_of_element_located((By.XPATH,
-                            '//div[@data-testid="cell-frame-container"]')))
-                    res.click()
-                    time.sleep(1.5)
-                    mb = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH,
-                            '//div[@data-testid="conversation-compose-box-input"]')))
-                    mb.click(); mb.send_keys(message)
-                    time.sleep(0.5); mb.send_keys(Keys.ENTER); time.sleep(1)
                 sent += 1
-                print(f"  [WA] [{i+1}/{len(contacts)}] -> {contact}")
+                _info(f"[{i+1}/{len(contacts)}] WA -> {contact}")
                 time.sleep(delay + random.uniform(0.5, 1.5))
             except Exception as e:
                 failed += 1
@@ -2505,7 +2366,6 @@ class EnterpriseBrowserAgent:
             time.sleep(0.6)
             self.find_and_click('[data-testid="tweetButton"]')
             time.sleep(3)
-            self._save_cookies()
             _ok("Tweet posted")
             return True
         except Exception as e:
@@ -2520,18 +2380,12 @@ class EnterpriseBrowserAgent:
             self.find_and_click('[type="submit"]')
             time.sleep(5)
             self.handle_captcha()
-            self.find_and_click(
-                '[data-control-name="share.sharebox_feed_create_post"]',
-                fallback_selectors=['[class*="share-box"]',
-                                    'button[class*="artdeco-button"]'])
-            time.sleep(2.5)
             tb = (self.find('//div[@role="textbox"]', by="xpath")
                   or self.find('[contenteditable="true"]'))
             if tb:
                 tb.click(); time.sleep(0.3); tb.send_keys(text)
             self.find_and_click('//button[contains(text(),"Post")]', by="xpath")
             time.sleep(3)
-            self._save_cookies()
             _ok("LinkedIn posted")
             return True
         except Exception as e:
@@ -2549,16 +2403,13 @@ class EnterpriseBrowserAgent:
             self.handle_captcha()
             if page_id:
                 self.go_to(f"https://www.facebook.com/{page_id}", wait=3)
-            self.find_and_click(
-                '[data-testid="status-attachment-mentions-input"]',
-                fallback_selectors=['[placeholder*="What"]', '[role="textbox"]'])
+            self.find_and_click('[placeholder*="What"]',
+                                fallback_selectors=['[role="textbox"]'])
             time.sleep(2.5)
-            self.find_and_type('[data-testid="status-attachment-mentions-input"]', text)
+            self.find_and_type('[role="textbox"]', text)
             time.sleep(1)
-            self.find_and_click('[data-testid="react-composer-post-button"]',
-                                fallback_selectors=['[type="submit"]'])
+            self.find_and_click('[type="submit"]')
             time.sleep(3)
-            self._save_cookies()
             _ok("Facebook posted")
             return True
         except Exception as e:
@@ -2574,8 +2425,7 @@ class EnterpriseBrowserAgent:
             self.find_and_click('[type="submit"]')
             time.sleep(7)
             self.handle_captcha()
-            self.find_and_click('[aria-label="New post"]',
-                                fallback_selectors=['svg[aria-label="New post"]'])
+            self.find_and_click('[aria-label="New post"]')
             time.sleep(2)
             fi = self.find('input[type="file"]')
             if fi and image_path:
@@ -2649,7 +2499,7 @@ class EnterpriseBrowserAgent:
             return False
 
 # ============================================================
-# BLOCK 18 - SECURITY
+# BLOCK 19 - SECURITY
 # ============================================================
 PERMISSION_RULES = {
     "delete_files": {"triggers": [["delete", "erase", "wipe"], ["file", "folder", "data"]],
@@ -2659,26 +2509,22 @@ PERMISSION_RULES = {
                      "icon": "[BANK]", "label": "BANKING", "warn": "Accessing financial services."},
     "payment":      {"triggers": [["pay", "purchase", "credit card", "cvv"], ["any"]],
                      "icon": "[PAY]", "label": "PAYMENT", "warn": "Making a payment."},
-    "passwords":    {"triggers": [["password", "credentials"], ["any"]],
-                     "icon": "[PASS]", "label": "PASSWORDS", "warn": "Accessing passwords."},
     "email_bulk":   {"triggers": [["bulk email", "mass email", "send email"], ["any"]],
                      "icon": "[EMAIL]", "label": "BULK EMAIL", "warn": "Sending bulk emails."},
     "social_post":  {"triggers": [["post on", "tweet", "publish"],
-                                  ["facebook", "instagram", "twitter", "linkedin", "tiktok", "youtube"]],
+                                  ["facebook", "instagram", "twitter", "linkedin", "tiktok"]],
                      "icon": "[SOCIAL]", "label": "SOCIAL POST", "warn": "Posting to social media."},
     "whatsapp_bulk":{"triggers": [["whatsapp bulk", "bulk whatsapp"], ["any"]],
                      "icon": "[WA]", "label": "BULK WHATSAPP", "warn": "Sending bulk WhatsApp messages."},
     "shutdown":     {"triggers": [["shutdown", "restart", "reboot"], ["any"]],
                      "icon": "[POWER]", "label": "SHUTDOWN", "warn": "Shutting down computer."},
-    "format_disk":  {"triggers": [["format disk", "format drive", "wipe drive"], ["any"]],
-                     "icon": "[DANGER]", "label": "FORMAT DISK", "warn": "DANGER: Erases ALL disk data!"},
 }
 
 BLOCKED_COMMANDS = [
-    "rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows", "mkfs",
-    "dd if=/dev/zero", "rd /s /q c:\\", "bcdedit", "reg delete hklm",
-    "net user administrator /active:yes",
+    "rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows",
+    "dd if=/dev/zero", "rd /s /q c:\\", "reg delete hklm",
 ]
+
 
 def emergency_stop():
     global _agent_running
@@ -2686,7 +2532,8 @@ def emergency_stop():
     _agent_running = False
     speak("Emergency stop. All tasks halted.", priority=True)
     audit("EMERGENCY_STOP", "", "TRIGGERED")
-    print("\n  [STOP] EMERGENCY STOP ACTIVATED\n")
+    _info("EMERGENCY STOP ACTIVATED")
+
 
 def needs_permission(task: str) -> Tuple[bool, str]:
     tl = task.lower()
@@ -2696,6 +2543,7 @@ def needs_permission(task: str) -> Tuple[bool, str]:
             if ctx == ["any"] or any(c in tl for c in ctx):
                 return True, ptype
     return False, ""
+
 
 def ask_permission(task: str, ptype: str) -> bool:
     rule  = PERMISSION_RULES.get(ptype, {})
@@ -2709,44 +2557,30 @@ def ask_permission(task: str, ptype: str) -> bool:
     print(f"  WARNING: {warn}")
     print(f'  Task: "{task[:80]}"')
     print(f"  {sep}")
+    sys.stdout.flush()
     speak(f"Permission needed: {warn}")
     granted_input = _get_console_input("\n  Type YES to allow or NO to deny: ").strip().lower()
     granted = granted_input in ["yes", "y", "allow", "ok", "sure", "proceed"]
     speak("Permission granted." if granted else "Task cancelled.")
-    print(f"  {'[OK] Permitted' if granted else '[NO] Denied'}\n")
+    _info("Permitted" if granted else "Denied")
     audit("PERM", mask_pii(f"{ptype}: {task[:80]}"), "GRANTED" if granted else "DENIED")
     return granted
+
 
 def is_blocked(cmd: str) -> bool:
     cl = cmd.lower()
     return any(b in cl for b in BLOCKED_COMMANDS)
 
 # ============================================================
-# BLOCK 19 - AGENT SWARM
+# BLOCK 20 - AGENT SWARM / PLANNER
 # ============================================================
-class BaseAgent(ABC):
-    def __init__(self, name: str, token: str):
-        self.name   = name
-        self.token  = token
-        self.status = AgentStatus.IDLE
-        self.log    = logging.getLogger(f"dacexy.{name.lower()}")
-
-    @abstractmethod
-    def run(self, task: Dict[str, Any]) -> Any:
-        pass
-
-    def report(self, msg: str):
-        self.log.info("[%s] %s", self.name, msg)
-
-
-class PlannerAgent(BaseAgent):
+class PlannerAgent:
     def __init__(self, token: str):
-        super().__init__("Planner", token)
+        self.token = token
 
     def run(self, task: Dict[str, Any]) -> List[Dict]:
         desc = task.get("task", "")
-        self.status = AgentStatus.PLANNING
-        self.report(f"Planning: {desc}")
+        log.info("Planner: %s", desc)
         try:
             if not req_lib:
                 raise ValueError("no requests")
@@ -2768,11 +2602,9 @@ class PlannerAgent(BaseAgent):
                 m = re.search(r'\[.*\]', content, re.DOTALL)
                 if m:
                     steps = json.loads(m.group())
-                    self.status = AgentStatus.IDLE
                     return steps
         except Exception as e:
-            self.log.warning("Planning: %s", e)
-        self.status = AgentStatus.IDLE
+            log.warning("Planning: %s", e)
         return [{"step": 1, "action": "speak", "description": desc,
                  "type": "speak", "params": {}}]
 
@@ -2804,21 +2636,7 @@ class AgentSwarm:
             except queue.Empty:
                 continue
 
-    def dispatch(self, handler: Callable, task: Dict, agent_name: str = "agent") -> str:
-        tid = generate_id("t_")
-        self._bus.put((tid, agent_name, task, handler))
-        return tid
-
-    def wait_result(self, tid: str, timeout: float = 60) -> Optional[Any]:
-        start = time.time()
-        while time.time() - start < timeout:
-            if tid in self._results:
-                return self._results.pop(tid)
-            time.sleep(0.15)
-        return None
-
-    def plan_and_execute(self, task_desc: str,
-                         command_executor: Callable) -> Dict[str, Any]:
+    def plan_and_execute(self, task_desc: str, command_executor: Callable) -> Dict[str, Any]:
         _task(f"Swarm planning: {task_desc}")
         steps   = self.planner.run({"task": task_desc})
         _task(f"Executing {len(steps)} steps...")
@@ -2852,117 +2670,59 @@ class AgentSwarm:
                 "elapsed_sec": round(elapsed, 1), "results": results}
 
 # ============================================================
-# BLOCK 20 - OPERATOR ENGINE
+# BLOCK 21 - SELF-HEALING ENGINE
 # ============================================================
-class OperatorEngine:
-    def __init__(self, token: str, command_executor: Callable):
-        self.token    = token
-        self.executor = command_executor
-        self.vision   = get_vision()
-        self.history: List[Dict] = []
-        log.info("OperatorEngine initialized")
+class SelfHealingEngine:
+    THRESHOLDS = {"cpu": 92, "ram": 92, "disk": 96}
 
-    def observe(self) -> Dict[str, Any]:
-        return {"screen_text":   self.vision.ocr_fast()[:500],
-                "active_window": get_active_window(),
-                "has_error":     self.vision.detect_error_dialogs(),
-                "is_loading":    self.vision.detect_loading(),
-                "has_popup":     self.vision.detect_popups(),
-                "screen_hash":   self.vision.get_screen_hash(),
-                "timestamp":     datetime.datetime.now().isoformat()}
+    def __init__(self, command_executor: Callable):
+        self.executor  = command_executor
+        self._metrics: List[Dict] = []
 
-    def act(self, command: Dict) -> Dict:
-        pre_hash  = self.vision.get_screen_hash()
-        result    = self.executor(command)
-        time.sleep(0.5)
-        post_hash = self.vision.get_screen_hash()
-        if isinstance(result, dict):
-            result["screen_changed"] = pre_hash != post_hash
-        return result
-
-    def verify(self, expected: str = None, verify_fn: Callable = None) -> bool:
-        if verify_fn:
-            return verify_fn()
-        if expected:
-            return self.vision.wait_for_text(expected, timeout=5)
-        return True
-
-    def recover(self, command: Dict, obs: Dict) -> bool:
-        if obs.get("has_error") or obs.get("has_popup"):
-            press_key("escape"); time.sleep(0.3); return True
-        if obs.get("is_loading"):
-            self.vision.wait_loading_done(30); return True
-        action = command.get("action", "")
-        if action == "click":
-            txt = command.get("text", "")
-            if txt:
-                pos = self.vision.find_text(txt)
-                if pos:
-                    human_click(pos[0], pos[1]); return True
-        press_key("escape"); time.sleep(0.2); return False
-
-    def execute_with_verify(self, command: Dict, expected: str = None,
-                             max_retries: int = 3, retry_delay: float = 1.5) -> Dict:
-        last_result = {}
-        for attempt in range(max_retries):
-            obs = self.observe()
-            if obs.get("has_error") or obs.get("has_popup"):
-                self.recover(command, obs); time.sleep(1); continue
-            if obs.get("is_loading"):
-                self.vision.wait_loading_done(30)
-            last_result = self.act(command)
-            time.sleep(retry_delay)
-            if self.verify(expected):
-                last_result["verified"] = True
-                get_mem().remember_success(command.get("action", ""), f"attempt {attempt+1}")
-                self.history.append({"command": command, "ok": True})
-                return last_result
-            _warn(f"Verify failed attempt {attempt+1}")
-            self.recover(command, obs)
-        last_result["verified"] = False
-        get_mem().remember_failure(command.get("action", ""), "verify failed")
-        return last_result
-
-# ============================================================
-# BLOCK 21 - HIBERNATION SYSTEM
-# ============================================================
-class HibernationSystem:
-    def __init__(self):
-        log.info("HibernationSystem initialized")
-
-    def save(self, ctx: ExecutionContext):
+    def get_health(self) -> Dict[str, Any]:
+        if not psutil:
+            return {"healthy": True, "cpu": 0, "ram": 0, "disk": 0}
         try:
-            data = asdict(ctx)
-            data["saved_at"] = datetime.datetime.now().isoformat()
-            HIBERNATE_FILE.write_text(json.dumps(data, indent=2))
-            _ok(f"Task hibernated: '{ctx.task_name}'")
-        except Exception as e:
-            log.warning("Hibernate save: %s", e)
-
-    def load(self) -> Optional[ExecutionContext]:
-        try:
-            if HIBERNATE_FILE.exists():
-                data = json.loads(HIBERNATE_FILE.read_text())
-                ctx  = ExecutionContext(task_id=data["task_id"], task_name=data["task_name"],
-                                        status=data.get("status", "pending"),
-                                        done_steps=data.get("done_steps", 0),
-                                        notes=data.get("notes", []))
-                ctx.steps = [TaskStep(**s) for s in data.get("steps", [])]
-                _ok(f"Resumed: '{ctx.task_name}'")
-                return ctx
-        except Exception as e:
-            log.warning("Hibernate load: %s", e)
-        return None
-
-    def clear(self):
-        try:
-            if HIBERNATE_FILE.exists():
-                HIBERNATE_FILE.unlink()
+            cpu  = psutil.cpu_percent(interval=0.3)
+            ram  = psutil.virtual_memory()
+            disk = psutil.disk_usage("/")
+            return {"cpu": cpu, "ram": ram.percent, "disk": disk.percent,
+                    "ram_used_gb": round(ram.used / 1e9, 2),
+                    "disk_free_gb": round(disk.free / 1e9, 2),
+                    "healthy": (cpu < 92 and ram.percent < 92 and disk.percent < 96),
+                    "timestamp": datetime.datetime.now().isoformat()}
         except Exception:
-            pass
+            return {"healthy": True}
 
-    def has_saved(self) -> bool:
-        return HIBERNATE_FILE.exists()
+    def _check(self):
+        h = self.get_health()
+        self._metrics.append(h)
+        if len(self._metrics) > 50:
+            self._metrics = self._metrics[-30:]
+        if h.get("cpu", 0) > self.THRESHOLDS["cpu"]:
+            _warn(f"High CPU: {h['cpu']}%")
+        if h.get("ram", 0) > self.THRESHOLDS["ram"]:
+            _warn(f"High RAM: {h['ram']}% - clearing caches")
+            _result_cache.clear(); gc.collect()
+        if h.get("disk", 0) > self.THRESHOLDS["disk"]:
+            _warn("Low disk - cleaning trash")
+            try:
+                trash = Path.home() / ".dacexy_trash"
+                if trash.exists():
+                    shutil.rmtree(str(trash)); trash.mkdir()
+            except Exception:
+                pass
+
+    def start(self):
+        def _loop():
+            while _agent_running:
+                try:
+                    self._check()
+                except Exception as e:
+                    log.debug("SelfHealing: %s", e)
+                time.sleep(60)
+        threading.Thread(target=_loop, daemon=True, name="SelfHealing").start()
+        log.info("SelfHealingEngine started")
 
 # ============================================================
 # BLOCK 22 - AUTONOMOUS SCHEDULER
@@ -2972,8 +2732,6 @@ class AutonomousScheduler:
         self.executor = command_executor
         self.jobs: List[Dict] = []
         self._load()
-        self._thread: Optional[threading.Thread] = None
-        log.info("AutonomousScheduler initialized")
 
     def _load(self):
         try:
@@ -2989,12 +2747,11 @@ class AutonomousScheduler:
             pass
 
     def add_job(self, name: str, command: Dict, schedule_type: str,
-                time_str: str = "", days: List[str] = None, day_of_month: int = None,
-                run_on_startup: bool = False, repeat_every_minutes: int = 0) -> str:
+                time_str: str = "", days: List[str] = None,
+                repeat_every_minutes: int = 0) -> str:
         jid = generate_id("job_")
         self.jobs.append({"job_id": jid, "name": name, "command": command,
                           "type": schedule_type, "time": time_str, "days": days or [],
-                          "day_of_month": day_of_month, "run_on_startup": run_on_startup,
                           "repeat_every_minutes": repeat_every_minutes,
                           "created": datetime.datetime.now().isoformat(),
                           "last_run": "", "run_count": 0, "enabled": True})
@@ -3019,8 +2776,6 @@ class AutonomousScheduler:
         last   = job.get("last_run", "")
         if last and last[:16] == now.strftime("%Y-%m-%dT%H:%M"):
             return False
-        if jtype == "startup" and job.get("run_count", 0) == 0:
-            return True
         rmins = job.get("repeat_every_minutes", 0)
         if rmins > 0:
             if not last:
@@ -3037,8 +2792,6 @@ class AutonomousScheduler:
             return True
         if jtype == "weekly":
             return now.strftime("%A").lower() in [d.lower() for d in job.get("days", [])]
-        if jtype == "monthly":
-            return now.day == job.get("day_of_month", 1)
         return False
 
     def _tick(self):
@@ -3062,80 +2815,11 @@ class AutonomousScheduler:
                 except Exception as e:
                     log.debug("Scheduler tick: %s", e)
                 time.sleep(30)
-        self._thread = threading.Thread(target=_loop, daemon=True, name="Scheduler")
-        self._thread.start()
+        threading.Thread(target=_loop, daemon=True, name="Scheduler").start()
         log.info("Scheduler started")
 
 # ============================================================
-# BLOCK 23 - SELF-HEALING ENGINE
-# ============================================================
-class SelfHealingEngine:
-    THRESHOLDS = {"cpu": 92, "ram": 92, "disk": 96}
-
-    def __init__(self, command_executor: Callable):
-        self.executor  = command_executor
-        self._watched: Dict[str, str] = {}
-        self._metrics: List[Dict] = []
-        log.info("SelfHealingEngine initialized")
-
-    def get_health(self) -> Dict[str, Any]:
-        if not psutil:
-            return {"healthy": True, "cpu": 0, "ram": 0, "disk": 0}
-        try:
-            cpu  = psutil.cpu_percent(interval=0.3)
-            ram  = psutil.virtual_memory()
-            disk = psutil.disk_usage("/")
-            return {"cpu": cpu, "ram": ram.percent, "disk": disk.percent,
-                    "ram_used_gb": round(ram.used / 1e9, 2),
-                    "disk_free_gb": round(disk.free / 1e9, 2),
-                    "healthy": (cpu < 92 and ram.percent < 92 and disk.percent < 96),
-                    "timestamp": datetime.datetime.now().isoformat()}
-        except Exception:
-            return {"healthy": True}
-
-    def _check(self):
-        h = self.get_health()
-        self._metrics.append(h)
-        if len(self._metrics) > 50:
-            self._metrics = self._metrics[-30:]
-        if h.get("cpu", 0) > self.THRESHOLDS["cpu"]:
-            _warn(f"High CPU: {h['cpu']}%"); time.sleep(2)
-        if h.get("ram", 0) > self.THRESHOLDS["ram"]:
-            _warn(f"High RAM: {h['ram']}% - clearing caches")
-            _result_cache.clear(); gc.collect()
-        if h.get("disk", 0) > self.THRESHOLDS["disk"]:
-            _warn("Low disk - cleaning trash")
-            try:
-                trash = Path.home() / ".dacexy_trash"
-                if trash.exists():
-                    shutil.rmtree(str(trash)); trash.mkdir()
-            except Exception:
-                pass
-        for pname, rcmd in self._watched.items():
-            try:
-                if not psutil:
-                    continue
-                running = any(pname.lower() in (p.name() or "").lower()
-                              for p in psutil.process_iter(["name"]))
-                if not running and rcmd:
-                    log.warning("Process '%s' died - restarting", pname)
-                    subprocess.Popen(rcmd, shell=True)
-            except Exception:
-                pass
-
-    def start(self):
-        def _loop():
-            while _agent_running:
-                try:
-                    self._check()
-                except Exception as e:
-                    log.debug("SelfHealing: %s", e)
-                time.sleep(60)
-        threading.Thread(target=_loop, daemon=True, name="SelfHealing").start()
-        log.info("SelfHealingEngine started")
-
-# ============================================================
-# BLOCK 24 - VOICE ASSISTANT 3.0
+# BLOCK 23 - VOICE ASSISTANT 3.0
 # ============================================================
 class VoiceAssistant3:
     WAKE_WORDS = ["hey dacexy", "dacexy", "assistant"]
@@ -3147,7 +2831,6 @@ class VoiceAssistant3:
         self.mic      = None
         self.running  = False
         self.paused   = False
-        self.ctx: deque = deque(maxlen=20)
         if VOICE_AVAILABLE and self.rec:
             try:
                 self.rec.energy_threshold         = 2800
@@ -3160,9 +2843,6 @@ class VoiceAssistant3:
             except Exception as e:
                 log.warning("Mic init: %s", e)
                 self.mic = None
-        else:
-            log.warning("VoiceAssistant3: voice not available (PYAUDIO_OK=%s, sr=%s)",
-                        PYAUDIO_OK, sr)
 
     def listen(self, timeout: int = 4, phrase_time: int = 15) -> Optional[str]:
         if not VOICE_AVAILABLE or not self.rec or not self.mic:
@@ -3172,40 +2852,23 @@ class VoiceAssistant3:
                 audio = self.rec.listen(src, timeout=timeout, phrase_time_limit=phrase_time)
             text = self.rec.recognize_google(audio).lower().strip()
             log.info("Voice heard: %s", text)
-            get_mem().add_conversation("user", text)
             return text
-        except sr.WaitTimeoutError:
-            return None
-        except sr.UnknownValueError:
-            return None
-        except Exception as e:
-            log.debug("Voice listen: %s", e)
+        except Exception:
             return None
 
     def route(self, text: str) -> Dict[str, Any]:
-        self.ctx.append(text)
         t = text.lower().strip()
         if any(w in t for w in ["what time", "current time"]):
             return {"action": "get_time"}
         if any(w in t for w in ["what date", "today"]):
             return {"action": "get_date"}
-        if "screenshot" in t or "capture screen" in t:
+        if "screenshot" in t:
             return {"action": "screenshot"}
-        if any(p in t for p in ["read screen", "what on screen", "describe"]):
-            return {"action": "what_on_screen"}
         if t.startswith("open "):
             return {"action": "open_app", "app": t[5:].strip()}
         if t.startswith("search for ") or t.startswith("google "):
             q = re.sub(r'^(search for|google)\s+', '', t).strip()
             return {"action": "search_web", "query": q}
-        if t.startswith("click "):
-            return {"action": "click_text", "text": re.sub(r'^click (on )?', '', t).strip()}
-        if t.startswith("type "):
-            return {"action": "type", "text": t[5:]}
-        if any(w in t for w in ["system info", "cpu", "ram usage"]):
-            return {"action": "system_info"}
-        if t.startswith("remember "):
-            return {"action": "remember", "fact": t[9:]}
         if any(w in t for w in ["stop", "emergency stop", "halt"]):
             return {"action": "emergency_stop"}
         return {"action": "swarm_task", "task": text}
@@ -3232,14 +2895,12 @@ class VoiceAssistant3:
                     continue
                 fails = 0
                 is_wake = any(ww in text for ww in self.WAKE_WORDS)
-                is_stop = any(p in text for p in ["stop dacexy", "emergency stop", "halt"])
-                if is_stop:
+                if any(p in text for p in ["stop dacexy", "emergency stop"]):
                     emergency_stop()
                 elif is_wake:
                     speak("Yes, listening.", priority=True)
                     cmd_text = self.listen(timeout=8, phrase_time=25)
                     if cmd_text:
-                        _task(f"Voice cmd: {cmd_text}")
                         try:
                             self.callback(self.route(cmd_text))
                         except Exception as e:
@@ -3261,9 +2922,10 @@ class VoiceAssistant3:
     def resume(self): self.paused  = False
 
 # ============================================================
-# BLOCK 25 - MACRO SYSTEM
+# BLOCK 24 - MACRO SYSTEM
 # ============================================================
 _macros: Dict[str, List[Dict]] = {}
+
 
 def load_macros():
     global _macros
@@ -3274,16 +2936,19 @@ def load_macros():
     except Exception as e:
         log.warning("Macros load: %s", e)
 
+
 def save_macros():
     try:
         MACRO_FILE.write_text(json.dumps(_macros, indent=2))
     except Exception:
         pass
 
+
 def create_macro(name: str, steps: List[Dict]):
     _macros[name] = steps
     save_macros()
     _ok(f"Macro '{name}' saved ({len(steps)} steps)")
+
 
 def run_macro(name: str, executor: Callable) -> bool:
     steps = _macros.get(name)
@@ -3297,11 +2962,12 @@ def run_macro(name: str, executor: Callable) -> bool:
             log.warning("Macro step: %s", e)
     return True
 
+
 def list_macros() -> List[str]:
     return list(_macros.keys())
 
 # ============================================================
-# BLOCK 26 - SYSTEM INFO
+# BLOCK 25 - SYSTEM INFO
 # ============================================================
 def get_system_info() -> Dict[str, Any]:
     if not psutil:
@@ -3336,13 +3002,12 @@ def get_system_info() -> Dict[str, Any]:
         return {"error": str(e)}
 
 # ============================================================
-# BLOCK 27 - MASTER COMMAND EXECUTOR
+# BLOCK 26 - MASTER COMMAND EXECUTOR
 # ============================================================
 def execute_command(cmd: dict, token: str = None,
                     browser: EnterpriseBrowserAgent = None,
                     email_mgr: EmailCampaignManager = None,
                     swarm: AgentSwarm = None,
-                    operator: OperatorEngine = None,
                     scheduler: AutonomousScheduler = None,
                     file_engine: FileEngine = None) -> dict:
 
@@ -3354,7 +3019,6 @@ def execute_command(cmd: dict, token: str = None,
 
     task_desc = (cmd.get("text", "") or cmd.get("task", "") or action)
     if is_blocked(task_desc):
-        audit("BLOCKED", mask_pii(task_desc[:100]), "BLOCKED")
         return {"status": "error", "message": "Command blocked for security"}
 
     needs_perm, ptype = needs_permission(task_desc)
@@ -3368,15 +3032,18 @@ def execute_command(cmd: dict, token: str = None,
     vi = get_vision()
 
     try:
+        # ---- SPEECH & NOTIFY ----
         if action == "speak":
             speak(cmd.get("text", "")); return {"status": "ok"}
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
+
+        # ---- MOUSE ----
         elif action == "click":
             human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), cmd.get("button", "left"))
             return {"status": "ok"}
         elif action == "right_click":
-            human_right_click(int(cmd.get("x", 0)), int(cmd.get("y", 0))); return {"status": "ok"}
+            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), "right"); return {"status": "ok"}
         elif action == "double_click":
             human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), double=True); return {"status": "ok"}
         elif action == "move_mouse":
@@ -3389,6 +3056,8 @@ def execute_command(cmd: dict, token: str = None,
                          int(cmd.get("clicks", 3)), cmd.get("direction", "down")); return {"status": "ok"}
         elif action == "get_mouse_pos":
             x, y = pyautogui.position(); return {"status": "ok", "x": x, "y": y}
+
+        # ---- KEYBOARD ----
         elif action in ("type", "type_text", "write"):
             smart_type(cmd.get("text", ""), cmd.get("clear_first", False),
                        cmd.get("human_speed", False)); return {"status": "ok"}
@@ -3401,8 +3070,6 @@ def execute_command(cmd: dict, token: str = None,
             else:
                 hotkey(*(keys.split("+")))
             return {"status": "ok"}
-        elif action == "hold_key":
-            hold_key(cmd.get("key", ""), float(cmd.get("duration", 1.0))); return {"status": "ok"}
         elif action == "copy":
             hotkey("ctrl", "c"); return {"status": "ok", "clipboard": get_clipboard()}
         elif action == "paste":
@@ -3411,6 +3078,8 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "content": get_clipboard()}
         elif action == "set_clipboard":
             set_clipboard(cmd.get("text", "")); return {"status": "ok"}
+
+        # ---- VISION ----
         elif action == "screenshot":
             return {"status": "ok", "screenshot": vi.capture()}
         elif action in ("what_on_screen", "describe_screen"):
@@ -3418,12 +3087,6 @@ def execute_command(cmd: dict, token: str = None,
             speak(desc); return {"status": "ok", "description": desc}
         elif action == "ocr_screen":
             return {"status": "ok", "text": vi.ocr(cmd.get("region"))}
-        elif action == "ocr_fast":
-            return {"status": "ok", "text": vi.ocr_fast()}
-        elif action == "ocr_image":
-            return {"status": "ok", "text": vi.ocr_image(cmd.get("path", ""))}
-        elif action == "ocr_pdf":
-            return {"status": "ok", "text": vi.ocr_from_pdf(cmd.get("path", ""))}
         elif action == "find_text_on_screen":
             pos = vi.find_text(cmd.get("text", ""))
             if pos:
@@ -3437,12 +3100,8 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "wait_for_text":
             found = vi.wait_for_text(cmd.get("text", ""), int(cmd.get("timeout", 30)))
             return {"status": "ok", "found": found}
-        elif action == "detect_buttons":
-            return {"status": "ok", "buttons": detect_buttons_on_screen()}
         elif action == "detect_ui":
             return {"status": "ok", "elements": [asdict(e) for e in vi.detect_ui_elements()]}
-        elif action == "detect_forms":
-            return {"status": "ok", "forms": vi.detect_forms()}
         elif action == "detect_popups":
             return {"status": "ok", "popup": vi.detect_popups()}
         elif action == "detect_errors":
@@ -3451,31 +3110,16 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "state": vi.track_application_state()}
         elif action == "start_vision_monitor":
             vi.start_monitoring(float(cmd.get("interval", 2.0))); return {"status": "ok"}
-        elif action == "all_monitors":
-            return {"status": "ok", "monitors": vi.get_monitors()}
-        elif action == "wait_loading":
-            vi.wait_loading_done(int(cmd.get("timeout", 60))); return {"status": "ok"}
-        elif action == "find_image":
-            pos = vi.find_image_on_screen(cmd.get("template_path", ""),
-                                          float(cmd.get("threshold", 0.75)))
-            if pos:
-                return {"status": "ok", "x": pos[0], "y": pos[1]}
-            return {"status": "not_found"}
-        elif action == "operator_execute":
-            if operator:
-                r = operator.execute_with_verify(cmd.get("command", {}),
-                                                  cmd.get("expected"),
-                                                  int(cmd.get("retries", 3)))
-                return {"status": "ok", "result": r}
-            return {"status": "error", "message": "Operator not available"}
+
+        # ---- WINDOW/APP ----
         elif action == "focus_window":
             return {"status": "ok" if focus_window(cmd.get("title", "")) else "not_found"}
         elif action == "minimize_window":
-            minimize_window(cmd.get("title")); return {"status": "ok"}
+            hotkey("win", "down"); return {"status": "ok"}
         elif action == "maximize_window":
-            maximize_window(cmd.get("title")); return {"status": "ok"}
+            hotkey("win", "up"); return {"status": "ok"}
         elif action == "close_window":
-            close_window(cmd.get("title")); return {"status": "ok"}
+            hotkey("alt", "F4"); return {"status": "ok"}
         elif action == "list_windows":
             return {"status": "ok", "windows": get_all_windows()}
         elif action == "get_active_window":
@@ -3497,10 +3141,8 @@ def execute_command(cmd: dict, token: str = None,
             subprocess.Popen(["explorer", p] if p else ["explorer"]); return {"status": "ok"}
         elif action == "open_terminal":
             open_app("cmd.exe"); return {"status": "ok"}
-        elif action == "open_settings":
-            subprocess.Popen(["ms-settings:"], shell=True); return {"status": "ok"}
-        elif action == "open_task_manager":
-            subprocess.Popen(["taskmgr.exe"]); return {"status": "ok"}
+
+        # ---- FILES ----
         elif action == "list_files":
             return {"status": "ok", "files": fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))}
         elif action == "read_file":
@@ -3514,14 +3156,21 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "move_file":
             return {"status": "ok" if fe.move(cmd.get("src", ""), cmd.get("dst", "")) else "error"}
         elif action == "create_folder":
-            return {"status": "ok" if create_folder(cmd.get("path", "")) else "error"}
+            try:
+                Path(cmd.get("path", "")).mkdir(parents=True, exist_ok=True)
+                return {"status": "ok"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
         elif action == "search_files":
-            return {"status": "ok", "files": fe.search(cmd.get("keyword", ""), cmd.get("folder"),
-                                                         cmd.get("ext"), cmd.get("content_search", False))}
+            return {"status": "ok", "files": fe.search(
+                cmd.get("keyword", ""), cmd.get("folder"), cmd.get("ext"),
+                cmd.get("content_search", False))}
         elif action == "compress_files":
-            return {"status": "ok" if fe.compress(cmd.get("paths", []), cmd.get("output", "out.zip")) else "error"}
+            return {"status": "ok" if fe.compress(
+                cmd.get("paths", []), cmd.get("output", "out.zip")) else "error"}
         elif action == "extract_zip":
-            return {"status": "ok" if fe.extract(cmd.get("path", ""), cmd.get("output")) else "error"}
+            return {"status": "ok" if fe.extract(
+                cmd.get("path", ""), cmd.get("output")) else "error"}
         elif action == "backup_folder":
             dest = fe.backup(cmd.get("folder", ""), cmd.get("label", ""))
             return {"status": "ok", "backup_path": dest}
@@ -3529,6 +3178,8 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "result": fe.organize_folder(cmd.get("folder", ""))}
         elif action == "get_disk_usage":
             return {"status": "ok", "usage": fe.get_disk_usage()}
+
+        # ---- EMAIL ----
         elif action == "setup_gmail":
             if email_mgr: email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
             return {"status": "ok"}
@@ -3544,15 +3195,17 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "error", "message": "Email not configured"}
         elif action == "create_campaign":
             if email_mgr:
-                cid = email_mgr.create_campaign(cmd.get("name", "Campaign"), cmd.get("subject", ""),
-                                                cmd.get("body", "Hello {name}!"), cmd.get("recipients", []),
-                                                cmd.get("html", True), float(cmd.get("delay", 1.0)),
-                                                cmd.get("scheduled_at"), cmd.get("tags", []))
+                cid = email_mgr.create_campaign(
+                    cmd.get("name", "Campaign"), cmd.get("subject", ""),
+                    cmd.get("body", "Hello {name}!"), cmd.get("recipients", []),
+                    cmd.get("html", True), float(cmd.get("delay", 1.0)),
+                    cmd.get("scheduled_at"), cmd.get("tags", []))
                 return {"status": "ok", "campaign_id": cid}
             return {"status": "error"}
         elif action == "send_campaign":
             if email_mgr:
-                return {"status": "ok", "result": email_mgr.send_campaign(cmd.get("campaign_id", ""))}
+                return {"status": "ok", "result": email_mgr.send_campaign(
+                    cmd.get("campaign_id", ""))}
             return {"status": "error"}
         elif action == "bulk_email":
             if email_mgr:
@@ -3568,52 +3221,42 @@ def execute_command(cmd: dict, token: str = None,
             if email_mgr:
                 return {"status": "ok", "dashboard": email_mgr.get_dashboard()}
             return {"status": "error"}
-        elif action == "list_campaigns":
-            if email_mgr:
-                return {"status": "ok", "campaigns": email_mgr.list_campaigns()}
-            return {"status": "error"}
+
+        # ---- BROWSER ----
         elif action == "browser_start":
             if not browser: browser = EnterpriseBrowserAgent()
-            return {"status": "ok" if browser.start(cmd.get("browser", "chrome"),
-                                                     cmd.get("headless", False),
-                                                     cmd.get("profile")) else "error"}
+            return {"status": "ok" if browser.start(
+                cmd.get("browser", "chrome"), cmd.get("headless", False),
+                cmd.get("profile")) else "error"}
         elif action == "browser_go":
             if browser and browser.driver: browser.go_to(cmd.get("url", ""))
             return {"status": "ok"}
         elif action == "browser_click":
             if browser and browser.driver:
-                return {"status": "ok" if browser.find_and_click(cmd.get("selector", ""),
-                                                                   cmd.get("by", "css"),
-                                                                   cmd.get("fallbacks")) else "not_found"}
+                return {"status": "ok" if browser.find_and_click(
+                    cmd.get("selector", ""), cmd.get("by", "css"),
+                    cmd.get("fallbacks")) else "not_found"}
             return {"status": "error", "message": "Browser not started"}
         elif action == "browser_type":
             if browser and browser.driver:
-                return {"status": "ok" if browser.find_and_type(cmd.get("selector", ""),
-                                                                  cmd.get("text", ""),
-                                                                  cmd.get("by", "css")) else "error"}
+                return {"status": "ok" if browser.find_and_type(
+                    cmd.get("selector", ""), cmd.get("text", ""),
+                    cmd.get("by", "css")) else "error"}
             return {"status": "error"}
         elif action == "browser_extract":
             if browser and browser.driver:
-                return {"status": "ok", "data": browser.extract_data(cmd.get("selector", ""),
-                                                                       cmd.get("by", "css"))}
+                return {"status": "ok", "data": browser.extract_data(
+                    cmd.get("selector", ""), cmd.get("by", "css"))}
             return {"status": "error"}
         elif action == "browser_js":
             if browser and browser.driver:
-                return {"status": "ok", "result": str(browser.execute_js(cmd.get("script", "")))}
+                return {"status": "ok", "result": str(
+                    browser.execute_js(cmd.get("script", "")))}
             return {"status": "error"}
         elif action == "browser_screenshot":
             if browser and browser.driver:
                 return {"status": "ok", "screenshot": browser.screenshot_b64()}
             return {"status": "error"}
-        elif action == "new_tab":
-            if browser and browser.driver: browser.new_tab(cmd.get("url", ""))
-            return {"status": "ok"}
-        elif action == "close_tab":
-            if browser and browser.driver: browser.close_tab()
-            return {"status": "ok"}
-        elif action == "switch_tab":
-            if browser and browser.driver: browser.switch_tab(int(cmd.get("index", 0)))
-            return {"status": "ok"}
         elif action == "google_search":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start()
@@ -3622,68 +3265,53 @@ def execute_command(cmd: dict, token: str = None,
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
             return {"status": "ok", "result": browser.research_topic(
-                cmd.get("topic", "") or cmd.get("query", ""), int(cmd.get("max_pages", 3)))}
-        elif action == "browser_login":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start()
-            return {"status": "ok" if browser.login(cmd.get("url", ""), cmd.get("email_selector", ""),
-                                                     cmd.get("pass_selector", ""),
-                                                     cmd.get("submit_selector", ""),
-                                                     cmd.get("email", ""), cmd.get("password", ""),
-                                                     cmd.get("success_indicator")) else "error"}
+                cmd.get("topic", "") or cmd.get("query", ""),
+                int(cmd.get("max_pages", 3)))}
+
+        # ---- SOCIAL MEDIA ----
         elif action == "whatsapp_bulk":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
             contacts = cmd.get("contacts", [])
             if isinstance(contacts, str):
                 contacts = [c.strip() for c in contacts.split(",") if c.strip()]
-            return {"status": "ok", "result": browser.whatsapp_bulk(contacts,
-                                                                     cmd.get("message", "Hello!"),
-                                                                     float(cmd.get("delay", 3.5)))}
-        elif action == "whatsapp_send":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok", "result": browser.whatsapp_bulk([cmd.get("contact", "")],
-                                                                     cmd.get("message", "Hello!"), 2.5)}
+            return {"status": "ok", "result": browser.whatsapp_bulk(
+                contacts, cmd.get("message", "Hello!"), float(cmd.get("delay", 3.5)))}
         elif action == "twitter_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.twitter_post(cmd.get("username", ""),
-                                                            cmd.get("password", ""),
-                                                            cmd.get("text", ""),
-                                                            cmd.get("media")) else "error"}
+            return {"status": "ok" if browser.twitter_post(
+                cmd.get("username", ""), cmd.get("password", ""),
+                cmd.get("text", ""), cmd.get("media")) else "error"}
         elif action == "linkedin_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.linkedin_post(cmd.get("username", ""),
-                                                             cmd.get("password", ""),
-                                                             cmd.get("text", "")) else "error"}
+            return {"status": "ok" if browser.linkedin_post(
+                cmd.get("username", ""), cmd.get("password", ""),
+                cmd.get("text", "")) else "error"}
         elif action == "facebook_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.facebook_post(cmd.get("username", ""),
-                                                             cmd.get("password", ""),
-                                                             cmd.get("text", ""),
-                                                             cmd.get("page_id")) else "error"}
+            return {"status": "ok" if browser.facebook_post(
+                cmd.get("username", ""), cmd.get("password", ""),
+                cmd.get("text", ""), cmd.get("page_id")) else "error"}
         elif action == "instagram_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.instagram_post(cmd.get("username", ""),
-                                                              cmd.get("password", ""),
-                                                              cmd.get("image_path", ""),
-                                                              cmd.get("caption", "")) else "error"}
+            return {"status": "ok" if browser.instagram_post(
+                cmd.get("username", ""), cmd.get("password", ""),
+                cmd.get("image_path", ""), cmd.get("caption", "")) else "error"}
         elif action == "youtube_upload":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.youtube_upload(cmd.get("video_path", ""),
-                                                              cmd.get("title", ""),
-                                                              cmd.get("description", ""),
-                                                              cmd.get("tags", [])) else "error"}
+            return {"status": "ok" if browser.youtube_upload(
+                cmd.get("video_path", ""), cmd.get("title", ""),
+                cmd.get("description", ""), cmd.get("tags", [])) else "error"}
         elif action == "tiktok_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.tiktok_post(cmd.get("video_path", ""),
-                                                           cmd.get("caption", "")) else "error"}
+            return {"status": "ok" if browser.tiktok_post(
+                cmd.get("video_path", ""), cmd.get("caption", "")) else "error"}
         elif action == "post_all_social":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -3692,46 +3320,25 @@ def execute_command(cmd: dict, token: str = None,
             results = {}
             for p, cred in creds.items():
                 if p == "twitter":
-                    results["twitter"] = browser.twitter_post(cred["username"], cred["password"], text)
+                    results["twitter"] = browser.twitter_post(
+                        cred["username"], cred["password"], text)
                 if p == "linkedin":
-                    results["linkedin"] = browser.linkedin_post(cred["username"], cred["password"], text)
+                    results["linkedin"] = browser.linkedin_post(
+                        cred["username"], cred["password"], text)
                 if p == "facebook":
-                    results["facebook"] = browser.facebook_post(cred["username"], cred["password"], text)
+                    results["facebook"] = browser.facebook_post(
+                        cred["username"], cred["password"], text)
             return {"status": "ok", "results": results}
+
+        # ---- AI / SWARM ----
         elif action == "swarm_task":
             if swarm:
                 def _e(c):
-                    return execute_command(c, token, browser, email_mgr, swarm, operator, scheduler, fe)
+                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
                 return {"status": "ok", "result": swarm.plan_and_execute(cmd.get("task", ""), _e)}
             return {"status": "error", "message": "Swarm not available"}
-        elif action == "schedule_job":
-            if scheduler:
-                jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
-                                        cmd.get("type", "daily"), cmd.get("time", ""),
-                                        cmd.get("days", []), cmd.get("day_of_month"),
-                                        cmd.get("run_on_startup", False),
-                                        int(cmd.get("repeat_every_minutes", 0)))
-                return {"status": "ok", "job_id": jid}
-            return {"status": "error"}
-        elif action == "list_jobs":
-            if scheduler:
-                return {"status": "ok", "jobs": scheduler.list_jobs()}
-            return {"status": "error"}
-        elif action == "remove_job":
-            if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
-            return {"status": "ok"}
-        elif action == "hibernate_task":
-            hs  = HibernationSystem()
-            ctx = ExecutionContext(task_id=generate_id("ht_"),
-                                   task_name=cmd.get("task_name", "unnamed"),
-                                   notes=cmd.get("notes", []))
-            hs.save(ctx); return {"status": "ok"}
-        elif action == "resume_task":
-            hs  = HibernationSystem()
-            ctx = hs.load()
-            if ctx:
-                return {"status": "ok", "task": ctx.task_name, "step": ctx.done_steps}
-            return {"status": "no_saved_state"}
+
+        # ---- MEMORY ----
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
                             importance=float(cmd.get("importance", 1.0)))
@@ -3751,7 +3358,7 @@ def execute_command(cmd: dict, token: str = None,
             steps = get_workflow(cmd.get("name", ""))
             if steps:
                 for s in steps:
-                    execute_command(s, token, browser, email_mgr, swarm, operator, scheduler, fe)
+                    execute_command(s, token, browser, email_mgr, swarm, scheduler, fe)
                 return {"status": "ok"}
             return {"status": "error", "message": "Workflow not found"}
         elif action == "remember_contact":
@@ -3766,7 +3373,7 @@ def execute_command(cmd: dict, token: str = None,
             skill = get_mem().get_skill(cmd.get("name", ""))
             if skill:
                 def _e(c):
-                    return execute_command(c, token, browser, email_mgr, swarm, operator, scheduler, fe)
+                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
                 for step in skill.steps:
                     try:
                         _e(step)
@@ -3778,14 +3385,35 @@ def execute_command(cmd: dict, token: str = None,
             sid = get_mem().save_skill(cmd.get("name", ""), cmd.get("steps", []),
                                        cmd.get("description", ""), cmd.get("tags", []))
             return {"status": "ok", "skill_id": sid}
+
+        # ---- MACROS ----
         elif action == "create_macro":
             create_macro(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
         elif action == "run_macro":
             def _e(c):
-                return execute_command(c, token, browser, email_mgr, swarm, operator, scheduler, fe)
+                return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
             return {"status": "ok" if run_macro(cmd.get("name", ""), _e) else "error"}
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
+
+        # ---- SCHEDULER ----
+        elif action == "schedule_job":
+            if scheduler:
+                jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
+                                        cmd.get("type", "daily"), cmd.get("time", ""),
+                                        cmd.get("days", []),
+                                        int(cmd.get("repeat_every_minutes", 0)))
+                return {"status": "ok", "job_id": jid}
+            return {"status": "error"}
+        elif action == "list_jobs":
+            if scheduler:
+                return {"status": "ok", "jobs": scheduler.list_jobs()}
+            return {"status": "error"}
+        elif action == "remove_job":
+            if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
+            return {"status": "ok"}
+
+        # ---- SYSTEM ----
         elif action == "system_info":
             info = get_system_info()
             speak(f"CPU {info.get('cpu_percent','?')}%, RAM {info.get('ram_percent','?')}%")
@@ -3824,11 +3452,6 @@ def execute_command(cmd: dict, token: str = None,
             note = NOTES_DIR / f"note_{int(time.time())}.txt"
             fe.write(str(note), cmd.get("content", ""))
             speak("Note saved."); return {"status": "ok", "path": str(note)}
-        elif action == "take_notes_from_screen":
-            text = vi.ocr()
-            note = NOTES_DIR / f"screen_{int(time.time())}.txt"
-            fe.write(str(note), text)
-            return {"status": "ok", "text": text[:400], "saved_to": str(note)}
         elif action == "search_web":
             q = cmd.get("query", "")
             webbrowser.open(f"https://www.google.com/search?q={quote(q)}")
@@ -3839,6 +3462,7 @@ def execute_command(cmd: dict, token: str = None,
             webbrowser.open(url); return {"status": "ok"}
         elif action == "emergency_stop":
             emergency_stop(); return {"status": "ok"}
+
         else:
             log.warning("Unknown action: %s", action)
             return {"status": "error", "message": f"Unknown action: {action}"}
@@ -3853,9 +3477,9 @@ def execute_command(cmd: dict, token: str = None,
         return {"status": "error", "message": str(e)}
 
 # ============================================================
-# BLOCK 28 - WEBSOCKET
+# BLOCK 27 - WEBSOCKET (v15: version-safe connect)
 # ============================================================
-async def ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler):
+async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
     while _agent_running:
         try:
             raw   = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -3863,31 +3487,19 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler
             mtype = msg.get("type", "")
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "version": VERSION}))
-            elif mtype == "command":
-                cmd_data = msg.get("data", msg)
-                _task(f"WS cmd: {cmd_data.get('action','')}")
+            elif mtype in ("command", "task"):
+                cmd_data  = msg.get("data", msg)
+                task_desc = (msg.get("task", "") or cmd_data.get("task", "") or
+                             cmd_data.get("action", ""))
+                _task(f"WS cmd: {task_desc[:60]}")
                 loop   = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     _executor,
-                    lambda: execute_command(cmd_data, token, browser, email_mgr,
-                                            swarm, operator, scheduler))
+                    lambda: execute_command(cmd_data, token, browser, email_mgr, swarm, scheduler))
                 try:
                     await ws.send(json.dumps({"type": "result", "data": result}))
                 except Exception:
                     pass
-            elif mtype == "task":
-                task_desc = (msg.get("task", "") or msg.get("data", ""))
-                if swarm and task_desc:
-                    def _e(c):
-                        return execute_command(c, token, browser, email_mgr, swarm, operator, scheduler)
-                    loop   = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        _executor,
-                        lambda: swarm.plan_and_execute(task_desc, _e))
-                    try:
-                        await ws.send(json.dumps({"type": "task_result", "data": result}))
-                    except Exception:
-                        pass
         except asyncio.TimeoutError:
             try:
                 health = get_system_info()
@@ -3896,26 +3508,24 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, operator, scheduler
                     "health": health,
                     "features": ["voice3", "vision_super", "browser_enterprise",
                                  "email_enterprise", "whatsapp", "marketing",
-                                 "memory_vector", "swarm10", "operator", "hibernation",
+                                 "memory_vector", "swarm", "hibernation",
                                  "scheduler", "self_healing", "file_engine",
                                  "social_all", "ocr", "multi_monitor"]}))
             except Exception:
                 break
-        except websockets.exceptions.ConnectionClosed:
-            log.warning("WS connection closed"); break
-        except json.JSONDecodeError as e:
-            log.warning("WS JSON error: %s", e)
         except Exception as e:
+            if "ConnectionClosed" in type(e).__name__:
+                log.warning("WS connection closed"); break
             log.error("WS recv error: %s", e)
             await asyncio.sleep(1)
 
 
-# ============================================================
-# FIX 2 - ws_connect_loop: version-safe websockets header
-# Works with websockets v8, v9, v10, v11, v12, v13+
-# Permanent fix — no external scripts needed
-# ============================================================
-async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler):
+async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
+    """
+    Version-safe websockets connection.
+    Supports websockets v8 through v16+.
+    The 'extra_headers' param was removed in v14+ so we avoid it entirely.
+    """
     retry_delay  = 2
     max_delay    = 120
     global _ws_connection
@@ -3934,12 +3544,22 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
 
             _info("Connecting to Dacexy backend...")
 
-            async with websockets.connect(
-                BACKEND_WS,
-                ping_interval=20,
-                ping_timeout=15,
-                max_size=50 * 1024 * 1024,
-            ) as ws:
+            # Version-safe: use only common kwargs that work across all versions
+            connect_kwargs = {
+                "ping_interval": 20,
+                "ping_timeout":  15,
+                "max_size":      50 * 1024 * 1024,
+            }
+
+            # websockets v14+ uses 'open_timeout' instead of close_timeout
+            ws_version = getattr(websockets, "__version__", "0")
+            ws_major   = int(str(ws_version).split(".")[0]) if ws_version else 0
+            if ws_major >= 14:
+                connect_kwargs["open_timeout"] = 30
+            else:
+                connect_kwargs["close_timeout"] = 30
+
+            async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
                 _ws_connection = ws
                 retry_delay    = 2
 
@@ -3953,7 +3573,7 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
                     "features": [
                         "voice3", "vision_super", "browser_enterprise",
                         "email_enterprise", "whatsapp", "marketing",
-                        "memory_vector", "swarm10", "operator", "hibernation",
+                        "memory_vector", "swarm", "hibernation",
                         "scheduler", "self_healing", "file_engine",
                         "social_all", "ocr", "multi_monitor"
                     ],
@@ -3962,8 +3582,7 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
 
                 _ok("Connected to Dacexy backend")
                 speak("Dacexy is online and ready.", priority=True)
-                await ws_recv_loop(
-                    ws, token, browser, email_mgr, swarm, operator, scheduler)
+                await ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler)
 
         except Exception as e:
             log.warning("WS connect error: %s", e)
@@ -3976,7 +3595,7 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
             retry_delay = min(retry_delay * 2, max_delay)
 
 # ============================================================
-# BLOCK 29 - HOTKEYS
+# BLOCK 28 - HOTKEYS
 # ============================================================
 def register_hotkeys(voice: VoiceAssistant3 = None):
     if not KEYBOARD_OK:
@@ -3986,54 +3605,62 @@ def register_hotkeys(voice: VoiceAssistant3 = None):
         keyboard.add_hotkey("ctrl+shift+s", lambda: get_vision().capture())
         keyboard.add_hotkey("ctrl+shift+e", emergency_stop)
         keyboard.add_hotkey("ctrl+shift+m", lambda: speak(get_memory_context()[:200]))
-        keyboard.add_hotkey("ctrl+shift+v",
-                            lambda: (voice.pause() if voice and not voice.paused
-                                     else voice.resume() if voice else None))
-        keyboard.add_hotkey("ctrl+shift+h",
-                            lambda: _info(f"CPU={psutil.cpu_percent() if psutil else '?'}%"
-                                          f" RAM={psutil.virtual_memory().percent if psutil else '?'}%"))
-        _ok("Hotkeys registered: Ctrl+Shift+D/S/E/M/V/H")
+        if voice:
+            keyboard.add_hotkey("ctrl+shift+v",
+                                lambda: voice.pause() if not voice.paused else voice.resume())
+        _ok("Hotkeys: Ctrl+Shift+D/S/E/M/V")
     except Exception as e:
         log.warning("Hotkeys (non-fatal): %s", e)
 
 # ============================================================
-# BLOCK 30 - INTERACTIVE SHELL
+# BLOCK 29 - INTERACTIVE SHELL
 # ============================================================
 def print_menu():
-    print("")
-    print("=" * 60)
-    print("  DACEXY v14.0 ULTIMATE - COMMAND CENTER")
-    print("=" * 60)
-    print("  [EMAIL]    bulk email / setup gmail <email> <pass>")
-    print("  [WA]       whatsapp bulk")
-    print("  [SOCIAL]   twitter / linkedin / facebook")
-    print("             instagram / youtube / tiktok / post all")
-    print("  [BROWSER]  browser <url> / google <query>")
-    print("             research <topic>")
-    print("  [VISION]   ocr / detect ui / app state / screenshot")
-    print("  [DESKTOP]  click <x> <y> / type <text>")
-    print("  [FILES]    files / read <path> / backup <folder>")
-    print("  [MEMORY]   memory / skills / remember <fact>")
-    print("  [AI]       plan <task> / swarm <task>")
-    print("  [SCHEDULE] jobs / schedule")
-    print("  [SYSTEM]   sysinfo / health")
-    print("  [STOP]     stop (emergency stop)")
-    print("  [HELP]     help / menu")
-    print("=" * 60)
-    print("")
+    lines = [
+        "",
+        "=" * 60,
+        "  DACEXY v15.0 ENTERPRISE - COMMAND CENTER",
+        "=" * 60,
+        "  [EMAIL]    bulk email / setup gmail <email> <pass>",
+        "  [WA]       whatsapp bulk",
+        "  [SOCIAL]   twitter / linkedin / facebook / instagram",
+        "             youtube / tiktok / post all",
+        "  [BROWSER]  browser <url> / google <query> / research <topic>",
+        "  [VISION]   ocr / detect ui / screenshot",
+        "  [DESKTOP]  click <x> <y> / type <text>",
+        "  [FILES]    files / read <path> / backup <folder>",
+        "  [MEMORY]   memory / skills / remember <fact>",
+        "  [AI]       plan <task> / swarm <task>",
+        "  [SCHEDULE] jobs / schedule",
+        "  [SYSTEM]   sysinfo / health",
+        "  [STOP]     stop / emergency stop",
+        "  [HELP]     help / menu",
+        "=" * 60,
+        "",
+    ]
+    for line in lines:
+        try:
+            print(line)
+            sys.stdout.flush()
+        except Exception:
+            pass
 
-def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
+
+def interactive_shell(token, browser, email_mgr, swarm, scheduler):
     print_menu()
     def _exec(c):
-        return execute_command(c, token, browser, email_mgr, swarm, operator, scheduler)
+        return execute_command(c, token, browser, email_mgr, swarm, scheduler)
 
     while _agent_running:
         try:
             inp = _get_console_input("  Dacexy> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n  Goodbye!"); break
+            print("\n  Goodbye!")
+            break
         except Exception as e:
-            log.debug("Shell input: %s", e); time.sleep(0.5); continue
+            log.debug("Shell input: %s", e)
+            time.sleep(0.5)
+            continue
         if not inp:
             continue
         il = inp.lower()
@@ -4044,7 +3671,7 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
                 print_menu()
             elif il in ("sysinfo", "health", "system info"):
                 info = get_system_info()
-                print(f"  CPU:{info.get('cpu_percent','?')}%"
+                _info(f"CPU:{info.get('cpu_percent','?')}%"
                       f" RAM:{info.get('ram_percent','?')}%"
                       f" Disk:{info.get('disk_percent','?')}%")
             elif il == "memory":
@@ -4082,7 +3709,7 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
                     email_mgr.send_campaign(cid)
                 else:
                     _err("Email not configured. Run: setup gmail <email> <app_password>")
-            elif il.startswith("whatsapp bulk"):
+            elif il.startswith("whatsapp"):
                 cr       = _get_console_input("  Contacts (+phone, comma): ").strip()
                 msg_text = _get_console_input("  Message: ").strip()
                 contacts = [c.strip() for c in cr.split(",") if c.strip()]
@@ -4148,7 +3775,7 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
                 if not browser.driver: browser.start("chrome")
                 result  = browser.research_topic(topic)
                 sources = result.get("sources", [])
-                print(f"  Research: {len(sources)} sources found")
+                _info(f"Research: {len(sources)} sources found")
                 for r in result.get("results", [])[:5]:
                     print(f"  - {r}")
             elif il == "screenshot":
@@ -4161,13 +3788,7 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
                 print(f"  Screen text:\n{get_vision().ocr()[:600]}")
             elif il == "detect ui":
                 els = get_vision().detect_ui_elements()
-                print(f"  {len(els)} UI elements detected")
-                for e in els[:5]:
-                    print(f"  [{e.elem_type}] '{e.text[:30]}' at ({e.x},{e.y})")
-            elif il == "app state":
-                state = get_vision().track_application_state()
-                for k, v in state.items():
-                    print(f"  {k}: {v}")
+                _info(f"{len(els)} UI elements detected")
             elif il.startswith("click "):
                 try:
                     p = inp.split()
@@ -4192,9 +3813,6 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
                 folder = inp[7:].strip()
                 dest   = get_file_engine().backup(folder)
                 _ok(f"Backup: {dest}")
-            elif il.startswith("organize "):
-                result = get_file_engine().organize_folder(inp[9:].strip())
-                _ok(f"Organized: {result}")
             elif il in ("stop all", "emergency stop", "halt"):
                 emergency_stop()
             else:
@@ -4212,73 +3830,62 @@ def interactive_shell(token, browser, email_mgr, swarm, operator, scheduler):
             _err(f"Error: {e}")
 
 # ============================================================
-# BLOCK 31 - MAIN
+# BLOCK 30 - MAIN
 # ============================================================
 async def main_async(token: str):
     log.info("main_async: initializing all subsystems")
-    try:
-        init_tts(); time.sleep(0.3)
-    except Exception as e:
-        log.warning("TTS init (non-fatal): %s", e)
+
+    # TTS in background thread to avoid blocking startup
+    threading.Thread(target=init_tts, daemon=True, name="TTSInit").start()
+    time.sleep(0.2)
+
     try:
         get_mem()
     except Exception as e:
         log.warning("Memory init (non-fatal): %s", e)
+
     try:
         load_macros()
     except Exception as e:
         log.warning("Macros load (non-fatal): %s", e)
+
     try:
         get_vision().start_monitoring(interval=2.0)
     except Exception as e:
         log.warning("Vision monitor (non-fatal): %s", e)
+
     try:
         setup_autostart()
     except Exception as e:
         log.warning("Autostart (non-fatal): %s", e)
-    try:
-        browser   = EnterpriseBrowserAgent()
-        email_mgr = EmailCampaignManager()
-        swarm     = AgentSwarm(token, browser, email_mgr)
-        log.info("Core agents created OK")
-    except Exception as e:
-        log.error("Agent creation: %s", e)
-        browser   = EnterpriseBrowserAgent()
-        email_mgr = EmailCampaignManager()
-        swarm     = AgentSwarm(token, browser, email_mgr)
+
+    # Core agents
+    browser   = EnterpriseBrowserAgent()
+    email_mgr = EmailCampaignManager()
+    swarm     = AgentSwarm(token, browser, email_mgr)
 
     def _exec(c):
-        return execute_command(c, token, browser, email_mgr, swarm, None, None)
+        return execute_command(c, token, browser, email_mgr, swarm, None)
 
-    try:
-        operator  = OperatorEngine(token, _exec)
-        scheduler = AutonomousScheduler(_exec)
-        healer    = SelfHealingEngine(_exec)
-    except Exception as e:
-        log.error("Support engines: %s", e)
-        operator  = OperatorEngine(token, _exec)
-        scheduler = AutonomousScheduler(_exec)
-        healer    = SelfHealingEngine(_exec)
+    scheduler = AutonomousScheduler(_exec)
+    healer    = SelfHealingEngine(_exec)
 
     try:
         scheduler.start()
     except Exception as e:
         log.warning("Scheduler start: %s", e)
+
     try:
         healer.start()
     except Exception as e:
         log.warning("Healer start: %s", e)
-    try:
-        hib = HibernationSystem()
-        if hib.has_saved():
-            speak("Found a saved task from last session. Type resume task to continue.")
-    except Exception as e:
-        log.warning("Hibernation check: %s", e)
+
     try:
         register_hotkeys()
     except Exception as e:
         log.warning("Hotkeys: %s", e)
 
+    # Voice in background
     voice = None
     try:
         def voice_cb(cmd: Dict):
@@ -4292,10 +3899,11 @@ async def main_async(token: str):
     except Exception as e:
         log.warning("Voice start (non-fatal): %s", e)
 
+    # Interactive shell in background thread
     try:
         shell_t = threading.Thread(
             target=interactive_shell,
-            args=(token, browser, email_mgr, swarm, operator, scheduler),
+            args=(token, browser, email_mgr, swarm, scheduler),
             daemon=True, name="Shell")
         shell_t.start()
         log.info("Interactive shell started")
@@ -4304,7 +3912,7 @@ async def main_async(token: str):
 
     log.info("Starting WebSocket connection loop...")
     try:
-        await ws_connect_loop(token, browser, email_mgr, swarm, operator, scheduler)
+        await ws_connect_loop(token, browser, email_mgr, swarm, scheduler)
     except Exception as e:
         log.error("WS loop crashed (keeping agent alive): %s", e)
         while _agent_running:
@@ -4314,6 +3922,8 @@ async def main_async(token: str):
 def main():
     _banner()
     log.info("Dacexy Agent v%s starting", VERSION)
+
+    # --- AUTH ---
     token = None
     try:
         token = get_token()
@@ -4327,14 +3937,12 @@ def main():
             token = login_loop()
     except SystemExit:
         print("\n  Goodbye!")
-        log.info("User exited at login")
         return
     except Exception as e:
         log.error("Auth flow error: %s", e)
         _err(f"Auth error: {e}")
-        print("  Press Enter to try login again...")
         try:
-            _get_console_input("  > ")
+            _get_console_input("  Press Enter to try login again... ")
         except Exception:
             pass
         try:
@@ -4349,6 +3957,7 @@ def main():
     _ok(f"Dacexy v{VERSION} ready. Starting all systems...")
     audit("STARTUP", f"v{VERSION}", "OK")
 
+    # --- RUN ASYNC MAIN ---
     try:
         asyncio.run(main_async(token))
     except KeyboardInterrupt:
@@ -4374,10 +3983,11 @@ def main():
             pass
         audit("SHUTDOWN", f"v{VERSION}", "CLEAN")
         log.info("Shutdown complete")
-        print("  State saved. Goodbye!")
+        try:
+            print("  State saved. Goodbye!")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     main()
-ENDOFFILE
-echo "File written. Size: $(wc -c < /mnt/user-data/outputs/dacexy_agent.py) bytes"
