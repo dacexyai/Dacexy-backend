@@ -6,11 +6,16 @@ title Dacexy Desktop Agent - Installer
 :: ================================================================
 ::  DACEXY DESKTOP AGENT v15.0 - WORLD'S BEST DESKTOP AI AGENT
 ::  Self-contained Windows Installer
-::  - Auto-downloads Python if missing
-::  - Installs all dependencies including voice
-::  - Runs 24/7 as a background service
-::  - Connects to Dacexy cloud dashboard
 :: ================================================================
+
+:: ----------------------------------------------------------------
+:: FIX: Keep window open on ANY unexpected exit
+:: ----------------------------------------------------------------
+if "%~1"=="__CHILD__" goto :MAIN_ENTRY
+cmd /k "%~f0" __CHILD__
+exit /b
+
+:MAIN_ENTRY
 
 set "INSTALL_DIR=%USERPROFILE%\DacexyAgent"
 set "LOG=%INSTALL_DIR%\logs\install.log"
@@ -20,13 +25,14 @@ set "PYTHON_INSTALLER=%TEMP%\python_installer.exe"
 set "BACKEND=https://dacexy-backend-v7ku.onrender.com/api/v1"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUTF8=1"
+set "PYTHON_CMD="
 
 :: ================================================================
 :: STEP 0 - CREATE FOLDERS
 :: ================================================================
-if not exist "%INSTALL_DIR%"       mkdir "%INSTALL_DIR%"
-if not exist "%INSTALL_DIR%\logs"  mkdir "%INSTALL_DIR%\logs"
-if not exist "%INSTALL_DIR%\data"  mkdir "%INSTALL_DIR%\data"
+if not exist "%INSTALL_DIR%"         mkdir "%INSTALL_DIR%"
+if not exist "%INSTALL_DIR%\logs"    mkdir "%INSTALL_DIR%\logs"
+if not exist "%INSTALL_DIR%\data"    mkdir "%INSTALL_DIR%\data"
 if not exist "%INSTALL_DIR%\plugins" mkdir "%INSTALL_DIR%\plugins"
 cd /d "%INSTALL_DIR%"
 
@@ -58,14 +64,16 @@ call :log "=== Dacexy Installer Started: %DATE% %TIME% ==="
 :: ================================================================
 call :header "STEP 1/6" "Checking Python..."
 
+:: Try python command
 python --version > nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
     call :ok "Python found: !PYVER!"
+    set "PYTHON_CMD=python"
     goto :PYTHON_OK
 )
 
-:: Python not found - try py launcher
+:: Try py launcher
 py --version > nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%i in ('py --version 2^>^&1') do set PYVER=%%i
@@ -74,16 +82,30 @@ if not errorlevel 1 (
     goto :PYTHON_OK
 )
 
+:: Try common install paths directly
+for %%P in (
+    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+    "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+    "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    "C:\Python311\python.exe"
+    "C:\Python310\python.exe"
+    "%PROGRAMFILES%\Python311\python.exe"
+) do (
+    if exist %%P (
+        set "PYTHON_CMD=%%~P"
+        call :ok "Python found at %%~P"
+        goto :PYTHON_OK
+    )
+)
+
 :: Python not found - download and install automatically
 call :warn "Python not found. Downloading Python 3.11 automatically..."
 echo  This may take 2-5 minutes depending on your internet speed.
 echo.
 
-:: Use PowerShell to download Python installer
 powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_INSTALLER%' -UseBasicParsing}" 2>nul
 
 if not exist "%PYTHON_INSTALLER%" (
-    :: Fallback: try certutil
     certutil -urlcache -split -f "%PYTHON_URL%" "%PYTHON_INSTALLER%" > nul 2>&1
 )
 
@@ -95,14 +117,13 @@ if not exist "%PYTHON_INSTALLER%" (
     echo  Make sure to check "Add Python to PATH" during install.
     echo  Then run this installer again.
     echo.
-    pause
-    exit /b 1
+    call :fatal_pause
 )
 
 call :info "Installing Python 3.11 silently (this takes ~2 min)..."
-"%PYTHON_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_doc=0 Include_launcher=1 > nul 2>&1
+"%PYTHON_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_doc=0 Include_launcher=1
 
-:: Refresh PATH so Python is found immediately
+:: Refresh PATH
 for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USERPATH=%%b"
 for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "SYSPATH=%%b"
 set "PATH=%SYSPATH%;%USERPATH%;%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
@@ -112,23 +133,26 @@ if errorlevel 1 (
     call :err "Python installation failed."
     echo  Please install Python 3.11 manually from https://www.python.org
     echo  Then run this installer again.
-    pause
-    exit /b 1
+    call :fatal_pause
 )
 
 del "%PYTHON_INSTALLER%" > nul 2>&1
 for /f "tokens=*" %%i in ('python --version 2^>^&1') do set PYVER=%%i
 call :ok "Python installed: !PYVER!"
+set "PYTHON_CMD=python"
 
 :PYTHON_OK
-if not defined PYTHON_CMD set "PYTHON_CMD=python"
 
 :: ================================================================
 :: STEP 2 - UPGRADE PIP
 :: ================================================================
 call :header "STEP 2/6" "Upgrading pip..."
 %PYTHON_CMD% -m pip install --upgrade pip -q --no-warn-script-location > nul 2>&1
-call :ok "pip ready"
+if errorlevel 1 (
+    call :warn "pip upgrade failed, continuing with existing pip..."
+) else (
+    call :ok "pip ready"
+)
 
 :: ================================================================
 :: STEP 3 - INSTALL ALL REQUIRED PACKAGES
@@ -136,7 +160,6 @@ call :ok "pip ready"
 call :header "STEP 3/6" "Installing packages (may take 5-10 minutes)..."
 echo  Installing core packages...
 
-:: Install all packages in one efficient batch call
 %PYTHON_CMD% -m pip install ^
     pyautogui ^
     pillow ^
@@ -166,16 +189,19 @@ echo  Installing core packages...
     -q --no-warn-script-location > "%INSTALL_DIR%\logs\pip_install.log" 2>&1
 
 if errorlevel 1 (
-    call :warn "Some packages had issues. Trying individually..."
-    for %%p in (pyautogui pillow websockets requests psutil pyperclip keyboard pygetwindow plyer selenium webdriver-manager opencv-python numpy pyttsx3 SpeechRecognition) do (
+    call :warn "Batch install had issues. Trying individually..."
+    for %%p in (pyautogui pillow websockets requests psutil pyperclip keyboard pygetwindow plyer selenium webdriver-manager opencv-python numpy pyttsx3 SpeechRecognition colorama packaging cryptography) do (
         %PYTHON_CMD% -m pip install %%p -q --no-warn-script-location > nul 2>&1
-        call :ok "Installed %%p"
+        if errorlevel 1 (
+            call :warn "Could not install %%p - will skip"
+        ) else (
+            call :ok "Installed %%p"
+        )
     )
 ) else (
     call :ok "All core packages installed"
 )
 
-:: Install pytesseract separately (OCR)
 echo  Installing OCR support...
 %PYTHON_CMD% -m pip install pytesseract -q --no-warn-script-location > nul 2>&1
 call :ok "OCR support installed"
@@ -191,7 +217,6 @@ if not errorlevel 1 (
     goto :PYAUDIO_DONE
 )
 
-:: Try pip first
 %PYTHON_CMD% -m pip install PyAudio -q --no-warn-script-location > nul 2>&1
 %PYTHON_CMD% -c "import pyaudio" > nul 2>&1
 if not errorlevel 1 (
@@ -199,7 +224,6 @@ if not errorlevel 1 (
     goto :PYAUDIO_DONE
 )
 
-:: Try pipwin (Windows wheel installer)
 %PYTHON_CMD% -m pip install pipwin -q --no-warn-script-location > nul 2>&1
 %PYTHON_CMD% -m pipwin install pyaudio > nul 2>&1
 %PYTHON_CMD% -c "import pyaudio" > nul 2>&1
@@ -208,8 +232,6 @@ if not errorlevel 1 (
     goto :PYAUDIO_DONE
 )
 
-:: Try downloading pre-built wheel
-call :info "Trying pre-built wheel for PyAudio..."
 for /f "tokens=*" %%v in ('%PYTHON_CMD% -c "import sys; print(str(sys.version_info.major)+str(sys.version_info.minor))" 2^>nul') do set PYSHORT=%%v
 set "WHEEL_URL=https://files.pythonhosted.org/packages/cp%PYSHORT%/P/PyAudio/PyAudio-0.2.14-cp%PYSHORT%-cp%PYSHORT%-win_amd64.whl"
 set "WHEEL_FILE=%TEMP%\PyAudio.whl"
@@ -224,31 +246,27 @@ if not errorlevel 1 (
     goto :PYAUDIO_DONE
 )
 
-call :warn "PyAudio could not be installed automatically."
-call :warn "Voice commands will be DISABLED. Agent will still work fully via text/cloud."
+call :warn "PyAudio could not be installed - voice disabled. Agent still works fully via text/cloud."
 call :warn "To enable voice later: pip install pipwin && pipwin install pyaudio"
 
 :PYAUDIO_DONE
 
 :: ================================================================
-:: STEP 5 - DOWNLOAD AGENT FILE
+:: STEP 5 - LOCATE / DOWNLOAD AGENT FILE
 :: ================================================================
 call :header "STEP 5/6" "Setting up Dacexy Agent..."
 
-:: Copy agent from same folder as installer if available
 if exist "%~dp0dacexy_agent.py" (
     copy /y "%~dp0dacexy_agent.py" "%AGENT_PY%" > nul
     call :ok "Agent file copied from installer package"
     goto :AGENT_READY
 )
 
-:: Agent already exists in install dir
 if exist "%AGENT_PY%" (
     call :ok "Agent file already present"
     goto :AGENT_READY
 )
 
-:: Download from backend
 call :info "Downloading agent from Dacexy servers..."
 %PYTHON_CMD% -c "
 import urllib.request, os, sys
@@ -270,34 +288,18 @@ except Exception as e:
 
 if exist "%AGENT_PY%" goto :AGENT_READY
 
-:: Final fallback: write a minimal working launcher that explains the situation
-call :warn "Agent file not found. Creating setup helper..."
-(
-echo import sys, os, webbrowser
-echo print("")
-echo print("  ================================================================")
-echo print("  DACEXY AGENT SETUP REQUIRED")
-echo print("  ================================================================")
-echo print("  dacexy_agent.py was not found in this folder.")
-echo print("")
-echo print("  Please:")
-echo print("  1. Log in to your dashboard at dacexy.vercel.app")
-echo print("  2. Go to Settings > Download Desktop Agent")
-echo print("  3. Place dacexy_agent.py in: %INSTALL_DIR%")
-echo print("  4. Run install_dacexy_agent.bat again")
-echo print("  ================================================================")
-echo webbrowser.open("https://dacexy.vercel.app/settings")
-echo input("  Press Enter to open your dashboard in browser...")
-) > "%AGENT_PY%"
-call :warn "Setup helper created. Please download dacexy_agent.py from your dashboard."
-call :warn "Then run this installer again."
-pause
-exit /b 1
+call :err "Agent file (dacexy_agent.py) not found and could not be downloaded."
+echo.
+echo  Please place dacexy_agent.py in the same folder as this installer:
+echo  %~dp0
+echo  Then run this installer again.
+echo.
+echo  Or download from: dacexy.vercel.app/settings
+start "" "https://dacexy.vercel.app/settings"
+call :fatal_pause
 
 :AGENT_READY
 call :ok "Agent file ready"
-
-:: Copy launcher BAT into install dir (self-update)
 copy /y "%~f0" "%INSTALL_DIR%\install_dacexy_agent.bat" > nul 2>&1
 
 :: ================================================================
@@ -305,7 +307,6 @@ copy /y "%~f0" "%INSTALL_DIR%\install_dacexy_agent.bat" > nul 2>&1
 :: ================================================================
 call :header "STEP 6/6" "Registering autostart and shortcuts..."
 
-:: Register Windows autostart via registry
 %PYTHON_CMD% -c "
 import winreg, sys
 try:
@@ -318,10 +319,9 @@ except Exception as e:
     print('  [WARN] Autostart:', e)
 " 2>&1
 
-:: Create desktop shortcut
 %PYTHON_CMD% -c "
-import os, sys
-vbs = r'''
+import os
+vbs = '''
 Set oWS = WScript.CreateObject(\"WScript.Shell\")
 sLink = oWS.SpecialFolders(\"Desktop\") & \"\Dacexy Agent.lnk\"
 Set oLink = oWS.CreateShortcut(sLink)
@@ -331,38 +331,16 @@ oLink.Description = \"Dacexy AI Desktop Agent\"
 oLink.Save
 '''
 vbs_path = r'%TEMP%\dacexy_sc.vbs'
-with open(vbs_path, 'w') as f:
-    f.write(vbs)
+open(vbs_path, 'w').write(vbs)
 os.system('cscript //nologo \"' + vbs_path + '\"')
 os.remove(vbs_path)
 print('  [OK] Desktop shortcut created')
 " 2>&1
 
-:: Create Start Menu shortcut
-%PYTHON_CMD% -c "
-import os, sys
-sm = os.path.join(os.environ.get('APPDATA',''), 'Microsoft', 'Windows', 'Start Menu', 'Programs')
-vbs = r'''
-Set oWS = WScript.CreateObject(\"WScript.Shell\")
-sLink = \"%s\Dacexy Agent.lnk\"
-Set oLink = oWS.CreateShortcut(sLink)
-oLink.TargetPath = \"%s\install_dacexy_agent.bat\"
-oLink.WorkingDirectory = \"%s\"
-oLink.Description = \"Dacexy AI Desktop Agent\"
-oLink.Save
-''' %% (sm, r'%INSTALL_DIR%', r'%INSTALL_DIR%')
-vbs_path = r'%TEMP%\dacexy_sm.vbs'
-with open(vbs_path, 'w') as f:
-    f.write(vbs)
-os.system('cscript //nologo \"' + vbs_path + '\"')
-os.remove(vbs_path)
-print('  [OK] Start Menu shortcut created')
-" 2>&1
-
 call :ok "Autostart registered - Dacexy runs on every PC startup"
 
 :: ================================================================
-:: INSTALLATION COMPLETE BANNER
+:: INSTALLATION COMPLETE
 :: ================================================================
 echo.
 echo  ================================================================
@@ -388,7 +366,6 @@ echo    Register free at: dacexy.vercel.app
 echo  ================================================================
 echo.
 
-:: Check if already logged in
 %PYTHON_CMD% -c "
 import json
 from pathlib import Path
@@ -411,7 +388,7 @@ if "!AUTH_STATUS!"=="LOGGED_IN" (
 )
 
 echo  Enter your Dacexy account credentials.
-echo  (Don't have an account? Register at dacexy.vercel.app)
+echo  (No account? Register at dacexy.vercel.app)
 echo.
 
 :LOGIN_PROMPT
@@ -441,10 +418,10 @@ password = '!DACEXY_PASS!'
 
 if '@' not in email:
     print('  [ERROR] Invalid email address.')
-    sys.exit(1)
+    sys.exit(2)
 if len(password) < 4:
     print('  [ERROR] Password too short (min 4 characters).')
-    sys.exit(1)
+    sys.exit(2)
 
 try:
     r = requests.post(
@@ -467,14 +444,14 @@ try:
         else:
             print('  [ERROR] Server returned no token.')
             sys.exit(1)
-    elif r.status_code == 401:
+    elif r.status_code in (401, 403):
         print('  [ERROR] Wrong email or password. Please try again.')
         sys.exit(2)
     elif r.status_code == 422:
         print('  [ERROR] Invalid email format.')
         sys.exit(2)
-    elif r.status_code == 0 or r.status_code >= 500:
-        print('  [ERROR] Server error. Try again in a moment.')
+    elif r.status_code >= 500:
+        print('  [ERROR] Server error (' + str(r.status_code) + '). Try again in a moment.')
         sys.exit(1)
     else:
         try:
@@ -492,17 +469,19 @@ except requests.exceptions.Timeout:
 except Exception as e:
     print('  [ERROR] ' + str(e))
     sys.exit(1)
-" 2>&1 | findstr /v "^$"
+" 2>&1
+set LOGIN_EXIT=!ERRORLEVEL!
 
-set LOGIN_EXIT=%ERRORLEVEL%
+:: Check if LOGIN_OK was printed
+findstr /C:"LOGIN_OK" "%TEMP%\dacexy_login_result.txt" > nul 2>&1
 
-if %LOGIN_EXIT% EQU 0 (
+if !LOGIN_EXIT! EQU 0 (
     call :ok "Login successful! Welcome to Dacexy."
     call :log "Login successful for !DACEXY_EMAIL!"
     goto :LAUNCH_AGENT
 )
 
-if %LOGIN_EXIT% EQU 2 (
+if !LOGIN_EXIT! EQU 2 (
     echo.
     echo  Try again? (Y=Yes / N=No / R=Register new account)
     choice /c YNR /n /m "  Choice: "
@@ -512,17 +491,21 @@ if %LOGIN_EXIT% EQU 2 (
         pause
         goto :LOGIN_PROMPT
     )
-    if errorlevel 2 goto :LOGIN_FAILED
+    if errorlevel 2 (
+        call :err "Login cancelled. Exiting."
+        call :fatal_pause
+    )
     if errorlevel 1 goto :LOGIN_PROMPT
 )
 
-:LOGIN_FAILED
 echo.
-call :err "Login failed. Cannot start Dacexy Agent."
-echo  Please check your credentials and try again.
-echo.
-pause
-exit /b 1
+echo  Login failed (network or server issue). Try again? (Y/N)
+choice /c YN /n /m "  Choice: "
+if errorlevel 2 (
+    call :err "Login failed. Cannot start Dacexy Agent."
+    call :fatal_pause
+)
+goto :LOGIN_PROMPT
 
 :: ================================================================
 :: LAUNCH AGENT (24/7 mode)
@@ -531,10 +514,10 @@ exit /b 1
 echo.
 echo  ================================================================
 echo    STARTING DACEXY AGENT
-echo    The agent will now run in the background 24/7
-echo    Control it from: dacexy.vercel.app/dashboard
-echo    Voice: Say "Hey Dacexy" to activate voice commands
-echo    Stop: Ctrl+Shift+E or type 'stop' in this window
+echo    Running in background 24/7
+echo    Dashboard: dacexy.vercel.app/dashboard
+echo    Voice    : Say "Hey Dacexy" to activate
+echo    Stop     : Ctrl+Shift+E or type 'stop' in this window
 echo  ================================================================
 echo.
 call :log "Launching dacexy_agent.py"
@@ -548,14 +531,12 @@ set PYTHONUTF8=1
 set EXIT_CODE=!ERRORLEVEL!
 call :log "Agent exited with code !EXIT_CODE!"
 
-:: Clean exit
 if !EXIT_CODE! EQU 0 (
     echo.
     echo  Dacexy Agent stopped cleanly.
     goto :AGENT_END
 )
 
-:: Auth expired - clear token and re-login
 if !EXIT_CODE! EQU 2 (
     call :warn "Session expired. Clearing login..."
     %PYTHON_CMD% -c "
@@ -572,7 +553,6 @@ if f.exists():
     goto :LOGIN_SECTION
 )
 
-:: Crash - auto restart after delay
 echo.
 call :warn "Agent stopped (code: !EXIT_CODE!). Auto-restarting in 5 seconds..."
 call :warn "Press Ctrl+C to cancel restart."
@@ -583,18 +563,11 @@ goto :AGENT_LOOP
 :AGENT_END
 echo.
 echo  ================================================================
-echo    Options:
-echo    R = Restart Dacexy Agent
-echo    L = View log file
-echo    U = Uninstall Dacexy
-echo    E = Exit
+echo    R = Restart  |  L = View log  |  U = Uninstall  |  E = Exit
 echo  ================================================================
 choice /c RLUE /n /m "  Choice: "
 if errorlevel 4 goto :DONE
-if errorlevel 3 (
-    call :uninstall
-    goto :DONE
-)
+if errorlevel 3 ( call :uninstall & goto :DONE )
 if errorlevel 2 (
     echo.
     type "%INSTALL_DIR%\logs\startup.log" 2>nul | more
@@ -646,6 +619,14 @@ if not exist "%INSTALL_DIR%\logs" mkdir "%INSTALL_DIR%\logs" > nul 2>&1
 echo %DATE% %TIME% | %~1 >> "%LOG%" 2>nul
 goto :eof
 
+:fatal_pause
+echo.
+echo  ================================================================
+echo   Press any key to exit...
+echo  ================================================================
+pause > nul
+exit /b 1
+
 :uninstall
 echo.
 echo  Are you sure you want to uninstall Dacexy Agent? (Y/N)
@@ -659,11 +640,9 @@ try:
     winreg.CloseKey(key)
 except: pass
 " > nul 2>&1
-echo  Removing desktop shortcut...
 del "%USERPROFILE%\Desktop\Dacexy Agent.lnk" > nul 2>&1
-echo  Removing start menu shortcut...
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Dacexy Agent.lnk" > nul 2>&1
-echo  Keep your account data (login, memories, macros)? (Y/N)
+echo  Keep your account data? (Y/N)
 choice /c YN /n /m "  Choice: "
 if errorlevel 2 (
     del "%USERPROFILE%\.dacexy_agent.json" > nul 2>&1
@@ -672,6 +651,5 @@ if errorlevel 2 (
     del "%USERPROFILE%\dacexy_agent.log" > nul 2>&1
     del "%USERPROFILE%\dacexy_audit.log" > nul 2>&1
 )
-call :ok "Uninstall complete. Install folder kept at %INSTALL_DIR%"
-call :info "To remove install folder: rmdir /s /q \"%INSTALL_DIR%\""
+call :ok "Uninstall complete."
 goto :eof
