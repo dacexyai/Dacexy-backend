@@ -1,43 +1,26 @@
 """
 DACEXY DESKTOP AGENT v15.0 ENTERPRISE
-World-Class Autonomous AI Desktop Agent
-Wake Words: Hey Dacexy / Dacexy / Assistant
-
-FIXES IN v15.0:
-- Fixed installer hang (removed blocking console reads in startup path)
-- Fixed websockets v16+ compatibility (removed extra_headers kwarg)
-- Fixed Unicode/encoding issues on Windows
-- Fixed login loop crash on pipe/console errors
-- Fixed CMD window showing blank after startup
-- Added proper asyncio Windows policy
-- Added startup diagnostics output
-- Fixed TTS threading crash
-- Added graceful fallback for all optional modules
+World's Most Powerful AI Desktop Agent
+24/7 cloud-connected, voice-controlled, fully autonomous
 """
 
 # ============================================================
-# BLOCK 1 - CRITICAL: Windows asyncio + encoding fix (FIRST)
+# BLOCK 1 - WINDOWS FIXES (MUST BE FIRST)
 # ============================================================
 import sys
 import os
 import platform
 
-# Fix Windows asyncio policy BEFORE anything else
 if platform.system() == "Windows":
     import asyncio as _asyncio
     if hasattr(_asyncio, "WindowsSelectorEventLoopPolicy"):
         _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
 
-# Fix stdout/stderr encoding for Windows CMD
 if platform.system() == "Windows":
     import io
     try:
-        sys.stdout = io.TextIOWrapper(
-            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
-        )
-        sys.stderr = io.TextIOWrapper(
-            sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
-        )
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
@@ -56,40 +39,29 @@ _LOG_DIR.mkdir(exist_ok=True)
 
 
 def _safe_file_handler(path: Path) -> logging.Handler:
-    for attempt_path in [path, path.with_suffix(".1.log"),
-                         path.with_suffix(".2.log"),
-                         Path.home() / "dacexy_startup.log"]:
+    for p in [path, path.with_suffix(".1.log"), Path.home() / "dacexy_startup.log"]:
         try:
-            with open(str(attempt_path), "a", encoding="utf-8"):
+            with open(str(p), "a", encoding="utf-8"):
                 pass
-            h = logging.FileHandler(str(attempt_path), encoding="utf-8", mode="a")
+            h = logging.FileHandler(str(p), encoding="utf-8", mode="a")
             return h
         except Exception:
             continue
     return logging.NullHandler()
 
 
-_startup_handler = _safe_file_handler(_STARTUP_LOG)
-_startup_handler.setFormatter(
-    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-
-_main_log_handler = _safe_file_handler(Path.home() / "dacexy_agent.log")
-_main_log_handler.setFormatter(
-    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        _startup_handler,
-        _main_log_handler,
+        _safe_file_handler(_STARTUP_LOG),
+        _safe_file_handler(Path.home() / "dacexy_agent.log"),
     ]
 )
 log = logging.getLogger("dacexy")
 log.info("=" * 60)
-log.info("Dacexy Agent v15.0 ENTERPRISE starting: %s",
-         datetime.datetime.now().isoformat())
+log.info("Dacexy Agent v15.0 ENTERPRISE starting: %s", datetime.datetime.now().isoformat())
 log.info("Python: %s | Platform: %s", sys.version, platform.system())
 log.info("=" * 60)
 
@@ -111,9 +83,8 @@ PACKAGES = [
 
 def _silent_install(pkg):
     special = {
-        "speechrecognition": "speech_recognition",
-        "pillow": "PIL", "opencv-python": "cv2",
-        "webdriver-manager": "webdriver_manager",
+        "speechrecognition": "speech_recognition", "pillow": "PIL",
+        "opencv-python": "cv2", "webdriver-manager": "webdriver_manager",
         "python-docx": "docx",
     }
     imp = special.get(pkg.lower(), pkg.replace("-", "_"))
@@ -123,12 +94,8 @@ def _silent_install(pkg):
         log.info("Installing %s...", pkg)
         try:
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", pkg,
-                 "-q", "--no-warn-script-location"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=120)
-            log.info("Installed %s OK", pkg)
+                [sys.executable, "-m", "pip", "install", pkg, "-q", "--no-warn-script-location"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
         except Exception as e:
             log.warning("Could not install %s: %s", pkg, e)
 
@@ -142,7 +109,7 @@ try:
     log.info("PyAudio OK")
 except Exception:
     PYAUDIO_OK = False
-    log.warning("PyAudio not available - voice will be disabled")
+    log.warning("PyAudio not available - voice disabled")
 
 # ============================================================
 # BLOCK 4 - ALL IMPORTS
@@ -184,88 +151,60 @@ try:
     import pyautogui
     pyautogui.FAILSAFE = False
     pyautogui.PAUSE = 0.04
-    log.info("pyautogui OK")
-except Exception as e:
-    log.error("pyautogui failed: %s", e)
-    class _PyAutoGuiStub:
-        FAILSAFE = False
-        PAUSE = 0.04
-        def __getattr__(self, name): return lambda *a, **k: None
+except Exception:
+    class _Stub:
+        FAILSAFE = False; PAUSE = 0.04
+        def __getattr__(self, n): return lambda *a, **k: None
         def size(self): return (1920, 1080)
         def position(self): return (0, 0)
-    pyautogui = _PyAutoGuiStub()
+    pyautogui = _Stub()
 
 try:
     import requests as req_lib
-    log.info("requests OK")
-except Exception as e:
-    log.error("requests failed: %s", e)
+except Exception:
     req_lib = None
 
 try:
     import websockets
-    log.info("websockets OK - version: %s", websockets.__version__)
-except Exception as e:
-    log.error("websockets failed: %s", e)
+except Exception:
     websockets = None
 
 try:
     from PIL import ImageGrab, Image, ImageEnhance
-    log.info("Pillow OK")
-except Exception as e:
-    log.warning("Pillow failed: %s", e)
+except Exception:
     ImageGrab = Image = ImageEnhance = None
 
 try:
     import pyttsx3
-    log.info("pyttsx3 OK")
-except Exception as e:
-    log.warning("pyttsx3 failed: %s", e)
+except Exception:
     pyttsx3 = None
 
 try:
     import pyperclip
-    log.info("pyperclip OK")
-except Exception as e:
-    log.warning("pyperclip failed: %s", e)
+except Exception:
     pyperclip = None
 
 try:
     import psutil
-    log.info("psutil OK")
-except Exception as e:
-    log.error("psutil failed: %s", e)
-    psutil = None
-
-try:
-    from rich.console import Console
-    RICH_OK = True
-    console = Console()
-    log.info("rich OK")
 except Exception:
-    RICH_OK = False
-    console = None
+    psutil = None
 
 try:
     import winreg
     WINREG_OK = True
-    log.info("winreg OK")
 except Exception:
     WINREG_OK = False
 
 try:
     import speech_recognition as sr
     VOICE_AVAILABLE = PYAUDIO_OK
-    log.info("speech_recognition OK, voice=%s", VOICE_AVAILABLE)
 except Exception:
     VOICE_AVAILABLE = False
     sr = None
-    log.warning("speech_recognition not available")
 
 try:
     import pygetwindow as gw
     WINDOW_OK = True
-    log.info("pygetwindow OK")
 except Exception:
     WINDOW_OK = False
     gw = None
@@ -273,14 +212,12 @@ except Exception:
 try:
     from plyer import notification
     NOTIFY_OK = True
-    log.info("plyer OK")
 except Exception:
     NOTIFY_OK = False
 
 try:
     import cv2
     CV2_OK = True
-    log.info("opencv OK")
 except Exception:
     CV2_OK = False
     cv2 = None
@@ -288,7 +225,6 @@ except Exception:
 try:
     import numpy as np
     NUMPY_OK = True
-    log.info("numpy OK")
 except Exception:
     NUMPY_OK = False
     np = None
@@ -299,12 +235,11 @@ try:
     for _tp in [
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        "/usr/bin/tesseract", "/usr/local/bin/tesseract"
+        "/usr/bin/tesseract",
     ]:
         if os.path.exists(_tp):
             pytesseract.pytesseract.tesseract_cmd = _tp
             break
-    log.info("pytesseract OK")
 except Exception:
     TESSERACT_OK = False
     pytesseract = None
@@ -313,56 +248,22 @@ try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.common.action_chains import ActionChains
-    from selenium.webdriver.support.ui import WebDriverWait, Select
+    from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.chrome.options import Options as ChromeOptions
-    from selenium.webdriver.firefox.options import Options as FirefoxOptions
-    from selenium.webdriver.edge.options import Options as EdgeOptions
-    from selenium.common.exceptions import (
-        TimeoutException, NoSuchElementException,
-        StaleElementReferenceException, WebDriverException)
-    from webdriver_manager.chrome import ChromeDriverManager
-    from webdriver_manager.firefox import GeckoDriverManager
-    from webdriver_manager.microsoft import EdgeChromiumDriverManager
     from selenium.webdriver.chrome.service import Service as ChromeService
-    from selenium.webdriver.firefox.service import Service as FirefoxService
-    from selenium.webdriver.edge.service import Service as EdgeService
+    from selenium.common.exceptions import TimeoutException, WebDriverException
+    from webdriver_manager.chrome import ChromeDriverManager
     SELENIUM_OK = True
-    log.info("selenium OK")
-except Exception as e:
+except Exception:
     SELENIUM_OK = False
-    log.warning("selenium not available: %s", e)
 
 try:
     import keyboard
     KEYBOARD_OK = True
-    log.info("keyboard OK")
 except Exception:
     KEYBOARD_OK = False
     keyboard = None
-
-try:
-    import schedule
-    SCHEDULE_OK = True
-    log.info("schedule OK")
-except Exception:
-    SCHEDULE_OK = False
-    schedule = None
-
-try:
-    import win32api, win32con, win32gui, win32process
-    WIN32_OK = True
-    log.info("win32 OK")
-except Exception:
-    WIN32_OK = False
-
-try:
-    import pandas as pd
-    PANDAS_OK = True
-except Exception:
-    PANDAS_OK = False
-    pd = None
 
 try:
     import docx
@@ -386,21 +287,19 @@ log.info("All imports complete")
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 CONFIG_FILE   = Path.home() / ".dacexy_agent.json"
-LOG_FILE      = Path.home() / "dacexy_agent.log"
 MEMORY_FILE   = Path.home() / ".dacexy_memory.json"
 AUDIT_FILE    = Path.home() / "dacexy_audit.log"
 MACRO_FILE    = Path.home() / ".dacexy_macros.json"
-HIBERNATE_FILE = Path.home() / ".dacexy_hibernate.json"
-CAMPAIGN_FILE  = Path.home() / ".dacexy_campaigns.json"
-SCHEDULE_FILE  = Path.home() / ".dacexy_schedule.json"
-SKILLS_FILE    = Path.home() / ".dacexy_skills.json"
-PLUGINS_DIR    = Path.home() / ".dacexy_plugins"
-COOKIES_DIR    = Path.home() / ".dacexy_cookies"
-NOTES_DIR      = Path.home() / "DacexyNotes"
-BACKUP_DIR     = Path.home() / "DacexyBackups"
-RESEARCH_DIR   = Path.home() / "DacexyResearch"
-VERSION        = "15.0 ENTERPRISE"
-WAKE_WORDS     = ["hey dacexy", "dacexy", "assistant"]
+CAMPAIGN_FILE = Path.home() / ".dacexy_campaigns.json"
+SCHEDULE_FILE = Path.home() / ".dacexy_schedule.json"
+SKILLS_FILE   = Path.home() / ".dacexy_skills.json"
+PLUGINS_DIR   = Path.home() / ".dacexy_plugins"
+COOKIES_DIR   = Path.home() / ".dacexy_cookies"
+NOTES_DIR     = Path.home() / "DacexyNotes"
+BACKUP_DIR    = Path.home() / "DacexyBackups"
+RESEARCH_DIR  = Path.home() / "DacexyResearch"
+VERSION       = "15.0 ENTERPRISE"
+WAKE_WORDS    = ["hey dacexy", "dacexy", "assistant"]
 
 for _d in [PLUGINS_DIR, COOKIES_DIR, NOTES_DIR, BACKUP_DIR, RESEARCH_DIR]:
     try:
@@ -421,153 +320,97 @@ _ws_connection        = None
 _result_cache: Dict[str, Any] = {}
 
 MEMORY = {
-    "facts": [],
-    "preferences": {},
-    "task_history": deque(maxlen=500),
-    "context": {},
-    "user_profile": {},
-    "workflows": {},
-    "email_contacts": [],
-    "social_accounts": {},
-    "automation_templates": {},
-    "scheduled_tasks": [],
-    "success_patterns": [],
-    "failure_patterns": [],
-    "learned_skills": [],
-    "optimization_hints": [],
-    "conversation": deque(maxlen=100),
+    "facts": [], "preferences": {}, "task_history": deque(maxlen=500),
+    "context": {}, "user_profile": {}, "workflows": {}, "email_contacts": [],
+    "social_accounts": {}, "automation_templates": {}, "scheduled_tasks": [],
+    "success_patterns": [], "failure_patterns": [], "learned_skills": [],
+    "optimization_hints": [], "conversation": deque(maxlen=100),
 }
 
 audit_log = logging.getLogger("dacexy.audit")
-audit_log.setLevel(logging.INFO)
 try:
     _ah = _safe_file_handler(AUDIT_FILE)
     _ah.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
     audit_log.addHandler(_ah)
-except Exception as e:
-    log.warning("Audit log setup failed: %s", e)
+except Exception:
+    pass
 
 # ============================================================
 # BLOCK 7 - DATA STRUCTURES
 # ============================================================
 class AgentStatus(Enum):
-    IDLE      = auto()
-    PLANNING  = auto()
-    EXECUTING = auto()
-    VERIFYING = auto()
-    RETRYING  = auto()
-    PAUSED    = auto()
-    ERROR     = auto()
-    STOPPED   = auto()
+    IDLE = auto(); PLANNING = auto(); EXECUTING = auto()
+    VERIFYING = auto(); RETRYING = auto(); PAUSED = auto()
+    ERROR = auto(); STOPPED = auto()
 
 
 @dataclass
 class TaskStep:
-    step_id:     int
-    action:      str
-    description: str
-    params:      Dict[str, Any] = field(default_factory=dict)
-    action_type: str = ""
-    retry_count: int = 0
-    max_retries: int = 3
-    timeout:     int = 30
-    verify:      bool = True
-    completed:   bool = False
-    result:      Any  = None
-    error:       str  = ""
-    timestamp:   str  = field(
-        default_factory=lambda: datetime.datetime.now().isoformat())
+    step_id: int; action: str; description: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    action_type: str = ""; retry_count: int = 0
+    max_retries: int = 3; timeout: int = 30
+    verify: bool = True; completed: bool = False
+    result: Any = None; error: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
 
 @dataclass
 class ExecutionContext:
-    task_id:      str
-    task_name:    str
-    steps:        List[TaskStep] = field(default_factory=list)
-    status:       str = "pending"
-    start_time:   float = field(default_factory=time.time)
-    end_time:     float = 0.0
-    total_steps:  int = 0
-    done_steps:   int = 0
-    failed_steps: int = 0
-    screenshots:  List[str] = field(default_factory=list)
-    notes:        List[str] = field(default_factory=list)
-    checkpoint:   Dict[str, Any] = field(default_factory=dict)
+    task_id: str; task_name: str
+    steps: List[TaskStep] = field(default_factory=list)
+    status: str = "pending"; start_time: float = field(default_factory=time.time)
+    end_time: float = 0.0; total_steps: int = 0; done_steps: int = 0
+    failed_steps: int = 0; screenshots: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    checkpoint: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class MemoryEntry:
-    entry_id:    str
-    category:    str
-    content:     str
-    metadata:    Dict[str, Any] = field(default_factory=dict)
-    timestamp:   str = field(
-        default_factory=lambda: datetime.datetime.now().isoformat())
-    access_count: int = 0
-    importance:  float = 1.0
-    embedding:   Optional[List[float]] = None
+    entry_id: str; category: str; content: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
+    access_count: int = 0; importance: float = 1.0
+    embedding: Optional[List[float]] = None
 
 
 @dataclass
 class EmailCampaignData:
-    campaign_id:   str
-    name:          str
-    subject:       str
-    body_template: str
-    recipients:    List[str]
-    scheduled_at:  Optional[str] = None
-    sent:          int = 0
-    failed:        int = 0
-    opened:        int = 0
-    clicked:       int = 0
-    bounced:       int = 0
-    status:        str = "pending"
-    created_at:    str = field(
-        default_factory=lambda: datetime.datetime.now().isoformat())
-    html:          bool = True
-    delay_sec:     float = 1.0
-    retry_queue:   List[str] = field(default_factory=list)
-    tags:          List[str] = field(default_factory=list)
+    campaign_id: str; name: str; subject: str
+    body_template: str; recipients: List[str]
+    scheduled_at: Optional[str] = None; sent: int = 0
+    failed: int = 0; opened: int = 0; clicked: int = 0
+    bounced: int = 0; status: str = "pending"
+    created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
+    html: bool = True; delay_sec: float = 1.0
+    retry_queue: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
 
 
 @dataclass
 class UIElement:
-    label:      str
-    x:          int
-    y:          int
-    width:      int
-    height:     int
-    elem_type:  str = "unknown"
-    confidence: float = 0.0
-    text:       str = ""
-    clickable:  bool = True
+    label: str; x: int; y: int; width: int; height: int
+    elem_type: str = "unknown"; confidence: float = 0.0
+    text: str = ""; clickable: bool = True
 
 
 @dataclass
 class LearnedSkill:
-    skill_id:    str
-    name:        str
-    description: str
-    steps:       List[Dict]
-    success_rate: float = 0.0
-    use_count:   int = 0
-    created_at:  str = field(
-        default_factory=lambda: datetime.datetime.now().isoformat())
-    last_used:   str = ""
-    tags:        List[str] = field(default_factory=list)
+    skill_id: str; name: str; description: str; steps: List[Dict]
+    success_rate: float = 0.0; use_count: int = 0
+    created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
+    last_used: str = ""; tags: List[str] = field(default_factory=list)
 
 # ============================================================
 # BLOCK 8 - CONSOLE UTILITIES
 # ============================================================
 def _banner():
     lines = [
-        "",
-        "=" * 62,
+        "", "=" * 62,
         "  DACEXY v15.0 ENTERPRISE - AI Desktop Agent",
         "  Wake Words: Hey Dacexy / Dacexy / Assistant",
-        f"  Log: {_STARTUP_LOG}",
-        "=" * 62,
-        "",
+        f"  Log: {_STARTUP_LOG}", "=" * 62, "",
     ]
     for line in lines:
         try:
@@ -577,101 +420,60 @@ def _banner():
             pass
 
 
-def _ok(m):
+def _print(prefix, m):
     try:
-        print(f"  [OK] {m}")
+        print(f"  [{prefix}] {m}")
         sys.stdout.flush()
     except Exception:
         pass
-    log.info("OK: %s", m)
 
 
-def _err(m):
-    try:
-        print(f"  [ERROR] {m}")
-        sys.stdout.flush()
-    except Exception:
-        pass
-    log.error("ERR: %s", m)
-
-
-def _info(m):
-    try:
-        print(f"  [INFO] {m}")
-        sys.stdout.flush()
-    except Exception:
-        pass
-    log.info("%s", m)
-
-
-def _warn(m):
-    try:
-        print(f"  [WARN] {m}")
-        sys.stdout.flush()
-    except Exception:
-        pass
-    log.warning("%s", m)
-
-
-def _task(m):
-    try:
-        print(f"  [TASK] {m}")
-        sys.stdout.flush()
-    except Exception:
-        pass
-    log.info("TASK: %s", m)
+def _ok(m):   _print("OK", m);   log.info("OK: %s", m)
+def _err(m):  _print("ERROR", m); log.error("ERR: %s", m)
+def _info(m): _print("INFO", m);  log.info("%s", m)
+def _warn(m): _print("WARN", m);  log.warning("%s", m)
+def _task(m): _print("TASK", m);  log.info("TASK: %s", m)
 
 
 def generate_id(prefix: str = "") -> str:
-    return (f"{prefix}"
-            f"{hashlib.md5(f'{time.time()}{random.random()}'.encode()).hexdigest()[:10]}")
+    return f"{prefix}{hashlib.md5(f'{time.time()}{random.random()}'.encode()).hexdigest()[:10]}"
 
 
 def mask_pii(text: str) -> str:
-    text = re.sub(
-        r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+',
-        '[EMAIL]', str(text))
+    text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL]', str(text))
     text = re.sub(r'\b\d{10,12}\b', '[PHONE]', text)
     return text
 
 
 def audit(action: str, detail: str = "", result: str = ""):
     try:
-        audit_log.info("ACTION=%s | %s | RESULT=%s",
-                       action, mask_pii(str(detail)[:200]), result)
+        audit_log.info("ACTION=%s | %s | RESULT=%s", action, mask_pii(str(detail)[:200]), result)
     except Exception:
         pass
 
 # ============================================================
-# BLOCK 9 - SAFE CONSOLE INPUT (v15 fix: never blocks startup)
+# BLOCK 9 - SAFE CONSOLE INPUT
 # ============================================================
 def _get_console_input(prompt: str = "") -> str:
-    """Safe console input that works in all Windows terminal contexts."""
     try:
         if prompt:
             sys.stdout.write(prompt)
             sys.stdout.flush()
     except Exception:
         pass
-
     if platform.system() == "Windows":
-        # Try CONIN$ first (works even when stdin is redirected)
         try:
             with open("CONIN$", "r", encoding="utf-8", errors="replace") as con:
-                line = con.readline()
-                return line.rstrip("\n").rstrip("\r")
+                return con.readline().rstrip("\n").rstrip("\r")
         except Exception:
             pass
-
     try:
         return input()
-    except EOFError:
-        return ""
-    except Exception:
+    except (EOFError, Exception):
         return ""
 
 # ============================================================
-# BLOCK 10 - TTS (v15 fix: non-blocking init, no crash on fail)
+# BLOCK 10 - TTS
 # ============================================================
 _tts = None
 _tts_lock  = threading.Lock()
@@ -681,7 +483,6 @@ _tts_queue: queue.Queue = queue.Queue(maxsize=20)
 def init_tts():
     global _tts
     if pyttsx3 is None:
-        log.warning("pyttsx3 not available, TTS disabled")
         return
     try:
         _tts = pyttsx3.init()
@@ -689,15 +490,13 @@ def init_tts():
         _tts.setProperty("volume", 0.95)
         voices = _tts.getProperty("voices") or []
         for v in voices:
-            if any(x in (v.name or "").lower() for x in
-                   ["zira", "hazel", "aria", "female", "cortana"]):
+            if any(x in (v.name or "").lower() for x in ["zira", "hazel", "aria", "female"]):
                 _tts.setProperty("voice", v.id)
                 break
-        threading.Thread(
-            target=_tts_worker, daemon=True, name="TTS").start()
+        threading.Thread(target=_tts_worker, daemon=True, name="TTS").start()
         log.info("TTS initialized OK")
     except Exception as e:
-        log.warning("TTS init failed (non-fatal): %s", e)
+        log.warning("TTS init failed: %s", e)
         _tts = None
 
 
@@ -714,7 +513,7 @@ def _tts_worker():
                         _tts.say(str(text)[:400])
                         _tts.runAndWait()
             except Exception as e:
-                log.debug("TTS speak error: %s", e)
+                log.debug("TTS speak: %s", e)
             finally:
                 _tts_queue.task_done()
         except queue.Empty:
@@ -748,9 +547,7 @@ def speak(text: str, priority: bool = False):
 def notify_desktop(title: str, message: str):
     try:
         if NOTIFY_OK:
-            notification.notify(
-                title=title, message=message[:100],
-                app_name="Dacexy", timeout=4)
+            notification.notify(title=title, message=message[:100], app_name="Dacexy", timeout=4)
     except Exception:
         pass
 
@@ -777,54 +574,30 @@ def save_config(cfg: dict):
             log.warning("Config save: %s", e)
 
 
-def get_token():
-    return load_config().get("access_token")
-
-
-def save_token(t):
-    cfg = load_config()
-    cfg["access_token"] = t
-    save_config(cfg)
-
-
-def clear_token():
-    cfg = load_config()
-    cfg.pop("access_token", None)
-    save_config(cfg)
-
-
-def get_smtp_config():
-    return load_config().get("smtp", {})
-
-
-def save_smtp_config(s):
-    cfg = load_config()
-    cfg["smtp"] = s
-    save_config(cfg)
+def get_token():   return load_config().get("access_token")
+def save_token(t): cfg = load_config(); cfg["access_token"] = t; save_config(cfg)
+def clear_token(): cfg = load_config(); cfg.pop("access_token", None); save_config(cfg)
+def get_smtp_config(): return load_config().get("smtp", {})
+def save_smtp_config(s): cfg = load_config(); cfg["smtp"] = s; save_config(cfg)
 
 
 def check_token_valid(token: str) -> bool:
     if not req_lib:
         return False
     try:
-        r = req_lib.get(
-            f"{BACKEND_HTTP}/auth/me",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10)
-        valid = r.status_code == 200
-        log.info("Token check: %s", "valid" if valid else f"invalid ({r.status_code})")
-        return valid
-    except Exception as e:
-        log.warning("Token check failed: %s", e)
+        r = req_lib.get(f"{BACKEND_HTTP}/auth/me",
+                        headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        return r.status_code == 200
+    except Exception:
         return False
 
 
 def check_internet() -> bool:
     if not req_lib:
         return False
-    for _url in ["https://www.google.com", "https://1.1.1.1", "https://8.8.8.8"]:
+    for url in ["https://www.google.com", "https://1.1.1.1"]:
         try:
-            r = req_lib.get(_url, timeout=5, verify=False)
+            r = req_lib.get(url, timeout=5, verify=False)
             if r.status_code < 500:
                 return True
         except Exception:
@@ -836,57 +609,41 @@ def setup_autostart():
     try:
         if not WINREG_OK:
             return
-        launch_bat = str(_AGENT_DIR / "install_dacexy_agent.bat")
-        if os.path.exists(launch_bat):
-            cmd = f'"{launch_bat}"'
+        bat_path = str(_AGENT_DIR / "install_dacexy_agent.bat")
+        if os.path.exists(bat_path):
+            cmd = f'"{bat_path}"'
         else:
-            agent_path = str(Path(__file__).resolve())
-            cmd = f'"{sys.executable}" "{agent_path}"'
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            0, winreg.KEY_SET_VALUE)
+            cmd = f'"{sys.executable}" "{Path(__file__).resolve()}"'
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        log.info("Autostart registered: %s", cmd)
+        log.info("Autostart registered")
     except Exception as e:
-        log.warning("Autostart setup failed (non-fatal): %s", e)
+        log.warning("Autostart: %s", e)
 
 
 def login() -> Optional[str]:
-    print("")
-    print("=" * 42)
+    print("\n" + "=" * 42)
     print("  Dacexy Agent v15.0 - Login")
     print("=" * 42)
-    print("  Enter your Dacexy account credentials.")
-    print("  Register free at: dacexy.vercel.app")
-    print("")
+    print("  Register free at: dacexy.vercel.app\n")
     sys.stdout.flush()
-
     email    = _get_console_input("  Email   : ").strip()
     password = _get_console_input("  Password: ").strip()
     print("")
-
     if not email or "@" not in email:
-        _err("Invalid email address.")
-        return None
+        _err("Invalid email address."); return None
     if not password or len(password) < 4:
-        _err("Password too short (minimum 4 characters).")
-        return None
+        _err("Password too short."); return None
     if not req_lib:
-        _err("requests library not installed.")
-        return None
-
-    log.info("Attempting login for: %s", mask_pii(email))
+        _err("requests library not installed."); return None
     _info("Connecting to Dacexy server...")
-
     try:
-        r = req_lib.post(
-            f"{BACKEND_HTTP}/auth/login",
-            json={"email": email, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=30)
-        log.info("Login response: %d", r.status_code)
+        r = req_lib.post(f"{BACKEND_HTTP}/auth/login",
+                         json={"email": email, "password": password},
+                         headers={"Content-Type": "application/json"}, timeout=30)
         if r.status_code == 200:
             token = r.json().get("access_token", "")
             if token:
@@ -898,8 +655,6 @@ def login() -> Optional[str]:
                 _ok("Login successful!")
                 audit("LOGIN", mask_pii(email), "SUCCESS")
                 return token
-            else:
-                _err("Server returned OK but no token received.")
         else:
             try:
                 d = r.json().get("detail", r.text)
@@ -909,13 +664,7 @@ def login() -> Optional[str]:
                 d = r.text[:200]
             _err(f"Login failed: {d}")
     except Exception as e:
-        if "ConnectionError" in type(e).__name__:
-            _err("Cannot connect to server. Check internet connection.")
-        elif "Timeout" in type(e).__name__:
-            _err("Server timeout. Try again.")
-        else:
-            _err(f"Login error: {e}")
-        log.exception("Login error")
+        _err(f"Login error: {e}")
     return None
 
 
@@ -924,15 +673,11 @@ def login_loop() -> str:
         token = login()
         if token:
             return token
-        print("")
-        print("  Login failed. Press Enter to try again.")
-        print("  Press Ctrl+C to exit Dacexy.")
+        print("\n  Login failed. Press Enter to try again or Ctrl+C to exit.")
         sys.stdout.flush()
         try:
             _get_console_input("  > ")
         except KeyboardInterrupt:
-            print("\n  Exiting Dacexy. Goodbye!")
-            log.info("User exited at login prompt")
             raise SystemExit(0)
 
 # ============================================================
@@ -946,15 +691,14 @@ class MemorySystem:
         try:
             self.load()
         except Exception as e:
-            log.warning("Memory initial load failed: %s", e)
+            log.warning("Memory load: %s", e)
 
     def store(self, content: str, category: str = "fact",
               metadata: Dict = None, importance: float = 1.0) -> str:
         eid   = generate_id("mem_")
-        entry = MemoryEntry(
-            entry_id=eid, category=category, content=content,
-            metadata=metadata or {}, importance=importance,
-            embedding=self._embed(content))
+        entry = MemoryEntry(entry_id=eid, category=category, content=content,
+                            metadata=metadata or {}, importance=importance,
+                            embedding=self._embed(content))
         with self._lock:
             self.entries[eid] = entry
             self._sync_legacy(category, content, metadata)
@@ -976,8 +720,7 @@ class MemorySystem:
         elif category == "failure":
             MEMORY["failure_patterns"].append(content)
 
-    def search(self, query: str, top_k: int = 5,
-               category: str = None) -> List[MemoryEntry]:
+    def search(self, query: str, top_k: int = 5, category: str = None) -> List[MemoryEntry]:
         q_vec  = self._embed(query)
         scored = []
         with self._lock:
@@ -1004,8 +747,7 @@ class MemorySystem:
             if MEMORY["success_patterns"]:
                 parts.append("Known to work: " + "; ".join(MEMORY["success_patterns"][-5:]))
         if query:
-            rel = self.search(query, top_k=3)
-            for e in rel:
+            for e in self.search(query, top_k=3):
                 parts.append(f"[{e.category}] {e.content[:80]}")
         return "\n".join(parts)
 
@@ -1019,9 +761,8 @@ class MemorySystem:
 
     def add_conversation(self, role: str, text: str):
         with _memory_lock:
-            MEMORY["conversation"].append({
-                "role": role, "text": text,
-                "time": datetime.datetime.now().isoformat()})
+            MEMORY["conversation"].append({"role": role, "text": text,
+                                           "time": datetime.datetime.now().isoformat()})
 
     def get_conversation(self, last_n: int = 20) -> List[Dict]:
         with _memory_lock:
@@ -1087,8 +828,7 @@ class MemorySystem:
                         except Exception:
                             pass
             self._load_skills()
-            log.info("Memory loaded: %d entries, %d skills",
-                     len(self.entries), len(self.skills))
+            log.info("Memory loaded: %d entries, %d skills", len(self.entries), len(self.skills))
         except Exception as e:
             log.warning("Memory load error: %s", e)
 
@@ -1158,15 +898,6 @@ def remember_preference(key: str, value: Any):
         pass
 
 
-def update_user_profile(key: str, value: Any):
-    try:
-        with _memory_lock:
-            MEMORY["user_profile"][key] = value
-        get_mem().save()
-    except Exception:
-        pass
-
-
 def add_task_history(task: str):
     try:
         with _memory_lock:
@@ -1186,8 +917,7 @@ def get_memory_context(query: str = "") -> str:
 def save_workflow(name: str, steps: List[dict]):
     try:
         with _memory_lock:
-            MEMORY["workflows"][name] = {
-                "steps": steps, "created": datetime.datetime.now().isoformat()}
+            MEMORY["workflows"][name] = {"steps": steps, "created": datetime.datetime.now().isoformat()}
         get_mem().save()
     except Exception:
         pass
@@ -1221,7 +951,6 @@ class SuperVisionEngine:
         self._monitoring  = False
         self._screen_hash = ""
         self._change_cbs: List[Callable] = []
-        log.info("VisionEngine initialized")
 
     def capture(self, region=None, quality: int = 75) -> Optional[str]:
         try:
@@ -1267,8 +996,7 @@ class SuperVisionEngine:
                 img = img.convert("L")
                 img = ImageEnhance.Contrast(img).enhance(2.0)
             return pytesseract.image_to_string(img).strip()
-        except Exception as e:
-            log.debug("OCR: %s", e)
+        except Exception:
             return ""
 
     def ocr_fast(self, region=None) -> str:
@@ -1291,15 +1019,14 @@ class SuperVisionEngine:
                 return None
             data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
             for i, word in enumerate(data["text"]):
-                if (search.lower() in str(word).lower()
-                        and int(data["conf"][i]) > 25):
+                if search.lower() in str(word).lower() and int(data["conf"][i]) > 25:
                     x = data["left"][i] + data["width"][i] // 2
                     y = data["top"][i]  + data["height"][i] // 2
                     if region:
                         x += region[0]; y += region[1]
                     return (x, y)
-        except Exception as e:
-            log.debug("find_text: %s", e)
+        except Exception:
+            pass
         return None
 
     def detect_ui_elements(self, region=None) -> List[UIElement]:
@@ -1316,13 +1043,12 @@ class SuperVisionEngine:
             edges   = cv2.Canny(blurred, 25, 100)
             kernel  = np.ones((3, 3), np.uint8)
             dilated = cv2.dilate(edges, kernel, iterations=1)
-            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
                 x, y, w, h = cv2.boundingRect(cnt)
                 area  = w * h
                 ratio = w / h if h > 0 else 0
-                if (300 < area < 150000 and 0.05 < ratio < 25):
+                if 300 < area < 150000 and 0.05 < ratio < 25:
                     et = ("button" if 18 < h < 55 and 30 < w < 400
                           else "input" if h < 35 and w > 80 else "unknown")
                     cx = (x + w // 2 + (region[0] if region else 0))
@@ -1332,8 +1058,8 @@ class SuperVisionEngine:
                                               confidence=min(1.0, area / 25000)))
             with self._lock:
                 self._ui_elements = elements
-        except Exception as e:
-            log.debug("detect_ui: %s", e)
+        except Exception:
+            pass
         return elements
 
     def detect_popups(self) -> bool:
@@ -1343,8 +1069,7 @@ class SuperVisionEngine:
 
     def detect_error_dialogs(self) -> Optional[str]:
         text = self.ocr_fast().lower()
-        errs = ["error", "failed", "cannot", "invalid", "not found", "access denied", "exception"]
-        for e in errs:
+        for e in ["error", "failed", "cannot", "invalid", "not found", "access denied"]:
             if e in text:
                 return e
         return None
@@ -1387,10 +1112,10 @@ class SuperVisionEngine:
 
     def track_application_state(self) -> Dict[str, Any]:
         return {"active_window": get_active_window(),
-                "has_error":     self.detect_error_dialogs(),
-                "is_loading":    self.detect_loading(),
-                "has_popup":     self.detect_popups(),
-                "timestamp":     datetime.datetime.now().isoformat()}
+                "has_error": self.detect_error_dialogs(),
+                "is_loading": self.detect_loading(),
+                "has_popup": self.detect_popups(),
+                "timestamp": datetime.datetime.now().isoformat()}
 
     def get_ai_description(self, token: str) -> str:
         ss = self.capture(quality=55)
@@ -1399,24 +1124,20 @@ class SuperVisionEngine:
         try:
             if not req_lib:
                 return self.ocr_fast()[:300]
-            r = req_lib.post(
-                f"{BACKEND_HTTP}/ai/chat",
-                headers={"Authorization": f"Bearer {token}",
-                         "Content-Type": "application/json"},
-                json={"messages": [{"role": "user",
-                                    "content": "Describe this screen briefly. "
-                                               "List visible UI elements and text."}],
-                      "stream": False},
-                timeout=20)
+            r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
+                             headers={"Authorization": f"Bearer {token}",
+                                      "Content-Type": "application/json"},
+                             json={"messages": [{"role": "user",
+                                                 "content": "Describe this screen briefly."}],
+                                   "stream": False},
+                             timeout=20)
             if r.status_code == 200:
-                return (r.json().get("content") or
-                        r.json().get("response", "") or "Screen captured")
+                return (r.json().get("content") or r.json().get("response", "") or "Screen captured")
         except Exception:
             pass
         return self.ocr_fast()[:300] or "Screen captured"
 
-    def find_image_on_screen(self, template_path: str,
-                              threshold: float = 0.75) -> Optional[Tuple[int, int]]:
+    def find_image_on_screen(self, template_path: str, threshold: float = 0.75) -> Optional[Tuple[int, int]]:
         if not CV2_OK or not NUMPY_OK:
             return None
         try:
@@ -1451,10 +1172,9 @@ class SuperVisionEngine:
                             except Exception:
                                 pass
                     time.sleep(interval)
-                except Exception as e:
-                    log.debug("Vision monitor: %s", e)
+                except Exception:
+                    pass
         threading.Thread(target=_loop, daemon=True, name="VisionMonitor").start()
-        log.info("Vision monitoring started")
 
 
 _vision_engine: Optional[SuperVisionEngine] = None
@@ -1465,14 +1185,6 @@ def get_vision() -> SuperVisionEngine:
     if _vision_engine is None:
         _vision_engine = SuperVisionEngine()
     return _vision_engine
-
-
-def take_screenshot(quality: int = 75, region=None) -> Optional[str]:
-    return get_vision().capture(region=region, quality=quality)
-
-
-def ocr_screen(region=None) -> str:
-    return get_vision().ocr(region=region)
 
 
 def get_active_window() -> str:
@@ -1491,6 +1203,28 @@ def get_active_window() -> str:
     except Exception:
         return ""
 
+
+def get_all_windows() -> List[str]:
+    try:
+        if WINDOW_OK:
+            return [w.title for w in gw.getAllWindows() if w.title.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def focus_window(title_kw: str) -> bool:
+    try:
+        if WINDOW_OK:
+            wins = gw.getWindowsWithTitle(title_kw)
+            if wins:
+                wins[0].activate()
+                time.sleep(0.3)
+                return True
+    except Exception:
+        pass
+    return False
+
 # ============================================================
 # BLOCK 14 - MOUSE & KEYBOARD
 # ============================================================
@@ -1501,8 +1235,8 @@ def human_move(x: int, y: int, duration: float = None):
             dist     = math.hypot(x - cx, y - cy)
             duration = max(0.07, min(0.50, dist / 2800))
         pyautogui.moveTo(x, y, duration=duration, tween=pyautogui.easeInOutQuad)
-    except Exception as e:
-        log.debug("human_move: %s", e)
+    except Exception:
+        pass
 
 
 def human_click(x: int, y: int, button: str = "left", double: bool = False):
@@ -1523,15 +1257,12 @@ def human_click(x: int, y: int, button: str = "left", double: bool = False):
 
 def human_drag(x1, y1, x2, y2, duration: float = 0.5):
     try:
-        human_move(x1, y1)
-        time.sleep(0.1)
-        pyautogui.mouseDown()
-        time.sleep(0.04)
+        human_move(x1, y1); time.sleep(0.1)
+        pyautogui.mouseDown(); time.sleep(0.04)
         pyautogui.moveTo(x2, y2, duration=duration, tween=pyautogui.easeInOutQuad)
-        time.sleep(0.04)
-        pyautogui.mouseUp()
-    except Exception as e:
-        log.warning("human_drag: %s", e)
+        time.sleep(0.04); pyautogui.mouseUp()
+    except Exception:
+        pass
 
 
 def human_scroll(x: int, y: int, clicks: int, direction: str = "down"):
@@ -1539,27 +1270,23 @@ def human_scroll(x: int, y: int, clicks: int, direction: str = "down"):
         human_move(x, y)
         sign = -1 if direction == "down" else 1
         pyautogui.scroll(sign * abs(clicks), x=x, y=y)
-    except Exception as e:
-        log.warning("human_scroll: %s", e)
+    except Exception:
+        pass
 
 
 def smart_type(text: str, clear_first: bool = False, human_speed: bool = False):
     text = str(text)[:5000]
     try:
         if clear_first:
-            pyautogui.hotkey("ctrl", "a")
-            time.sleep(0.04)
-            pyautogui.press("delete")
-            time.sleep(0.04)
+            pyautogui.hotkey("ctrl", "a"); time.sleep(0.04)
+            pyautogui.press("delete"); time.sleep(0.04)
         if human_speed and len(text) <= 100:
             for ch in text:
                 pyautogui.typewrite(ch, interval=random.uniform(0.03, 0.08))
         else:
             if pyperclip:
-                pyperclip.copy(text)
-                time.sleep(0.05)
-                pyautogui.hotkey("ctrl", "v")
-                time.sleep(0.08)
+                pyperclip.copy(text); time.sleep(0.05)
+                pyautogui.hotkey("ctrl", "v"); time.sleep(0.08)
             else:
                 pyautogui.write(text[:500], interval=0.02)
     except Exception as e:
@@ -1569,15 +1296,15 @@ def smart_type(text: str, clear_first: bool = False, human_speed: bool = False):
 def press_key(key: str):
     try:
         pyautogui.press(key)
-    except Exception as e:
-        log.debug("press_key: %s", e)
+    except Exception:
+        pass
 
 
 def hotkey(*keys):
     try:
         pyautogui.hotkey(*keys)
-    except Exception as e:
-        log.debug("hotkey: %s", e)
+    except Exception:
+        pass
 
 
 def get_clipboard() -> str:
@@ -1595,51 +1322,14 @@ def set_clipboard(text: str):
         pass
 
 # ============================================================
-# BLOCK 15 - WINDOW & APP MANAGEMENT
+# BLOCK 15 - APP MANAGEMENT
 # ============================================================
-def get_all_windows() -> List[str]:
-    try:
-        if WINDOW_OK:
-            return [w.title for w in gw.getAllWindows() if w.title.strip()]
-    except Exception:
-        pass
-    return []
-
-
-def focus_window(title_kw: str) -> bool:
-    try:
-        if WINDOW_OK:
-            wins = gw.getWindowsWithTitle(title_kw)
-            if wins:
-                wins[0].activate()
-                time.sleep(0.3)
-                return True
-    except Exception:
-        pass
-    try:
-        if WIN32_OK:
-            found = []
-            def _cb(hwnd, _):
-                if win32gui.IsWindowVisible(hwnd):
-                    if title_kw.lower() in win32gui.GetWindowText(hwnd).lower():
-                        found.append(hwnd)
-            win32gui.EnumWindows(_cb, None)
-            if found:
-                win32gui.SetForegroundWindow(found[0])
-                time.sleep(0.3)
-                return True
-    except Exception as e:
-        log.warning("focus_window: %s", e)
-    return False
-
-
 def list_running_apps() -> List[Dict]:
     if not psutil:
         return []
     apps = []
     try:
-        for proc in psutil.process_iter(["pid", "name", "status",
-                                          "cpu_percent", "memory_percent"]):
+        for proc in psutil.process_iter(["pid", "name", "status", "cpu_percent", "memory_percent"]):
             try:
                 if proc.info["status"] == "running":
                     apps.append(proc.info)
@@ -1685,15 +1375,11 @@ def open_app(app_name: str) -> bool:
 # ============================================================
 class FileEngine:
     SUPPORTED = {
-        "text":    [".txt", ".md", ".py", ".js", ".html", ".css",
-                    ".xml", ".yaml", ".yml", ".ini", ".cfg", ".log"],
+        "text":    [".txt", ".md", ".py", ".js", ".html", ".css", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".log"],
         "data":    [".json", ".csv", ".tsv"],
         "docs":    [".docx", ".doc"],
         "sheet":   [".xlsx", ".xls"],
-        "pdf":     [".pdf"],
         "image":   [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp"],
-        "audio":   [".mp3", ".wav", ".flac", ".ogg", ".m4a"],
-        "video":   [".mp4", ".avi", ".mov", ".mkv", ".wmv"],
         "archive": [".zip", ".tar", ".gz", ".7z"],
     }
 
@@ -1724,18 +1410,11 @@ class FileEngine:
         try:
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
-            ext = p.suffix.lower()
-            if ext == ".docx" and DOCX_OK:
+            if p.suffix.lower() == ".docx" and DOCX_OK:
                 d = docx.Document()
                 for para in content.split("\n"):
                     d.add_paragraph(para)
                 d.save(str(p))
-            elif ext == ".json":
-                try:
-                    data = json.loads(content)
-                    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                except Exception:
-                    p.write_text(content, encoding="utf-8")
             else:
                 with open(str(p), mode, encoding="utf-8") as f:
                     f.write(content)
@@ -1755,36 +1434,29 @@ class FileEngine:
                 trash.mkdir(exist_ok=True)
                 dest  = trash / f"{p.name}_{int(time.time())}"
                 p.rename(dest)
-                audit("DELETE_SAFE", path, str(dest))
             else:
                 if p.is_dir():
                     shutil.rmtree(str(p))
                 else:
                     p.unlink()
-                audit("DELETE_PERM", path)
             return True
-        except Exception as e:
-            log.warning("delete: %s", e)
+        except Exception:
             return False
 
     def copy(self, src: str, dst: str) -> bool:
         try:
-            shutil.copy2(src, dst)
-            return True
-        except Exception as e:
-            log.warning("copy: %s", e)
+            shutil.copy2(src, dst); return True
+        except Exception:
             return False
 
     def move(self, src: str, dst: str) -> bool:
         try:
-            shutil.move(src, dst)
-            return True
-        except Exception as e:
-            log.warning("move: %s", e)
+            shutil.move(src, dst); return True
+        except Exception:
             return False
 
-    def search(self, keyword: str, folder: str = None,
-               ext: str = None, content_search: bool = False) -> List[str]:
+    def search(self, keyword: str, folder: str = None, ext: str = None,
+               content_search: bool = False) -> List[str]:
         results = []
         base = Path(folder) if folder else Path.home()
         pat  = f"**/*.{ext}" if ext else "**/*"
@@ -1796,8 +1468,7 @@ class FileEngine:
                     results.append(str(f))
                 elif content_search:
                     try:
-                        if keyword.lower() in f.read_text(
-                                encoding="utf-8", errors="ignore").lower():
+                        if keyword.lower() in f.read_text(encoding="utf-8", errors="ignore").lower():
                             results.append(str(f))
                     except Exception:
                         pass
@@ -1819,8 +1490,7 @@ class FileEngine:
                             if fp.is_file():
                                 zf.write(str(fp), str(fp.relative_to(pp.parent)))
             return True
-        except Exception as e:
-            log.warning("compress: %s", e)
+        except Exception:
             return False
 
     def extract(self, zip_path: str, output_dir: str = None) -> bool:
@@ -1829,8 +1499,7 @@ class FileEngine:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(out)
             return True
-        except Exception as e:
-            log.warning("extract: %s", e)
+        except Exception:
             return False
 
     def backup(self, source_dir: str, label: str = "") -> str:
@@ -1840,8 +1509,7 @@ class FileEngine:
             dest = str(BACKUP_DIR / name)
             self.compress([source_dir], dest)
             return dest
-        except Exception as e:
-            log.warning("backup: %s", e)
+        except Exception:
             return ""
 
     def organize_folder(self, folder: str) -> Dict[str, int]:
@@ -1857,8 +1525,8 @@ class FileEngine:
                 dd.mkdir(exist_ok=True)
                 f.rename(dd / f.name)
                 moved[cat] += 1
-        except Exception as e:
-            log.warning("organize: %s", e)
+        except Exception:
+            pass
         return dict(moved)
 
     def list_files(self, folder: str = None, pattern: str = "*") -> List[str]:
@@ -1900,11 +1568,9 @@ class EmailCampaignManager:
         self.campaigns:  Dict[str, EmailCampaignData] = {}
         try:
             self._load_campaigns()
-        except Exception as e:
-            log.warning("EmailCampaignManager load: %s", e)
-        threading.Thread(target=self._retry_worker,
-                         daemon=True, name="EmailRetry").start()
-        log.info("EmailCampaignManager initialized")
+        except Exception:
+            pass
+        threading.Thread(target=self._retry_worker, daemon=True, name="EmailRetry").start()
 
     def _load_campaigns(self):
         if CAMPAIGN_FILE.exists():
@@ -1918,14 +1584,13 @@ class EmailCampaignManager:
     def _save_campaigns(self):
         try:
             CAMPAIGN_FILE.write_text(
-                json.dumps({cid: asdict(c) for cid, c in self.campaigns.items()},
-                           indent=2))
+                json.dumps({cid: asdict(c) for cid, c in self.campaigns.items()}, indent=2))
         except Exception:
             pass
 
     def setup_gmail(self, email: str, app_password: str):
         cfg = {"host": "smtp.gmail.com", "port": 587, "email": email,
-               "password": app_password, "use_tls": True, "name": "Gmail"}
+               "password": app_password, "use_tls": True}
         save_smtp_config(cfg)
         self.smtp_config = cfg
         self.smtp_pool.append(cfg)
@@ -1933,14 +1598,13 @@ class EmailCampaignManager:
 
     def setup_outlook(self, email: str, password: str):
         cfg = {"host": "smtp-mail.outlook.com", "port": 587, "email": email,
-               "password": password, "use_tls": True, "name": "Outlook"}
+               "password": password, "use_tls": True}
         save_smtp_config(cfg)
         self.smtp_config = cfg
         _ok(f"Outlook configured: {mask_pii(email)}")
 
     def _get_smtp(self, idx: int = 0):
-        pool = (self.smtp_pool if self.smtp_pool
-                else ([self.smtp_config] if self.smtp_config else []))
+        pool = self.smtp_pool if self.smtp_pool else ([self.smtp_config] if self.smtp_config else [])
         if not pool:
             raise ValueError("SMTP not configured. Run: setup gmail <email> <app_password>")
         cfg = pool[idx % len(pool)]
@@ -1952,8 +1616,7 @@ class EmailCampaignManager:
         s.login(cfg["email"], cfg["password"])
         return s, cfg
 
-    def personalize(self, template: str, email: str,
-                    index: int = 0, extra: Dict = None) -> str:
+    def personalize(self, template: str, email: str, index: int = 0, extra: Dict = None) -> str:
         name  = email.split("@")[0].replace(".", " ").replace("_", " ").title()
         first = name.split()[0] if name.split() else name
         t = (template.replace("{name}", name).replace("{first}", first)
@@ -1999,20 +1662,15 @@ class EmailCampaignManager:
                     body = self.personalize(camp.body_template, to, i)
                     subj = self.personalize(camp.subject, to, i)
                     msg  = MIMEMultipart("alternative")
-                    msg["Subject"] = subj
-                    msg["From"]    = from_email
-                    msg["To"]      = to
+                    msg["Subject"] = subj; msg["From"] = from_email; msg["To"] = to
                     msg.attach(MIMEText(body, "html" if camp.html else "plain", "utf-8"))
                     server.sendmail(from_email, to, msg.as_string())
-                    sent += 1
-                    camp.sent = sent
+                    sent += 1; camp.sent = sent
                     _info(f"[{i+1}/{len(camp.recipients)}] -> {to}")
                     time.sleep(camp.delay_sec + random.uniform(0.1, 0.4))
                     if (i + 1) % 100 == 0:
-                        try:
-                            server.quit()
-                        except Exception:
-                            pass
+                        try: server.quit()
+                        except Exception: pass
                         server, cfg = self._get_smtp(provider_index)
                 except smtplib.SMTPRecipientsRefused:
                     bounced += 1; failed += 1
@@ -2020,23 +1678,17 @@ class EmailCampaignManager:
                     failed += 1
                     camp.retry_queue.append(to)
                     log.warning("Email failed %s: %s", to, e)
-            try:
-                server.quit()
-            except Exception:
-                pass
+            try: server.quit()
+            except Exception: pass
         except Exception as e:
             log.error("Campaign SMTP error: %s", e)
             failed = len(camp.recipients) - sent
         elapsed = time.time() - start_t
-        camp.status  = "complete"
-        camp.sent    = sent
-        camp.failed  = failed
-        camp.bounced = bounced
+        camp.status = "complete"; camp.sent = sent; camp.failed = failed; camp.bounced = bounced
         self._save_campaigns()
         result = {"campaign": camp.name, "sent": sent, "failed": failed,
                   "bounced": bounced, "total": len(camp.recipients),
                   "rate": f"{100*sent//max(1,len(camp.recipients))}%",
-                  "retry_queued": len(camp.retry_queue),
                   "duration_min": round(elapsed / 60, 1)}
         speak(f"Campaign complete. {sent} sent.")
         audit("CAMPAIGN", camp.name, f"sent={sent} failed={failed}")
@@ -2046,9 +1698,7 @@ class EmailCampaignManager:
                     html: bool = False, attachment: str = None) -> bool:
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"]    = self.smtp_config.get("email", "")
-            msg["To"]      = to
+            msg["Subject"] = subject; msg["From"] = self.smtp_config.get("email", ""); msg["To"] = to
             msg.attach(MIMEText(body, "html" if html else "plain", "utf-8"))
             if attachment and os.path.exists(attachment):
                 with open(attachment, "rb") as f:
@@ -2087,8 +1737,7 @@ class EmailCampaignManager:
         t_sent = sum(c.get("sent", 0) for c in clist)
         t_rec  = sum(c.get("total", 0) for c in clist)
         return {"total_campaigns": len(clist), "total_recipients": t_rec,
-                "total_sent": t_sent,
-                "overall_rate": f"{100*t_sent//max(1,t_rec)}%",
+                "total_sent": t_sent, "overall_rate": f"{100*t_sent//max(1,t_rec)}%",
                 "campaigns": clist}
 
 # ============================================================
@@ -2098,72 +1747,51 @@ class EnterpriseBrowserAgent:
     WAIT = 15
 
     def __init__(self):
-        self.driver       = None
-        self.browser_type = "chrome"
-        self.headless     = False
-        log.info("EnterpriseBrowserAgent initialized")
+        self.driver = None; self.browser_type = "chrome"; self.headless = False
 
-    def start(self, browser: str = "chrome", headless: bool = False,
-              profile: str = None) -> bool:
+    def start(self, browser: str = "chrome", headless: bool = False, profile: str = None) -> bool:
         if not SELENIUM_OK:
-            _err("Selenium not available.")
-            return False
-        self.browser_type = browser.lower()
-        self.headless     = headless
+            _err("Selenium not available."); return False
+        self.browser_type = browser.lower(); self.headless = headless
         try:
-            if self.browser_type == "chrome":
-                opts = ChromeOptions()
-                if headless:
-                    opts.add_argument("--headless=new")
-                opts.add_argument("--no-sandbox")
-                opts.add_argument("--disable-dev-shm-usage")
-                opts.add_argument("--disable-notifications")
-                opts.add_argument("--start-maximized")
-                opts.add_argument("--disable-blink-features=AutomationControlled")
-                opts.add_experimental_option("excludeSwitches",
-                                             ["enable-automation", "enable-logging"])
-                opts.add_experimental_option("useAutomationExtension", False)
-                if profile:
-                    opts.add_argument(f"--user-data-dir={profile}")
-                service = ChromeService(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=service, options=opts)
-                try:
-                    self.driver.execute_cdp_cmd(
-                        "Page.addScriptToEvaluateOnNewDocument",
-                        {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"})
-                except Exception:
-                    pass
-            elif self.browser_type == "firefox":
-                opts = FirefoxOptions()
-                if headless:
-                    opts.add_argument("--headless")
-                service = FirefoxService(GeckoDriverManager().install())
-                self.driver = webdriver.Firefox(service=service, options=opts)
-            elif self.browser_type == "edge":
-                opts = EdgeOptions()
-                if headless:
-                    opts.add_argument("--headless=new")
-                service = EdgeService(EdgeChromiumDriverManager().install())
-                self.driver = webdriver.Edge(service=service, options=opts)
+            opts = ChromeOptions()
+            if headless:
+                opts.add_argument("--headless=new")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument("--start-maximized")
+            opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            opts.add_experimental_option("useAutomationExtension", False)
+            if profile:
+                opts.add_argument(f"--user-data-dir={profile}")
+            service = ChromeService(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=opts)
+            try:
+                self.driver.execute_cdp_cmd(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"})
+            except Exception:
+                pass
             self.driver.implicitly_wait(4)
             _ok(f"Browser started: {browser}")
             return True
         except Exception as e:
-            log.error("Browser start failed: %s", e)
-            return False
+            log.error("Browser start failed: %s", e); return False
 
     def stop(self):
         try:
             if self.driver:
-                self.driver.quit()
-                self.driver = None
+                self.driver.quit(); self.driver = None
         except Exception:
             pass
 
     def _by(self, by: str):
-        return {"css": By.CSS_SELECTOR, "xpath": By.XPATH, "id": By.ID,
-                "name": By.NAME, "text": By.LINK_TEXT, "class": By.CLASS_NAME,
-                "tag": By.TAG_NAME}.get(by, By.CSS_SELECTOR)
+        from selenium.webdriver.common.by import By as _B
+        return {"css": _B.CSS_SELECTOR, "xpath": _B.XPATH, "id": _B.ID,
+                "name": _B.NAME, "text": _B.LINK_TEXT, "class": _B.CLASS_NAME,
+                "tag": _B.TAG_NAME}.get(by, _B.CSS_SELECTOR)
 
     def find(self, selector: str, by: str = "css", timeout: int = None):
         try:
@@ -2173,15 +1801,13 @@ class EnterpriseBrowserAgent:
             return None
 
     def find_and_click(self, selector: str, by: str = "css",
-                       fallback_selectors: List[str] = None,
-                       js_fallback: bool = True) -> bool:
-        sels = ([(selector, by)] + [(s, "css") for s in (fallback_selectors or [])])
+                       fallback_selectors: List[str] = None, js_fallback: bool = True) -> bool:
+        sels = [(selector, by)] + [(s, "css") for s in (fallback_selectors or [])]
         for sel, b in sels:
             try:
                 el = WebDriverWait(self.driver, self.WAIT).until(
                     EC.element_to_be_clickable((self._by(b), sel)))
-                self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});", el)
+                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                 time.sleep(0.15 + random.uniform(0, 0.2))
                 try:
                     el.click()
@@ -2199,31 +1825,26 @@ class EnterpriseBrowserAgent:
             el = WebDriverWait(self.driver, self.WAIT).until(
                 EC.presence_of_element_located((self._by(by), selector)))
             if clear:
-                el.clear()
-                time.sleep(0.1)
+                el.clear(); time.sleep(0.1)
             if human_speed and len(text) <= 80:
                 for ch in text:
-                    el.send_keys(ch)
-                    time.sleep(random.uniform(0.03, 0.10))
+                    el.send_keys(ch); time.sleep(random.uniform(0.03, 0.10))
             else:
                 el.send_keys(text)
             return True
-        except Exception as e:
-            log.warning("find_and_type(%s): %s", selector, e)
+        except Exception:
             return False
 
     def detect_captcha(self) -> bool:
         try:
             page = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-            return any(s in page for s in ["captcha", "recaptcha",
-                                            "i'm not a robot", "verify you are"])
+            return any(s in page for s in ["captcha", "recaptcha", "i'm not a robot"])
         except Exception:
             return False
 
     def handle_captcha(self) -> bool:
         if self.detect_captcha():
             speak("CAPTCHA detected. Please solve it then press Enter.", priority=True)
-            _warn("CAPTCHA detected - waiting for solve...")
             try:
                 _get_console_input("  Press Enter after solving CAPTCHA... ")
             except Exception:
@@ -2237,8 +1858,8 @@ class EnterpriseBrowserAgent:
         try:
             self.driver.get(url)
             time.sleep(wait + random.uniform(0, 0.4))
-        except Exception as e:
-            log.warning("go_to: %s", e)
+        except Exception:
+            pass
 
     def get_page_text(self) -> str:
         try:
@@ -2259,6 +1880,12 @@ class EnterpriseBrowserAgent:
         except Exception:
             return []
 
+    def screenshot_b64(self) -> Optional[str]:
+        try:
+            return base64.b64encode(self.driver.get_screenshot_as_png()).decode()
+        except Exception:
+            return None
+
     def google_search(self, query: str) -> List[str]:
         try:
             self.go_to(f"https://www.google.com/search?q={quote(query)}")
@@ -2274,15 +1901,13 @@ class EnterpriseBrowserAgent:
         try:
             links = self.driver.find_elements(By.CSS_SELECTOR, "div.g a")
             urls  = [e.get_attribute("href") for e in links
-                     if e.get_attribute("href") and
-                     "google.com" not in (e.get_attribute("href") or "")][:max_pages]
+                     if e.get_attribute("href") and "google.com" not in (e.get_attribute("href") or "")][:max_pages]
             for url in urls:
                 try:
                     self.execute_js(f"window.open('{url}','_blank');")
                     self.driver.switch_to.window(self.driver.window_handles[-1])
                     time.sleep(3)
-                    text = self.get_page_text()[:1000]
-                    research["sources"].append({"url": url, "text": text[:300]})
+                    research["sources"].append({"url": url, "text": self.get_page_text()[:300]})
                     self.driver.close()
                     if self.driver.window_handles:
                         self.driver.switch_to.window(self.driver.window_handles[-1])
@@ -2297,17 +1922,9 @@ class EnterpriseBrowserAgent:
             pass
         return research
 
-    def screenshot_b64(self) -> Optional[str]:
-        try:
-            return base64.b64encode(self.driver.get_screenshot_as_png()).decode()
-        except Exception:
-            return None
-
-    def whatsapp_bulk(self, contacts: List[str], message: str,
-                      delay: float = 3.5) -> Dict[str, Any]:
+    def whatsapp_bulk(self, contacts: List[str], message: str, delay: float = 3.5) -> Dict[str, Any]:
         if not self.driver and not self.start("chrome"):
             return {"error": "Browser not started"}
-        _task(f"WhatsApp bulk: {len(contacts)} contacts")
         speak(f"Starting WhatsApp to {len(contacts)} contacts.")
         self.go_to("https://web.whatsapp.com")
         speak("Scan QR if needed. Waiting up to 90 seconds.")
@@ -2316,8 +1933,7 @@ class EnterpriseBrowserAgent:
         for _ in range(30):
             try:
                 self.driver.find_element(By.XPATH, '//div[@data-testid="chat-list"]')
-                loaded = True
-                break
+                loaded = True; break
             except Exception:
                 time.sleep(3)
         if not loaded:
@@ -2327,27 +1943,23 @@ class EnterpriseBrowserAgent:
             if _emergency_stop_event.is_set():
                 break
             try:
-                if re.sub(r'\D', '', contact):
-                    phone = re.sub(r'\D', '', contact)
+                phone = re.sub(r'\D', '', contact)
+                if phone:
                     self.go_to(f"https://web.whatsapp.com/send?phone={phone}&text={quote(message)}")
                     time.sleep(5)
                     btn = WebDriverWait(self.driver, 15).until(
-                        EC.element_to_be_clickable((By.XPATH,
-                            '//button[@data-testid="compose-btn-send"]')))
-                    btn.click()
-                    time.sleep(1)
+                        EC.element_to_be_clickable((By.XPATH, '//button[@data-testid="compose-btn-send"]')))
+                    btn.click(); time.sleep(1)
                 sent += 1
                 _info(f"[{i+1}/{len(contacts)}] WA -> {contact}")
                 time.sleep(delay + random.uniform(0.5, 1.5))
             except Exception as e:
                 failed += 1
                 log.warning("WA failed %s: %s", contact, e)
-        result = {"sent": sent, "failed": failed, "total": len(contacts)}
         speak(f"WhatsApp done. Sent {sent}/{len(contacts)}.")
-        return result
+        return {"sent": sent, "failed": failed, "total": len(contacts)}
 
-    def twitter_post(self, username: str, password: str, text: str,
-                     media_path: str = None) -> bool:
+    def twitter_post(self, username: str, password: str, text: str, media_path: str = None) -> bool:
         try:
             self.go_to("https://twitter.com/login", wait=3)
             self.find_and_type('input[autocomplete="username"]', username)
@@ -2357,20 +1969,16 @@ class EnterpriseBrowserAgent:
             self.find_and_type('input[name="password"]', password)
             time.sleep(0.6)
             self.find_and_click('[data-testid="LoginForm_Login_Button"]')
-            time.sleep(5 + random.uniform(0, 2))
-            self.handle_captcha()
+            time.sleep(5); self.handle_captcha()
             self.find_and_click('[data-testid="tweetTextarea_0"]',
                                 fallback_selectors=['[role="textbox"]'])
             time.sleep(0.8)
             self.find_and_type('[data-testid="tweetTextarea_0"]', text[:280])
             time.sleep(0.6)
             self.find_and_click('[data-testid="tweetButton"]')
-            time.sleep(3)
-            _ok("Tweet posted")
-            return True
+            time.sleep(3); _ok("Tweet posted"); return True
         except Exception as e:
-            log.error("Twitter: %s", e)
-            return False
+            log.error("Twitter: %s", e); return False
 
     def linkedin_post(self, username: str, password: str, text: str) -> bool:
         try:
@@ -2378,133 +1986,97 @@ class EnterpriseBrowserAgent:
             self.find_and_type("#username", username)
             self.find_and_type("#password", password)
             self.find_and_click('[type="submit"]')
-            time.sleep(5)
-            self.handle_captcha()
-            tb = (self.find('//div[@role="textbox"]', by="xpath")
-                  or self.find('[contenteditable="true"]'))
+            time.sleep(5); self.handle_captcha()
+            tb = (self.find('//div[@role="textbox"]', by="xpath") or
+                  self.find('[contenteditable="true"]'))
             if tb:
                 tb.click(); time.sleep(0.3); tb.send_keys(text)
             self.find_and_click('//button[contains(text(),"Post")]', by="xpath")
-            time.sleep(3)
-            _ok("LinkedIn posted")
-            return True
+            time.sleep(3); _ok("LinkedIn posted"); return True
         except Exception as e:
-            log.error("LinkedIn: %s", e)
-            return False
+            log.error("LinkedIn: %s", e); return False
 
-    def facebook_post(self, username: str, password: str, text: str,
-                      page_id: str = None) -> bool:
+    def facebook_post(self, username: str, password: str, text: str, page_id: str = None) -> bool:
         try:
             self.go_to("https://www.facebook.com", wait=3)
             self.find_and_type("#email", username)
             self.find_and_type("#pass", password)
             self.find_and_click('[type="submit"]')
-            time.sleep(5)
-            self.handle_captcha()
+            time.sleep(5); self.handle_captcha()
             if page_id:
                 self.go_to(f"https://www.facebook.com/{page_id}", wait=3)
-            self.find_and_click('[placeholder*="What"]',
-                                fallback_selectors=['[role="textbox"]'])
+            self.find_and_click('[placeholder*="What"]', fallback_selectors=['[role="textbox"]'])
             time.sleep(2.5)
             self.find_and_type('[role="textbox"]', text)
             time.sleep(1)
             self.find_and_click('[type="submit"]')
-            time.sleep(3)
-            _ok("Facebook posted")
-            return True
+            time.sleep(3); _ok("Facebook posted"); return True
         except Exception as e:
-            log.error("Facebook: %s", e)
-            return False
+            log.error("Facebook: %s", e); return False
 
-    def instagram_post(self, username: str, password: str,
-                       image_path: str, caption: str) -> bool:
+    def instagram_post(self, username: str, password: str, image_path: str, caption: str) -> bool:
         try:
             self.go_to("https://www.instagram.com/accounts/login/", wait=4)
             self.find_and_type('[name="username"]', username)
             self.find_and_type('[name="password"]', password)
             self.find_and_click('[type="submit"]')
-            time.sleep(7)
-            self.handle_captcha()
+            time.sleep(7); self.handle_captcha()
             self.find_and_click('[aria-label="New post"]')
             time.sleep(2)
             fi = self.find('input[type="file"]')
             if fi and image_path:
-                fi.send_keys(str(Path(image_path).resolve()))
-                time.sleep(3)
+                fi.send_keys(str(Path(image_path).resolve())); time.sleep(3)
             for _ in range(2):
-                self.find_and_click('//button[text()="Next"]', by="xpath")
-                time.sleep(2)
+                self.find_and_click('//button[text()="Next"]', by="xpath"); time.sleep(2)
             ce = self.find('//div[@aria-label="Write a caption..."]', by="xpath")
             if ce:
                 ce.click(); ce.send_keys(caption)
             self.find_and_click('//button[text()="Share"]', by="xpath")
-            time.sleep(5)
-            _ok("Instagram posted")
-            return True
+            time.sleep(5); _ok("Instagram posted"); return True
         except Exception as e:
-            log.error("Instagram: %s", e)
-            return False
+            log.error("Instagram: %s", e); return False
 
-    def youtube_upload(self, video_path: str, title: str,
-                       description: str, tags: List[str] = None) -> bool:
+    def youtube_upload(self, video_path: str, title: str, description: str, tags: List[str] = None) -> bool:
         try:
-            self.go_to("https://studio.youtube.com", wait=3)
-            self.handle_captcha()
-            self.find_and_click('//ytcp-button[@id="create-icon"]', by="xpath")
-            time.sleep(1.5)
-            self.find_and_click('//tp-yt-paper-item[@id="text-item-0"]', by="xpath")
-            time.sleep(2.5)
+            self.go_to("https://studio.youtube.com", wait=3); self.handle_captcha()
+            self.find_and_click('//ytcp-button[@id="create-icon"]', by="xpath"); time.sleep(1.5)
+            self.find_and_click('//tp-yt-paper-item[@id="text-item-0"]', by="xpath"); time.sleep(2.5)
             fi = self.find('input#file-loader')
             if fi:
-                fi.send_keys(str(Path(video_path).resolve()))
-                time.sleep(6)
+                fi.send_keys(str(Path(video_path).resolve())); time.sleep(6)
             te = self.find('#title-textarea')
             if te:
-                te.click()
-                self.execute_js("arguments[0].innerHTML='';", te)
-                te.send_keys(title)
+                te.click(); self.execute_js("arguments[0].innerHTML='';", te); te.send_keys(title)
             de = self.find('#description-textarea')
             if de:
                 de.click(); de.send_keys(description)
             for _ in range(3):
-                self.find_and_click('#next-button')
-                time.sleep(2)
-            self.find_and_click('#done-button')
-            time.sleep(5)
-            _ok("YouTube upload complete")
-            return True
+                self.find_and_click('#next-button'); time.sleep(2)
+            self.find_and_click('#done-button'); time.sleep(5)
+            _ok("YouTube upload complete"); return True
         except Exception as e:
-            log.error("YouTube: %s", e)
-            return False
+            log.error("YouTube: %s", e); return False
 
     def tiktok_post(self, video_path: str, caption: str) -> bool:
         try:
-            self.go_to("https://www.tiktok.com/upload", wait=3)
-            self.handle_captcha()
+            self.go_to("https://www.tiktok.com/upload", wait=3); self.handle_captcha()
             fi = self.find('input[type="file"]')
             if fi:
-                fi.send_keys(str(Path(video_path).resolve()))
-                time.sleep(6)
+                fi.send_keys(str(Path(video_path).resolve())); time.sleep(6)
             ce = self.find('//div[@contenteditable="true"]', by="xpath")
             if ce:
-                ce.click()
-                self.execute_js("arguments[0].innerHTML='';", ce)
-                ce.send_keys(caption)
+                ce.click(); self.execute_js("arguments[0].innerHTML='';", ce); ce.send_keys(caption)
             self.find_and_click('//button[text()="Post"]', by="xpath")
-            time.sleep(5)
-            _ok("TikTok posted")
-            return True
+            time.sleep(5); _ok("TikTok posted"); return True
         except Exception as e:
-            log.error("TikTok: %s", e)
-            return False
+            log.error("TikTok: %s", e); return False
 
 # ============================================================
 # BLOCK 19 - SECURITY
 # ============================================================
 PERMISSION_RULES = {
     "delete_files": {"triggers": [["delete", "erase", "wipe"], ["file", "folder", "data"]],
-                     "icon": "[DELETE]", "label": "DELETE FILES",
-                     "warn": "This will permanently delete files."},
+                     "icon": "[DELETE]", "label": "DELETE FILES", "warn": "This will permanently delete files."},
     "banking":      {"triggers": [["bank", "upi", "transfer", "gpay", "paytm"], ["any"]],
                      "icon": "[BANK]", "label": "BANKING", "warn": "Accessing financial services."},
     "payment":      {"triggers": [["pay", "purchase", "credit card", "cvv"], ["any"]],
@@ -2520,10 +2092,8 @@ PERMISSION_RULES = {
                      "icon": "[POWER]", "label": "SHUTDOWN", "warn": "Shutting down computer."},
 }
 
-BLOCKED_COMMANDS = [
-    "rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows",
-    "dd if=/dev/zero", "rd /s /q c:\\", "reg delete hklm",
-]
+BLOCKED_COMMANDS = ["rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows",
+                    "dd if=/dev/zero", "rd /s /q c:\\", "reg delete hklm"]
 
 
 def emergency_stop():
@@ -2547,22 +2117,13 @@ def needs_permission(task: str) -> Tuple[bool, str]:
 
 def ask_permission(task: str, ptype: str) -> bool:
     rule  = PERMISSION_RULES.get(ptype, {})
-    icon  = rule.get("icon", "[!]")
-    label = rule.get("label", "ACTION")
-    warn  = rule.get("warn", "Needs approval.")
-    sep   = "-" * 52
-    print(f"\n  {sep}")
-    print(f"  {icon} PERMISSION REQUIRED: {label}")
-    print(f"  {sep}")
-    print(f"  WARNING: {warn}")
+    print(f"\n  {rule.get('icon','[!]')} PERMISSION REQUIRED: {rule.get('label','ACTION')}")
+    print(f"  WARNING: {rule.get('warn','')}")
     print(f'  Task: "{task[:80]}"')
-    print(f"  {sep}")
     sys.stdout.flush()
-    speak(f"Permission needed: {warn}")
-    granted_input = _get_console_input("\n  Type YES to allow or NO to deny: ").strip().lower()
-    granted = granted_input in ["yes", "y", "allow", "ok", "sure", "proceed"]
+    speak(f"Permission needed: {rule.get('warn','')}")
+    granted = _get_console_input("\n  Type YES to allow or NO to deny: ").strip().lower() in ["yes", "y"]
     speak("Permission granted." if granted else "Task cancelled.")
-    _info("Permitted" if granted else "Denied")
     audit("PERM", mask_pii(f"{ptype}: {task[:80]}"), "GRANTED" if granted else "DENIED")
     return granted
 
@@ -2572,7 +2133,7 @@ def is_blocked(cmd: str) -> bool:
     return any(b in cl for b in BLOCKED_COMMANDS)
 
 # ============================================================
-# BLOCK 20 - AGENT SWARM / PLANNER
+# BLOCK 20 - AGENT SWARM
 # ============================================================
 class PlannerAgent:
     def __init__(self, token: str):
@@ -2594,24 +2155,20 @@ class PlannerAgent:
             r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
                              headers={"Authorization": f"Bearer {self.token}",
                                       "Content-Type": "application/json"},
-                             json={"messages": [{"role": "user", "content": prompt}],
-                                   "stream": False},
+                             json={"messages": [{"role": "user", "content": prompt}], "stream": False},
                              timeout=35)
             if r.status_code == 200:
                 content = (r.json().get("content", "") or r.json().get("response", ""))
                 m = re.search(r'\[.*\]', content, re.DOTALL)
                 if m:
-                    steps = json.loads(m.group())
-                    return steps
+                    return json.loads(m.group())
         except Exception as e:
             log.warning("Planning: %s", e)
-        return [{"step": 1, "action": "speak", "description": desc,
-                 "type": "speak", "params": {}}]
+        return [{"step": 1, "action": "speak", "description": desc, "type": "speak", "params": {}}]
 
 
 class AgentSwarm:
-    def __init__(self, token: str, browser: EnterpriseBrowserAgent,
-                 email_mgr: EmailCampaignManager):
+    def __init__(self, token: str, browser: EnterpriseBrowserAgent, email_mgr: EmailCampaignManager):
         self.token     = token
         self.browser   = browser
         self.email_mgr = email_mgr
@@ -2619,8 +2176,7 @@ class AgentSwarm:
         self._bus: queue.Queue = queue.Queue()
         self._results: Dict[str, Any] = {}
         for i in range(4):
-            threading.Thread(target=self._worker, daemon=True,
-                             name=f"Swarm-{i}").start()
+            threading.Thread(target=self._worker, daemon=True, name=f"Swarm-{i}").start()
         log.info("AgentSwarm initialized (4 workers)")
 
     def _worker(self):
@@ -2637,7 +2193,7 @@ class AgentSwarm:
                 continue
 
     def plan_and_execute(self, task_desc: str, command_executor: Callable) -> Dict[str, Any]:
-        _task(f"Swarm planning: {task_desc}")
+        _task(f"Planning: {task_desc}")
         steps   = self.planner.run({"task": task_desc})
         _task(f"Executing {len(steps)} steps...")
         results = []
@@ -2666,15 +2222,12 @@ class AgentSwarm:
             get_mem().save_skill(task_desc[:50], steps,
                                  f"Auto-learned: {task_desc[:100]}", ["auto-learned"])
         speak(f"Task done: {ok_count}/{len(steps)} steps succeeded.")
-        return {"total": len(steps), "ok": ok_count,
-                "elapsed_sec": round(elapsed, 1), "results": results}
+        return {"total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1), "results": results}
 
 # ============================================================
 # BLOCK 21 - SELF-HEALING ENGINE
 # ============================================================
 class SelfHealingEngine:
-    THRESHOLDS = {"cpu": 92, "ram": 92, "disk": 96}
-
     def __init__(self, command_executor: Callable):
         self.executor  = command_executor
         self._metrics: List[Dict] = []
@@ -2699,12 +2252,12 @@ class SelfHealingEngine:
         self._metrics.append(h)
         if len(self._metrics) > 50:
             self._metrics = self._metrics[-30:]
-        if h.get("cpu", 0) > self.THRESHOLDS["cpu"]:
+        if h.get("cpu", 0) > 92:
             _warn(f"High CPU: {h['cpu']}%")
-        if h.get("ram", 0) > self.THRESHOLDS["ram"]:
+        if h.get("ram", 0) > 92:
             _warn(f"High RAM: {h['ram']}% - clearing caches")
             _result_cache.clear(); gc.collect()
-        if h.get("disk", 0) > self.THRESHOLDS["disk"]:
+        if h.get("disk", 0) > 96:
             _warn("Low disk - cleaning trash")
             try:
                 trash = Path.home() / ".dacexy_trash"
@@ -2718,11 +2271,10 @@ class SelfHealingEngine:
             while _agent_running:
                 try:
                     self._check()
-                except Exception as e:
-                    log.debug("SelfHealing: %s", e)
+                except Exception:
+                    pass
                 time.sleep(60)
         threading.Thread(target=_loop, daemon=True, name="SelfHealing").start()
-        log.info("SelfHealingEngine started")
 
 # ============================================================
 # BLOCK 22 - AUTONOMOUS SCHEDULER
@@ -2737,8 +2289,8 @@ class AutonomousScheduler:
         try:
             if SCHEDULE_FILE.exists():
                 self.jobs = json.loads(SCHEDULE_FILE.read_text())
-        except Exception as e:
-            log.warning("Scheduler load: %s", e)
+        except Exception:
+            pass
 
     def _save(self):
         try:
@@ -2812,11 +2364,10 @@ class AutonomousScheduler:
             while _agent_running:
                 try:
                     self._tick()
-                except Exception as e:
-                    log.debug("Scheduler tick: %s", e)
+                except Exception:
+                    pass
                 time.sleep(30)
         threading.Thread(target=_loop, daemon=True, name="Scheduler").start()
-        log.info("Scheduler started")
 
 # ============================================================
 # BLOCK 23 - VOICE ASSISTANT 3.0
@@ -2839,7 +2390,7 @@ class VoiceAssistant3:
                 self.mic = sr.Microphone()
                 with self.mic as src:
                     self.rec.adjust_for_ambient_noise(src, duration=1.5)
-                log.info("VoiceAssistant3: mic calibrated")
+                log.info("Mic calibrated")
             except Exception as e:
                 log.warning("Mic init: %s", e)
                 self.mic = None
@@ -2850,9 +2401,7 @@ class VoiceAssistant3:
         try:
             with self.mic as src:
                 audio = self.rec.listen(src, timeout=timeout, phrase_time_limit=phrase_time)
-            text = self.rec.recognize_google(audio).lower().strip()
-            log.info("Voice heard: %s", text)
-            return text
+            return self.rec.recognize_google(audio).lower().strip()
         except Exception:
             return None
 
@@ -2894,10 +2443,9 @@ class VoiceAssistant3:
                             pass
                     continue
                 fails = 0
-                is_wake = any(ww in text for ww in self.WAKE_WORDS)
                 if any(p in text for p in ["stop dacexy", "emergency stop"]):
                     emergency_stop()
-                elif is_wake:
+                elif any(ww in text for ww in self.WAKE_WORDS):
                     speak("Yes, listening.", priority=True)
                     cmd_text = self.listen(timeout=8, phrase_time=25)
                     if cmd_text:
@@ -2913,8 +2461,7 @@ class VoiceAssistant3:
 
     def start(self):
         if not VOICE_AVAILABLE:
-            _warn("Voice disabled - PyAudio/SpeechRecognition not available")
-            return
+            _warn("Voice disabled - PyAudio/SpeechRecognition not available"); return
         threading.Thread(target=self._voice_loop, daemon=True, name="Voice3").start()
 
     def stop(self):   self.running = False
@@ -2932,9 +2479,8 @@ def load_macros():
     try:
         if MACRO_FILE.exists():
             _macros = json.loads(MACRO_FILE.read_text())
-        log.info("Macros loaded: %d", len(_macros))
-    except Exception as e:
-        log.warning("Macros load: %s", e)
+    except Exception:
+        pass
 
 
 def save_macros():
@@ -2945,16 +2491,13 @@ def save_macros():
 
 
 def create_macro(name: str, steps: List[Dict]):
-    _macros[name] = steps
-    save_macros()
-    _ok(f"Macro '{name}' saved ({len(steps)} steps)")
+    _macros[name] = steps; save_macros(); _ok(f"Macro '{name}' saved")
 
 
 def run_macro(name: str, executor: Callable) -> bool:
     steps = _macros.get(name)
     if not steps:
-        _err(f"Macro '{name}' not found")
-        return False
+        _err(f"Macro '{name}' not found"); return False
     for step in steps:
         try:
             executor(step)
@@ -3032,13 +2575,13 @@ def execute_command(cmd: dict, token: str = None,
     vi = get_vision()
 
     try:
-        # ---- SPEECH & NOTIFY ----
+        # SPEECH & NOTIFY
         if action == "speak":
             speak(cmd.get("text", "")); return {"status": "ok"}
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
 
-        # ---- MOUSE ----
+        # MOUSE
         elif action == "click":
             human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), cmd.get("button", "left"))
             return {"status": "ok"}
@@ -3057,7 +2600,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_mouse_pos":
             x, y = pyautogui.position(); return {"status": "ok", "x": x, "y": y}
 
-        # ---- KEYBOARD ----
+        # KEYBOARD
         elif action in ("type", "type_text", "write"):
             smart_type(cmd.get("text", ""), cmd.get("clear_first", False),
                        cmd.get("human_speed", False)); return {"status": "ok"}
@@ -3079,7 +2622,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "set_clipboard":
             set_clipboard(cmd.get("text", "")); return {"status": "ok"}
 
-        # ---- VISION ----
+        # VISION
         elif action == "screenshot":
             return {"status": "ok", "screenshot": vi.capture()}
         elif action in ("what_on_screen", "describe_screen"):
@@ -3087,6 +2630,8 @@ def execute_command(cmd: dict, token: str = None,
             speak(desc); return {"status": "ok", "description": desc}
         elif action == "ocr_screen":
             return {"status": "ok", "text": vi.ocr(cmd.get("region"))}
+        elif action == "ocr_fast":
+            return {"status": "ok", "text": vi.ocr_fast()}
         elif action == "find_text_on_screen":
             pos = vi.find_text(cmd.get("text", ""))
             if pos:
@@ -3111,7 +2656,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "start_vision_monitor":
             vi.start_monitoring(float(cmd.get("interval", 2.0))); return {"status": "ok"}
 
-        # ---- WINDOW/APP ----
+        # WINDOW / APP
         elif action == "focus_window":
             return {"status": "ok" if focus_window(cmd.get("title", "")) else "not_found"}
         elif action == "minimize_window":
@@ -3142,7 +2687,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "open_terminal":
             open_app("cmd.exe"); return {"status": "ok"}
 
-        # ---- FILES ----
+        # FILES
         elif action == "list_files":
             return {"status": "ok", "files": fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))}
         elif action == "read_file":
@@ -3163,14 +2708,11 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "error", "message": str(e)}
         elif action == "search_files":
             return {"status": "ok", "files": fe.search(
-                cmd.get("keyword", ""), cmd.get("folder"), cmd.get("ext"),
-                cmd.get("content_search", False))}
+                cmd.get("keyword", ""), cmd.get("folder"), cmd.get("ext"), cmd.get("content_search", False))}
         elif action == "compress_files":
-            return {"status": "ok" if fe.compress(
-                cmd.get("paths", []), cmd.get("output", "out.zip")) else "error"}
+            return {"status": "ok" if fe.compress(cmd.get("paths", []), cmd.get("output", "out.zip")) else "error"}
         elif action == "extract_zip":
-            return {"status": "ok" if fe.extract(
-                cmd.get("path", ""), cmd.get("output")) else "error"}
+            return {"status": "ok" if fe.extract(cmd.get("path", ""), cmd.get("output")) else "error"}
         elif action == "backup_folder":
             dest = fe.backup(cmd.get("folder", ""), cmd.get("label", ""))
             return {"status": "ok", "backup_path": dest}
@@ -3179,7 +2721,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_disk_usage":
             return {"status": "ok", "usage": fe.get_disk_usage()}
 
-        # ---- EMAIL ----
+        # EMAIL
         elif action == "setup_gmail":
             if email_mgr: email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
             return {"status": "ok"}
@@ -3204,8 +2746,7 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "error"}
         elif action == "send_campaign":
             if email_mgr:
-                return {"status": "ok", "result": email_mgr.send_campaign(
-                    cmd.get("campaign_id", ""))}
+                return {"status": "ok", "result": email_mgr.send_campaign(cmd.get("campaign_id", ""))}
             return {"status": "error"}
         elif action == "bulk_email":
             if email_mgr:
@@ -3222,26 +2763,23 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "dashboard": email_mgr.get_dashboard()}
             return {"status": "error"}
 
-        # ---- BROWSER ----
+        # BROWSER
         elif action == "browser_start":
             if not browser: browser = EnterpriseBrowserAgent()
             return {"status": "ok" if browser.start(
-                cmd.get("browser", "chrome"), cmd.get("headless", False),
-                cmd.get("profile")) else "error"}
+                cmd.get("browser", "chrome"), cmd.get("headless", False), cmd.get("profile")) else "error"}
         elif action == "browser_go":
             if browser and browser.driver: browser.go_to(cmd.get("url", ""))
             return {"status": "ok"}
         elif action == "browser_click":
             if browser and browser.driver:
                 return {"status": "ok" if browser.find_and_click(
-                    cmd.get("selector", ""), cmd.get("by", "css"),
-                    cmd.get("fallbacks")) else "not_found"}
+                    cmd.get("selector", ""), cmd.get("by", "css"), cmd.get("fallbacks")) else "not_found"}
             return {"status": "error", "message": "Browser not started"}
         elif action == "browser_type":
             if browser and browser.driver:
                 return {"status": "ok" if browser.find_and_type(
-                    cmd.get("selector", ""), cmd.get("text", ""),
-                    cmd.get("by", "css")) else "error"}
+                    cmd.get("selector", ""), cmd.get("text", ""), cmd.get("by", "css")) else "error"}
             return {"status": "error"}
         elif action == "browser_extract":
             if browser and browser.driver:
@@ -3250,8 +2788,7 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "error"}
         elif action == "browser_js":
             if browser and browser.driver:
-                return {"status": "ok", "result": str(
-                    browser.execute_js(cmd.get("script", "")))}
+                return {"status": "ok", "result": str(browser.execute_js(cmd.get("script", "")))}
             return {"status": "error"}
         elif action == "browser_screenshot":
             if browser and browser.driver:
@@ -3265,10 +2802,9 @@ def execute_command(cmd: dict, token: str = None,
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
             return {"status": "ok", "result": browser.research_topic(
-                cmd.get("topic", "") or cmd.get("query", ""),
-                int(cmd.get("max_pages", 3)))}
+                cmd.get("topic", "") or cmd.get("query", ""), int(cmd.get("max_pages", 3)))}
 
-        # ---- SOCIAL MEDIA ----
+        # SOCIAL MEDIA
         elif action == "whatsapp_bulk":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -3277,6 +2813,11 @@ def execute_command(cmd: dict, token: str = None,
                 contacts = [c.strip() for c in contacts.split(",") if c.strip()]
             return {"status": "ok", "result": browser.whatsapp_bulk(
                 contacts, cmd.get("message", "Hello!"), float(cmd.get("delay", 3.5)))}
+        elif action == "whatsapp_send":
+            if not browser: browser = EnterpriseBrowserAgent()
+            if not browser.driver: browser.start("chrome")
+            return {"status": "ok", "result": browser.whatsapp_bulk(
+                [cmd.get("contact", "")], cmd.get("message", "Hello!"), 2.5)}
         elif action == "twitter_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -3287,8 +2828,7 @@ def execute_command(cmd: dict, token: str = None,
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
             return {"status": "ok" if browser.linkedin_post(
-                cmd.get("username", ""), cmd.get("password", ""),
-                cmd.get("text", "")) else "error"}
+                cmd.get("username", ""), cmd.get("password", ""), cmd.get("text", "")) else "error"}
         elif action == "facebook_post":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -3320,17 +2860,14 @@ def execute_command(cmd: dict, token: str = None,
             results = {}
             for p, cred in creds.items():
                 if p == "twitter":
-                    results["twitter"] = browser.twitter_post(
-                        cred["username"], cred["password"], text)
+                    results["twitter"] = browser.twitter_post(cred["username"], cred["password"], text)
                 if p == "linkedin":
-                    results["linkedin"] = browser.linkedin_post(
-                        cred["username"], cred["password"], text)
+                    results["linkedin"] = browser.linkedin_post(cred["username"], cred["password"], text)
                 if p == "facebook":
-                    results["facebook"] = browser.facebook_post(
-                        cred["username"], cred["password"], text)
+                    results["facebook"] = browser.facebook_post(cred["username"], cred["password"], text)
             return {"status": "ok", "results": results}
 
-        # ---- AI / SWARM ----
+        # AI SWARM
         elif action == "swarm_task":
             if swarm:
                 def _e(c):
@@ -3338,20 +2875,17 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "result": swarm.plan_and_execute(cmd.get("task", ""), _e)}
             return {"status": "error", "message": "Swarm not available"}
 
-        # ---- MEMORY ----
+        # MEMORY
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
-                            importance=float(cmd.get("importance", 1.0)))
-            return {"status": "ok"}
+                            importance=float(cmd.get("importance", 1.0))); return {"status": "ok"}
         elif action == "get_memory":
             return {"status": "ok", "memory": get_memory_context(cmd.get("query", ""))}
         elif action == "search_memory":
-            results = get_mem().search(cmd.get("query", ""), int(cmd.get("top_k", 5)),
-                                       cmd.get("category"))
+            results = get_mem().search(cmd.get("query", ""), int(cmd.get("top_k", 5)), cmd.get("category"))
             return {"status": "ok", "results": [asdict(e) for e in results]}
         elif action == "remember_preference":
-            remember_preference(cmd.get("key", ""), cmd.get("value", ""))
-            return {"status": "ok"}
+            remember_preference(cmd.get("key", ""), cmd.get("value", "")); return {"status": "ok"}
         elif action == "save_workflow":
             save_workflow(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
         elif action == "run_workflow":
@@ -3375,10 +2909,8 @@ def execute_command(cmd: dict, token: str = None,
                 def _e(c):
                     return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
                 for step in skill.steps:
-                    try:
-                        _e(step)
-                    except Exception as e:
-                        log.warning("Skill step: %s", e)
+                    try: _e(step)
+                    except Exception as e: log.warning("Skill step: %s", e)
                 return {"status": "ok"}
             return {"status": "error", "message": "Skill not found"}
         elif action == "save_skill":
@@ -3386,7 +2918,7 @@ def execute_command(cmd: dict, token: str = None,
                                        cmd.get("description", ""), cmd.get("tags", []))
             return {"status": "ok", "skill_id": sid}
 
-        # ---- MACROS ----
+        # MACROS
         elif action == "create_macro":
             create_macro(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
         elif action == "run_macro":
@@ -3396,13 +2928,12 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
 
-        # ---- SCHEDULER ----
+        # SCHEDULER
         elif action == "schedule_job":
             if scheduler:
                 jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
                                         cmd.get("type", "daily"), cmd.get("time", ""),
-                                        cmd.get("days", []),
-                                        int(cmd.get("repeat_every_minutes", 0)))
+                                        cmd.get("days", []), int(cmd.get("repeat_every_minutes", 0)))
                 return {"status": "ok", "job_id": jid}
             return {"status": "error"}
         elif action == "list_jobs":
@@ -3413,7 +2944,7 @@ def execute_command(cmd: dict, token: str = None,
             if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
             return {"status": "ok"}
 
-        # ---- SYSTEM ----
+        # SYSTEM
         elif action == "system_info":
             info = get_system_info()
             speak(f"CPU {info.get('cpu_percent','?')}%, RAM {info.get('ram_percent','?')}%")
@@ -3462,7 +2993,6 @@ def execute_command(cmd: dict, token: str = None,
             webbrowser.open(url); return {"status": "ok"}
         elif action == "emergency_stop":
             emergency_stop(); return {"status": "ok"}
-
         else:
             log.warning("Unknown action: %s", action)
             return {"status": "error", "message": f"Unknown action: {action}"}
@@ -3477,7 +3007,7 @@ def execute_command(cmd: dict, token: str = None,
         return {"status": "error", "message": str(e)}
 
 # ============================================================
-# BLOCK 27 - WEBSOCKET (v15: version-safe connect)
+# BLOCK 27 - WEBSOCKET (version-safe for ws 8 through 16+)
 # ============================================================
 async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
     while _agent_running:
@@ -3488,10 +3018,8 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "version": VERSION}))
             elif mtype in ("command", "task"):
-                cmd_data  = msg.get("data", msg)
-                task_desc = (msg.get("task", "") or cmd_data.get("task", "") or
-                             cmd_data.get("action", ""))
-                _task(f"WS cmd: {task_desc[:60]}")
+                cmd_data = msg.get("data", msg)
+                _task(f"WS cmd: {cmd_data.get('action', cmd_data.get('task', ''))[:60]}")
                 loop   = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     _executor,
@@ -3521,11 +3049,6 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
 
 
 async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
-    """
-    Version-safe websockets connection.
-    Supports websockets v8 through v16+.
-    The 'extra_headers' param was removed in v14+ so we avoid it entirely.
-    """
     retry_delay  = 2
     max_delay    = 120
     global _ws_connection
@@ -3533,27 +3056,18 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
     while _agent_running:
         try:
             if websockets is None:
-                log.error("websockets not installed - retrying in 30s")
-                await asyncio.sleep(30)
-                continue
+                await asyncio.sleep(30); continue
 
             if not check_internet():
-                _warn("No internet - waiting 15s before WS connect...")
-                await asyncio.sleep(15)
-                continue
+                _warn("No internet - waiting 15s...")
+                await asyncio.sleep(15); continue
 
             _info("Connecting to Dacexy backend...")
 
-            # Version-safe: use only common kwargs that work across all versions
-            connect_kwargs = {
-                "ping_interval": 20,
-                "ping_timeout":  15,
-                "max_size":      50 * 1024 * 1024,
-            }
-
-            # websockets v14+ uses 'open_timeout' instead of close_timeout
-            ws_version = getattr(websockets, "__version__", "0")
-            ws_major   = int(str(ws_version).split(".")[0]) if ws_version else 0
+            # Version-safe connect kwargs (works ws 8 through 16+)
+            connect_kwargs = {"ping_interval": 20, "ping_timeout": 15,
+                              "max_size": 50 * 1024 * 1024}
+            ws_major = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
             if ws_major >= 14:
                 connect_kwargs["open_timeout"] = 30
             else:
@@ -3570,13 +3084,11 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
                     "platform": platform.system(),
                     "machine":  platform.machine(),
                     "hostname": socket.gethostname(),
-                    "features": [
-                        "voice3", "vision_super", "browser_enterprise",
-                        "email_enterprise", "whatsapp", "marketing",
-                        "memory_vector", "swarm", "hibernation",
-                        "scheduler", "self_healing", "file_engine",
-                        "social_all", "ocr", "multi_monitor"
-                    ],
+                    "features": ["voice3", "vision_super", "browser_enterprise",
+                                 "email_enterprise", "whatsapp", "marketing",
+                                 "memory_vector", "swarm", "hibernation",
+                                 "scheduler", "self_healing", "file_engine",
+                                 "social_all", "ocr", "multi_monitor"],
                     "memory_context": get_memory_context()[:300]
                 }))
 
@@ -3610,15 +3122,14 @@ def register_hotkeys(voice: VoiceAssistant3 = None):
                                 lambda: voice.pause() if not voice.paused else voice.resume())
         _ok("Hotkeys: Ctrl+Shift+D/S/E/M/V")
     except Exception as e:
-        log.warning("Hotkeys (non-fatal): %s", e)
+        log.warning("Hotkeys: %s", e)
 
 # ============================================================
 # BLOCK 29 - INTERACTIVE SHELL
 # ============================================================
 def print_menu():
     lines = [
-        "",
-        "=" * 60,
+        "", "=" * 60,
         "  DACEXY v15.0 ENTERPRISE - COMMAND CENTER",
         "=" * 60,
         "  [EMAIL]    bulk email / setup gmail <email> <pass>",
@@ -3631,17 +3142,15 @@ def print_menu():
         "  [FILES]    files / read <path> / backup <folder>",
         "  [MEMORY]   memory / skills / remember <fact>",
         "  [AI]       plan <task> / swarm <task>",
-        "  [SCHEDULE] jobs / schedule",
+        "  [SCHEDULE] jobs",
         "  [SYSTEM]   sysinfo / health",
         "  [STOP]     stop / emergency stop",
         "  [HELP]     help / menu",
-        "=" * 60,
-        "",
+        "=" * 60, "",
     ]
     for line in lines:
         try:
-            print(line)
-            sys.stdout.flush()
+            print(line); sys.stdout.flush()
         except Exception:
             pass
 
@@ -3655,12 +3164,9 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
         try:
             inp = _get_console_input("  Dacexy> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n  Goodbye!")
-            break
+            print("\n  Goodbye!"); break
         except Exception as e:
-            log.debug("Shell input: %s", e)
-            time.sleep(0.5)
-            continue
+            log.debug("Shell input: %s", e); time.sleep(0.5); continue
         if not inp:
             continue
         il = inp.lower()
@@ -3678,10 +3184,9 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                 print(f"  Memory:\n{get_memory_context()}")
             elif il == "skills":
                 skills = get_mem().list_skills()
-                if skills:
-                    for s in skills:
-                        print(f"  [SKILL] {s['name']} - used {s['use_count']}x")
-                else:
+                for s in skills:
+                    print(f"  [SKILL] {s['name']} - used {s['use_count']}x")
+                if not skills:
                     print("  No skills yet. They auto-learn from tasks.")
             elif il.startswith("remember "):
                 remember(inp[9:]); speak("Remembered.")
@@ -3692,7 +3197,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
             elif il == "jobs":
                 if scheduler:
                     for j in scheduler.list_jobs():
-                        print(f"  [{j['type']}] {j['name']} @ {j['time']} - {j['run_count']}x runs")
+                        print(f"  [{j['type']}] {j['name']} @ {j['time']} - {j['run_count']}x")
             elif il.startswith("setup gmail "):
                 parts = inp.split()
                 if len(parts) >= 4 and email_mgr:
@@ -3755,12 +3260,9 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                                      "password": _get_console_input(f"  {pn} pass: ").strip()}
                 if not browser.driver: browser.start("chrome")
                 for pn, cred in creds.items():
-                    if pn == "twitter":
-                        browser.twitter_post(cred["username"], cred["password"], text)
-                    if pn == "linkedin":
-                        browser.linkedin_post(cred["username"], cred["password"], text)
-                    if pn == "facebook":
-                        browser.facebook_post(cred["username"], cred["password"], text)
+                    if pn == "twitter": browser.twitter_post(cred["username"], cred["password"], text)
+                    if pn == "linkedin": browser.linkedin_post(cred["username"], cred["password"], text)
+                    if pn == "facebook": browser.facebook_post(cred["username"], cred["password"], text)
             elif il.startswith("browser "):
                 url = inp[8:].strip()
                 if not browser.driver: browser.start("chrome")
@@ -3774,8 +3276,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                 topic = inp[9:].strip()
                 if not browser.driver: browser.start("chrome")
                 result  = browser.research_topic(topic)
-                sources = result.get("sources", [])
-                _info(f"Research: {len(sources)} sources found")
+                _info(f"Research: {len(result.get('sources',[]))} sources found")
                 for r in result.get("results", [])[:5]:
                     print(f"  - {r}")
             elif il == "screenshot":
@@ -3810,8 +3311,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
             elif il.startswith("swarm "):
                 swarm.plan_and_execute(inp[6:].strip(), _exec)
             elif il.startswith("backup "):
-                folder = inp[7:].strip()
-                dest   = get_file_engine().backup(folder)
+                dest = get_file_engine().backup(inp[7:].strip())
                 _ok(f"Backup: {dest}")
             elif il in ("stop all", "emergency stop", "halt"):
                 emergency_stop()
@@ -3835,29 +3335,21 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
 async def main_async(token: str):
     log.info("main_async: initializing all subsystems")
 
-    # TTS in background thread to avoid blocking startup
+    # TTS in background thread (non-blocking)
     threading.Thread(target=init_tts, daemon=True, name="TTSInit").start()
     time.sleep(0.2)
 
-    try:
-        get_mem()
-    except Exception as e:
-        log.warning("Memory init (non-fatal): %s", e)
+    try: get_mem()
+    except Exception as e: log.warning("Memory init: %s", e)
 
-    try:
-        load_macros()
-    except Exception as e:
-        log.warning("Macros load (non-fatal): %s", e)
+    try: load_macros()
+    except Exception: pass
 
-    try:
-        get_vision().start_monitoring(interval=2.0)
-    except Exception as e:
-        log.warning("Vision monitor (non-fatal): %s", e)
+    try: get_vision().start_monitoring(interval=2.0)
+    except Exception: pass
 
-    try:
-        setup_autostart()
-    except Exception as e:
-        log.warning("Autostart (non-fatal): %s", e)
+    try: setup_autostart()
+    except Exception: pass
 
     # Core agents
     browser   = EnterpriseBrowserAgent()
@@ -3870,43 +3362,34 @@ async def main_async(token: str):
     scheduler = AutonomousScheduler(_exec)
     healer    = SelfHealingEngine(_exec)
 
-    try:
-        scheduler.start()
-    except Exception as e:
-        log.warning("Scheduler start: %s", e)
+    try: scheduler.start()
+    except Exception: pass
 
-    try:
-        healer.start()
-    except Exception as e:
-        log.warning("Healer start: %s", e)
+    try: healer.start()
+    except Exception: pass
 
-    try:
-        register_hotkeys()
-    except Exception as e:
-        log.warning("Hotkeys: %s", e)
+    try: register_hotkeys()
+    except Exception: pass
 
-    # Voice in background
+    # Voice
     voice = None
     try:
         def voice_cb(cmd: Dict):
-            try:
-                _exec(cmd)
-            except Exception as ve:
-                log.warning("Voice callback: %s", ve)
+            try: _exec(cmd)
+            except Exception as ve: log.warning("Voice callback: %s", ve)
         voice = VoiceAssistant3(token, voice_cb)
         voice.start()
         register_hotkeys(voice)
     except Exception as e:
-        log.warning("Voice start (non-fatal): %s", e)
+        log.warning("Voice start: %s", e)
 
-    # Interactive shell in background thread
+    # Interactive shell in background
     try:
         shell_t = threading.Thread(
             target=interactive_shell,
             args=(token, browser, email_mgr, swarm, scheduler),
             daemon=True, name="Shell")
         shell_t.start()
-        log.info("Interactive shell started")
     except Exception as e:
         log.warning("Shell start: %s", e)
 
@@ -3914,7 +3397,7 @@ async def main_async(token: str):
     try:
         await ws_connect_loop(token, browser, email_mgr, swarm, scheduler)
     except Exception as e:
-        log.error("WS loop crashed (keeping agent alive): %s", e)
+        log.error("WS loop crashed: %s", e)
         while _agent_running:
             await asyncio.sleep(5)
 
@@ -3923,7 +3406,6 @@ def main():
     _banner()
     log.info("Dacexy Agent v%s starting", VERSION)
 
-    # --- AUTH ---
     token = None
     try:
         token = get_token()
@@ -3950,43 +3432,32 @@ def main():
         except SystemExit:
             return
         except Exception:
-            log.error("Cannot authenticate")
             return
 
     log.info("Authenticated successfully")
     _ok(f"Dacexy v{VERSION} ready. Starting all systems...")
     audit("STARTUP", f"v{VERSION}", "OK")
 
-    # --- RUN ASYNC MAIN ---
     try:
         asyncio.run(main_async(token))
     except KeyboardInterrupt:
         print("\n\n  Dacexy stopped by user.")
-        log.info("Stopped by KeyboardInterrupt")
     except Exception as e:
-        log.error("Fatal error in main: %s\n%s", e, traceback.format_exc())
+        log.error("Fatal error: %s\n%s", e, traceback.format_exc())
         print(f"\n  Fatal error: {e}")
         print(f"  Check log: {_STARTUP_LOG}")
-        print("\n  Press Enter to exit...")
         try:
-            _get_console_input("  > ")
+            _get_console_input("  Press Enter to exit... ")
         except Exception:
             pass
     finally:
-        try:
-            get_mem().save()
-        except Exception:
-            pass
-        try:
-            save_macros()
-        except Exception:
-            pass
+        try: get_mem().save()
+        except Exception: pass
+        try: save_macros()
+        except Exception: pass
         audit("SHUTDOWN", f"v{VERSION}", "CLEAN")
-        log.info("Shutdown complete")
-        try:
-            print("  State saved. Goodbye!")
-        except Exception:
-            pass
+        try: print("  State saved. Goodbye!")
+        except Exception: pass
 
 
 if __name__ == "__main__":
