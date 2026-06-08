@@ -2665,10 +2665,19 @@ import ast, pathlib, os
 
 for f in pathlib.Path("src").rglob("*.py"):
     try:
-        ast.parse(f.read_text())
+        raw = f.read_bytes()
+        if b'\x00' in raw:
+            print(f"NULL BYTES FOUND IN: {f} — fixing...")
+            cleaned = raw.replace(b'\x00', b'')
+            f.write_bytes(cleaned)
+            print(f"FIXED: {f}")
+        ast.parse(f.read_text(encoding="utf-8", errors="ignore"))
+        print(f"OK: {f}")
     except SyntaxError as e:
         print(f"BROKEN FILE: {f}  |  Line: {e.lineno}  |  Error: {e.msg}")
         print(f"Bad text: {e.text}")
+    except Exception as e:
+        print(f"ERROR in {f}: {e}")
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
