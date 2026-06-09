@@ -1433,6 +1433,75 @@ def open_app(app_name: str) -> bool:
         return False
 
 
+def _browser_process_count() -> int:
+    if not psutil:
+        return 0
+    names = ("chrome", "msedge", "firefox", "brave", "opera", "iexplore")
+    count = 0
+    try:
+        for proc in psutil.process_iter(["name"]):
+            pname = (proc.info.get("name") or "").lower()
+            if any(n in pname for n in names):
+                count += 1
+    except Exception:
+        pass
+    return count
+
+
+def _open_url_via_run_dialog(url: str) -> bool:
+    try:
+        hotkey("win", "r")
+        time.sleep(0.5)
+        if pyperclip:
+            set_clipboard(url)
+            hotkey("ctrl", "v")
+        else:
+            pyautogui.write(url, interval=0.01)
+        time.sleep(0.1)
+        press_key("enter")
+        time.sleep(2.5)
+        return _browser_process_count() > 0
+    except Exception as e:
+        log.debug("run-dialog URL open failed for %s: %s", url, e)
+        return False
+
+
+def _launch_url(url: str) -> bool:
+    """Open a URL in the desktop session and avoid false success."""
+    if not url:
+        return False
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url.lstrip("/")
+
+    before = _browser_process_count()
+    methods = []
+    if platform.system() == "Windows":
+        methods.extend([
+            lambda: os.startfile(url),
+            lambda: subprocess.Popen(["cmd", "/c", "start", "", url],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+            lambda: subprocess.Popen(["rundll32", "url.dll,FileProtocolHandler", url],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+            lambda: subprocess.Popen(["explorer.exe", url],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+        ])
+    else:
+        methods.append(lambda: subprocess.Popen(["xdg-open", url],
+                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    methods.append(lambda: webbrowser.open(url, new=2, autoraise=True))
+
+    for launch in methods:
+        try:
+            result = launch()
+            time.sleep(2.0)
+            after = _browser_process_count()
+            if result is True or after > before or after > 0:
+                return True
+        except Exception as e:
+            log.debug("launch_url method failed for %s: %s", url, e)
+    return _open_url_via_run_dialog(url)
+
+
 def _smart_open(target: str) -> dict:
     """
     FIX: Central smart-open that handles 'open youtube', 'open chrome',
@@ -1443,20 +1512,22 @@ def _smart_open(target: str) -> dict:
     # 1. Known websites
     for name, url in KNOWN_SITES.items():
         if name in tl:
-            webbrowser.open(url)
-            return {"status": "ok", "opened": url}
+            ok = _launch_url(url)
+            return {"status": "ok" if ok else "error", "opened": url,
+                    "message": "Opened browser" if ok else "Could not open browser window"}
 
     # 2. Direct URL
     if tl.startswith("http://") or tl.startswith("https://") or tl.startswith("www."):
         url = target if target.startswith("http") else "https://" + target
-        webbrowser.open(url)
-        return {"status": "ok", "opened": url}
+        ok = _launch_url(url)
+        return {"status": "ok" if ok else "error", "opened": url,
+                "message": "Opened browser" if ok else "Could not open browser window"}
 
     # 3. Known app names
     for name, exe in KNOWN_APPS.items():
         if name in tl:
-            open_app(exe)
-            return {"status": "ok", "opened": exe}
+            ok = open_app(exe)
+            return {"status": "ok" if ok else "error", "opened": exe}
 
     # 4. File path
     if os.path.exists(target):
@@ -3031,8 +3102,9 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "error", "message": "No URL specified"}
             if not url.startswith("http"):
                 url = "https://" + url
-            webbrowser.open(url)
-            return {"status": "ok", "opened": url}
+            ok = _launch_url(url)
+            return {"status": "ok" if ok else "error", "opened": url,
+                    "message": "Opened browser" if ok else "Could not open browser window"}
 
         elif action == "open_app":
             app = (cmd.get("app", "") or cmd.get("name", "") or cmd.get("text", "")).strip()
@@ -3042,8 +3114,8 @@ def execute_command(cmd: dict, token: str = None,
             app_lower = app.lower()
             for name, exe in KNOWN_APPS.items():
                 if name in app_lower:
-                    open_app(exe)
-                    return {"status": "ok", "opened": exe}
+                    ok = open_app(exe)
+                    return {"status": "ok" if ok else "error", "opened": exe}
             ok = open_app(app)
             return {"status": "ok" if ok else "error", "opened": app}
 
@@ -3566,8 +3638,9 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "path": str(note)}
         elif action == "search_web":
             q = cmd.get("query", "") or cmd.get("text", "")
-            webbrowser.open(f"https://www.google.com/search?q={quote(q)}")
-            return {"status": "ok"}
+            url = f"https://www.google.com/search?q={quote(q)}"
+            ok = _launch_url(url)
+            return {"status": "ok" if ok else "error", "opened": url}
         elif action == "emergency_stop":
             emergency_stop()
             return {"status": "ok"}
@@ -3577,8 +3650,8 @@ def execute_command(cmd: dict, token: str = None,
         else:
             # Maybe it's a direct URL?
             if action.startswith("http"):
-                webbrowser.open(action)
-                return {"status": "ok", "opened": action}
+                ok = _launch_url(action)
+                return {"status": "ok" if ok else "error", "opened": action}
 
             # Try as swarm task with the full command description
             task_str = (cmd.get("task", "") or cmd.get("description", "") or
@@ -3627,6 +3700,8 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
 
             mtype   = msg.get("type", "")
             task_id = msg.get("task_id", "")
+            if not mtype and (msg.get("action") or msg.get("task") or msg.get("goal")):
+                mtype = "task" if (msg.get("task") or msg.get("goal")) and not msg.get("action") else "command"
 
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "version": VERSION}))
