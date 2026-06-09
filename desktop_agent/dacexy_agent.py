@@ -1,4 +1,3 @@
-
 """
 DACEXY DESKTOP AGENT v15.0 ENTERPRISE
 World's Most Powerful AI Desktop Agent
@@ -12,11 +11,10 @@ import sys
 import os
 import platform
 
-# FIX: Proper Windows event loop policy - must be set before anything else
 if platform.system() == "Windows":
     import asyncio as _asyncio
-    # Use ProactorEventLoop on Windows for best subprocess/pipe support
-    _asyncio.set_event_loop_policy(_asyncio.WindowsProactorEventLoopPolicy())
+    if hasattr(_asyncio, "WindowsSelectorEventLoopPolicy"):
+        _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
 
 if platform.system() == "Windows":
     import io
@@ -168,11 +166,8 @@ except Exception:
 
 try:
     import websockets
-    # FIX: Detect websockets major version once at startup for connect_kwargs
-    _WS_MAJOR = int(str(getattr(websockets, "__version__", "10")).split(".")[0])
 except Exception:
     websockets = None
-    _WS_MAJOR = 0
 
 try:
     from PIL import ImageGrab, Image, ImageEnhance
@@ -1927,6 +1922,54 @@ class EnterpriseBrowserAgent:
             pass
         return research
 
+    def send_gmail_via_browser(self, to: str, subject: str, body: str) -> bool:
+        """Open Gmail in browser and send email using Selenium."""
+        try:
+            if not self.driver:
+                if not self.start("chrome"):
+                    return False
+            self.go_to("https://mail.google.com", wait=4)
+            time.sleep(3)
+            # Click Compose
+            composed = self.find_and_click('[gh="cm"]', fallback_selectors=[
+                'div[class*="compose"]', '//div[text()="Compose"]'])
+            if not composed:
+                # Try xpath
+                self.find_and_click('//div[text()="Compose"]', by="xpath")
+            time.sleep(2)
+            # To field
+            to_el = self.find('//textarea[@name="to"]', by="xpath") or \
+                    self.find('input[name="to"]')
+            if to_el:
+                to_el.click(); time.sleep(0.3)
+                to_el.send_keys(to); time.sleep(0.5)
+                to_el.send_keys(Keys.TAB)
+            time.sleep(0.5)
+            # Subject
+            subj_el = self.find('//input[@name="subjectbox"]', by="xpath") or \
+                      self.find('input[name="subjectbox"]')
+            if subj_el:
+                subj_el.click(); time.sleep(0.2)
+                subj_el.send_keys(subject)
+            time.sleep(0.3)
+            # Body
+            body_el = self.find('//div[@role="textbox"][@aria-label="Message Body"]', by="xpath") or \
+                      self.find('div[role="textbox"]')
+            if body_el:
+                body_el.click(); time.sleep(0.3)
+                body_el.send_keys(body)
+            time.sleep(0.5)
+            # Send
+            self.find_and_click('//div[@role="button"][@data-tooltip="Send"]', by="xpath",
+                                 fallback_selectors=['[data-tooltip="Send"]'])
+            time.sleep(2)
+            _ok(f"Gmail sent to {to}")
+            audit("GMAIL_BROWSER", mask_pii(to), "SENT")
+            return True
+        except Exception as e:
+            log.error("send_gmail_via_browser: %s", e)
+            return False
+
     def whatsapp_bulk(self, contacts: List[str], message: str, delay: float = 3.5) -> Dict[str, Any]:
         if not self.driver and not self.start("chrome"):
             return {"error": "Browser not started"}
@@ -2138,7 +2181,7 @@ def is_blocked(cmd: str) -> bool:
     return any(b in cl for b in BLOCKED_COMMANDS)
 
 # ============================================================
-# BLOCK 20 - AGENT SWARM
+# BLOCK 20 - PLANNER AGENT
 # ============================================================
 class PlannerAgent:
     def __init__(self, token: str):
@@ -2151,12 +2194,23 @@ class PlannerAgent:
             if not req_lib:
                 raise ValueError("no requests")
             ctx    = get_memory_context(desc)
-            prompt = (f"You are a desktop automation planner.\n"
-                      f"Task: {desc}\nContext: {ctx[:300]}\n\n"
-                      f"Return ONLY a JSON array of steps:\n"
-                      f'[{{"step":1,"action":"...","description":"...",'
-                      f'"type":"click|type|open_url|open_app|wait|browser|email|whatsapp|social|screenshot|speak|system|file",'
-                      f'"params":{{}}}}]')
+            prompt = (
+                f"You are a desktop automation planner for Windows.\n"
+                f"Task: {desc}\nContext: {ctx[:300]}\n\n"
+                f"Return ONLY a valid JSON array of steps. Each step must use ONLY these actions:\n"
+                f"open_url, open_app, browser_go, browser_click, browser_type, send_email,\n"
+                f"gmail_send, click, type_text, press, hotkey, screenshot, speak, wait,\n"
+                f"search_web, whatsapp_bulk, twitter_post, linkedin_post, swarm_task\n\n"
+                f"IMPORTANT RULES:\n"
+                f"- To open a website: use action 'open_url' with field 'url'\n"
+                f"- To send email via Gmail browser: use action 'gmail_send' with fields 'to', 'subject', 'body'\n"
+                f"- NEVER use action 'open' - use 'open_url' or 'open_app' instead\n"
+                f"- For clicks that need coordinates: use 'click_text' with field 'text' to find by text\n"
+                f"- For browser tasks: prefer 'gmail_send' over manual click steps\n\n"
+                f'Example: [{{"step":1,"action":"open_url","description":"Open YouTube","url":"https://youtube.com"}}]\n'
+                f'Example: [{{"step":1,"action":"gmail_send","description":"Send birthday email","to":"friend@gmail.com","subject":"Birthday Party","body":"You are invited!"}}]\n\n'
+                f"Return ONLY the JSON array, nothing else."
+            )
             r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
                              headers={"Authorization": f"Bearer {self.token}",
                                       "Content-Type": "application/json"},
@@ -2166,12 +2220,26 @@ class PlannerAgent:
                 content = (r.json().get("content", "") or r.json().get("response", ""))
                 m = re.search(r'\[.*\]', content, re.DOTALL)
                 if m:
-                    return json.loads(m.group())
+                    steps = json.loads(m.group())
+                    # Normalize any stray "open" actions
+                    for step in steps:
+                        if step.get("action") == "open":
+                            url = step.get("url") or step.get("app") or step.get("text", "")
+                            if url and ("." in url or url.startswith("http")):
+                                step["action"] = "open_url"
+                                step["url"] = url
+                            else:
+                                step["action"] = "open_app"
+                                step["app"] = url
+                    return steps
         except Exception as e:
             log.warning("Planning: %s", e)
         return [{"step": 1, "action": "speak", "description": desc, "type": "speak", "params": {}}]
 
 
+# ============================================================
+# BLOCK 21 - AGENT SWARM
+# ============================================================
 class AgentSwarm:
     def __init__(self, token: str, browser: EnterpriseBrowserAgent, email_mgr: EmailCampaignManager):
         self.token     = token
@@ -2230,7 +2298,7 @@ class AgentSwarm:
         return {"total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1), "results": results}
 
 # ============================================================
-# BLOCK 21 - SELF-HEALING ENGINE
+# BLOCK 22 - SELF-HEALING ENGINE
 # ============================================================
 class SelfHealingEngine:
     def __init__(self, command_executor: Callable):
@@ -2282,7 +2350,7 @@ class SelfHealingEngine:
         threading.Thread(target=_loop, daemon=True, name="SelfHealing").start()
 
 # ============================================================
-# BLOCK 22 - AUTONOMOUS SCHEDULER
+# BLOCK 23 - AUTONOMOUS SCHEDULER
 # ============================================================
 class AutonomousScheduler:
     def __init__(self, command_executor: Callable):
@@ -2375,7 +2443,7 @@ class AutonomousScheduler:
         threading.Thread(target=_loop, daemon=True, name="Scheduler").start()
 
 # ============================================================
-# BLOCK 23 - VOICE ASSISTANT 3.0
+# BLOCK 24 - VOICE ASSISTANT 3.0
 # ============================================================
 class VoiceAssistant3:
     WAKE_WORDS = ["hey dacexy", "dacexy", "assistant"]
@@ -2414,15 +2482,39 @@ class VoiceAssistant3:
         t = text.lower().strip()
         if any(w in t for w in ["what time", "current time"]):
             return {"action": "get_time"}
-        if any(w in t for w in ["what date", "today"]):
+        if any(w in t for w in ["what date", "today's date"]):
             return {"action": "get_date"}
         if "screenshot" in t:
             return {"action": "screenshot"}
         if t.startswith("open "):
-            return {"action": "open_app", "app": t[5:].strip()}
+            target = t[5:].strip()
+            # Determine if it's a website or app
+            websites = ["youtube", "google", "gmail", "facebook", "instagram",
+                        "twitter", "linkedin", "whatsapp", "netflix", "amazon",
+                        "github", "stackoverflow", "reddit"]
+            website_urls = {
+                "youtube": "https://youtube.com",
+                "google": "https://google.com",
+                "gmail": "https://mail.google.com",
+                "facebook": "https://facebook.com",
+                "instagram": "https://instagram.com",
+                "twitter": "https://twitter.com",
+                "linkedin": "https://linkedin.com",
+                "whatsapp": "https://web.whatsapp.com",
+                "netflix": "https://netflix.com",
+                "amazon": "https://amazon.com",
+                "github": "https://github.com",
+                "reddit": "https://reddit.com",
+            }
+            for site, url in website_urls.items():
+                if site in target:
+                    return {"action": "open_url", "url": url}
+            return {"action": "open_app", "app": target}
         if t.startswith("search for ") or t.startswith("google "):
             q = re.sub(r'^(search for|google)\s+', '', t).strip()
             return {"action": "search_web", "query": q}
+        if "send email" in t or "send a email" in t or "email" in t:
+            return {"action": "swarm_task", "task": text}
         if any(w in t for w in ["stop", "emergency stop", "halt"]):
             return {"action": "emergency_stop"}
         return {"action": "swarm_task", "task": text}
@@ -2448,18 +2540,20 @@ class VoiceAssistant3:
                             pass
                     continue
                 fails = 0
+                log.info("Voice heard: %s", text)
                 if any(p in text for p in ["stop dacexy", "emergency stop"]):
                     emergency_stop()
                 elif any(ww in text for ww in self.WAKE_WORDS):
                     speak("Yes, listening.", priority=True)
                     cmd_text = self.listen(timeout=8, phrase_time=25)
                     if cmd_text:
+                        log.info("Voice command: %s", cmd_text)
                         try:
                             self.callback(self.route(cmd_text))
                         except Exception as e:
                             log.warning("Voice callback: %s", e)
                     else:
-                        speak("Didn't catch that.")
+                        speak("Didn't catch that. Please try again.")
             except Exception as e:
                 log.debug("Voice loop: %s", e)
                 time.sleep(1)
@@ -2474,7 +2568,7 @@ class VoiceAssistant3:
     def resume(self): self.paused  = False
 
 # ============================================================
-# BLOCK 24 - MACRO SYSTEM
+# BLOCK 25 - MACRO SYSTEM
 # ============================================================
 _macros: Dict[str, List[Dict]] = {}
 
@@ -2515,7 +2609,7 @@ def list_macros() -> List[str]:
     return list(_macros.keys())
 
 # ============================================================
-# BLOCK 25 - SYSTEM INFO
+# BLOCK 26 - SYSTEM INFO
 # ============================================================
 def get_system_info() -> Dict[str, Any]:
     if not psutil:
@@ -2550,7 +2644,7 @@ def get_system_info() -> Dict[str, Any]:
         return {"error": str(e)}
 
 # ============================================================
-# BLOCK 26 - MASTER COMMAND EXECUTOR
+# BLOCK 27 - MASTER COMMAND EXECUTOR
 # ============================================================
 def execute_command(cmd: dict, token: str = None,
                     browser: EnterpriseBrowserAgent = None,
@@ -2580,15 +2674,38 @@ def execute_command(cmd: dict, token: str = None,
     vi = get_vision()
 
     try:
-        # SPEECH & NOTIFY
+        # ── ALIASES: normalize any stray action names ──────────────────────
+        if action == "open":
+            url = cmd.get("url") or cmd.get("app") or cmd.get("text", "")
+            if url and ("." in url or url.startswith("http")):
+                action = "open_url"
+                cmd["url"] = url
+            else:
+                action = "open_app"
+                cmd["app"] = url
+
+        if action in ("type", "write"):
+            action = "type_text"
+
+        # ── SPEECH & NOTIFY ────────────────────────────────────────────────
         if action == "speak":
             speak(cmd.get("text", "")); return {"status": "ok"}
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
 
-        # MOUSE
+        # ── MOUSE ──────────────────────────────────────────────────────────
         elif action == "click":
-            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), cmd.get("button", "left"))
+            x = cmd.get("x"); y = cmd.get("y")
+            if x is None or y is None or (x == 0 and y == 0):
+                # Try to find by text if no coords
+                txt = cmd.get("text", "") or cmd.get("label", "")
+                if txt:
+                    pos = vi.find_text(txt)
+                    if pos:
+                        human_click(pos[0], pos[1])
+                        return {"status": "ok", "found_by": "text"}
+                return {"status": "skip", "message": "No coordinates provided"}
+            human_click(int(x), int(y), cmd.get("button", "left"))
             return {"status": "ok"}
         elif action == "right_click":
             human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), "right"); return {"status": "ok"}
@@ -2605,8 +2722,8 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_mouse_pos":
             x, y = pyautogui.position(); return {"status": "ok", "x": x, "y": y}
 
-        # KEYBOARD
-        elif action in ("type", "type_text", "write"):
+        # ── KEYBOARD ───────────────────────────────────────────────────────
+        elif action == "type_text":
             smart_type(cmd.get("text", ""), cmd.get("clear_first", False),
                        cmd.get("human_speed", False)); return {"status": "ok"}
         elif action == "press":
@@ -2627,7 +2744,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "set_clipboard":
             set_clipboard(cmd.get("text", "")); return {"status": "ok"}
 
-        # VISION
+        # ── VISION ─────────────────────────────────────────────────────────
         elif action == "screenshot":
             return {"status": "ok", "screenshot": vi.capture()}
         elif action in ("what_on_screen", "describe_screen"):
@@ -2661,7 +2778,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "start_vision_monitor":
             vi.start_monitoring(float(cmd.get("interval", 2.0))); return {"status": "ok"}
 
-        # WINDOW / APP
+        # ── WINDOW / APP ───────────────────────────────────────────────────
         elif action == "focus_window":
             return {"status": "ok" if focus_window(cmd.get("title", "")) else "not_found"}
         elif action == "minimize_window":
@@ -2675,17 +2792,28 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_active_window":
             return {"status": "ok", "title": get_active_window()}
         elif action == "open_app":
-            return {"status": "ok" if open_app(cmd.get("app", "")) else "error"}
+            app = cmd.get("app", "")
+            app_map = {
+                "notepad": "notepad.exe", "calculator": "calc.exe",
+                "chrome": "chrome.exe", "firefox": "firefox.exe",
+                "word": "winword.exe", "excel": "excel.exe",
+                "explorer": "explorer.exe", "cmd": "cmd.exe",
+                "terminal": "cmd.exe", "paint": "mspaint.exe",
+                "vlc": "vlc.exe", "spotify": "spotify.exe",
+            }
+            resolved = app_map.get(app.lower(), app)
+            return {"status": "ok" if open_app(resolved) else "error"}
         elif action == "kill_app":
             return {"status": "ok" if kill_app(cmd.get("name", "")) else "not_found"}
         elif action == "list_apps":
             return {"status": "ok", "apps": [a["name"] for a in list_running_apps()[:30]]}
-        elif action == "open":
-            url = cmd.get("url", "") or cmd.get("app", "") or cmd.get("text", "")
-            if url:
-                if not url.startswith("http"): url = "https://" + url
-                webbrowser.open(url)
-            return {"status": "ok"}
+        elif action == "open_url":
+            url = cmd.get("url", "")
+            if not url.startswith("http"):
+                url = "https://" + url
+            webbrowser.open(url)
+            _ok(f"Opened URL: {url}")
+            return {"status": "ok", "url": url}
         elif action == "open_browser":
             webbrowser.open(cmd.get("url", "https://google.com")); return {"status": "ok"}
         elif action == "open_notepad":
@@ -2698,7 +2826,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "open_terminal":
             open_app("cmd.exe"); return {"status": "ok"}
 
-        # FILES
+        # ── FILES ──────────────────────────────────────────────────────────
         elif action == "list_files":
             return {"status": "ok", "files": fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))}
         elif action == "read_file":
@@ -2732,7 +2860,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_disk_usage":
             return {"status": "ok", "usage": fe.get_disk_usage()}
 
-        # EMAIL
+        # ── EMAIL ──────────────────────────────────────────────────────────
         elif action == "setup_gmail":
             if email_mgr: email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
             return {"status": "ok"}
@@ -2746,6 +2874,20 @@ def execute_command(cmd: dict, token: str = None,
                                            cmd.get("attachment"))
                 return {"status": "ok" if ok else "error"}
             return {"status": "error", "message": "Email not configured"}
+        elif action == "gmail_send":
+            # Send via Gmail browser automation - no SMTP config needed
+            to      = cmd.get("to", "")
+            subject = cmd.get("subject", "")
+            body    = cmd.get("body", "")
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            ok = browser.send_gmail_via_browser(to, subject, body)
+            if ok:
+                speak(f"Email sent to {to}")
+                return {"status": "ok", "to": to}
+            else:
+                speak("Could not send email via Gmail browser. Make sure you are logged into Gmail.")
+                return {"status": "error", "message": "Gmail browser send failed"}
         elif action == "create_campaign":
             if email_mgr:
                 cid = email_mgr.create_campaign(
@@ -2774,13 +2916,16 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "dashboard": email_mgr.get_dashboard()}
             return {"status": "error"}
 
-        # BROWSER
+        # ── BROWSER ────────────────────────────────────────────────────────
         elif action == "browser_start":
             if not browser: browser = EnterpriseBrowserAgent()
             return {"status": "ok" if browser.start(
                 cmd.get("browser", "chrome"), cmd.get("headless", False), cmd.get("profile")) else "error"}
-        elif action == "browser_go":
-            if browser and browser.driver: browser.go_to(cmd.get("url", ""))
+        elif action in ("browser_go", "browser_navigate"):
+            if browser and browser.driver:
+                browser.go_to(cmd.get("url", ""))
+            elif browser:
+                browser.start(); browser.go_to(cmd.get("url", ""))
             return {"status": "ok"}
         elif action == "browser_click":
             if browser and browser.driver:
@@ -2815,7 +2960,7 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "result": browser.research_topic(
                 cmd.get("topic", "") or cmd.get("query", ""), int(cmd.get("max_pages", 3)))}
 
-        # SOCIAL MEDIA
+        # ── SOCIAL MEDIA ───────────────────────────────────────────────────
         elif action == "whatsapp_bulk":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -2878,7 +3023,7 @@ def execute_command(cmd: dict, token: str = None,
                     results["facebook"] = browser.facebook_post(cred["username"], cred["password"], text)
             return {"status": "ok", "results": results}
 
-        # AI SWARM
+        # ── AI SWARM ───────────────────────────────────────────────────────
         elif action == "swarm_task":
             if swarm:
                 def _e(c):
@@ -2886,7 +3031,7 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "result": swarm.plan_and_execute(cmd.get("task", ""), _e)}
             return {"status": "error", "message": "Swarm not available"}
 
-        # MEMORY
+        # ── MEMORY ─────────────────────────────────────────────────────────
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
                             importance=float(cmd.get("importance", 1.0))); return {"status": "ok"}
@@ -2929,7 +3074,7 @@ def execute_command(cmd: dict, token: str = None,
                                        cmd.get("description", ""), cmd.get("tags", []))
             return {"status": "ok", "skill_id": sid}
 
-        # MACROS
+        # ── MACROS ─────────────────────────────────────────────────────────
         elif action == "create_macro":
             create_macro(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
         elif action == "run_macro":
@@ -2939,7 +3084,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
 
-        # SCHEDULER
+        # ── SCHEDULER ──────────────────────────────────────────────────────
         elif action == "schedule_job":
             if scheduler:
                 jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
@@ -2955,7 +3100,7 @@ def execute_command(cmd: dict, token: str = None,
             if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
             return {"status": "ok"}
 
-        # SYSTEM
+        # ── SYSTEM ─────────────────────────────────────────────────────────
         elif action == "system_info":
             info = get_system_info()
             speak(f"CPU {info.get('cpu_percent','?')}%, RAM {info.get('ram_percent','?')}%")
@@ -3001,11 +3146,18 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "open_url":
             url = cmd.get("url", "")
             if not url.startswith("http"): url = "https://" + url
-            webbrowser.open(url); return {"status": "ok"}
+            webbrowser.open(url)
+            _ok(f"Opened: {url}")
+            return {"status": "ok"}
         elif action == "emergency_stop":
             emergency_stop(); return {"status": "ok"}
         else:
             log.warning("Unknown action: %s", action)
+            # Last resort: try to treat as a URL or app open
+            if action:
+                if "." in action and " " not in action:
+                    webbrowser.open("https://" + action)
+                    return {"status": "ok", "fallback": "opened as url"}
             return {"status": "error", "message": f"Unknown action: {action}"}
 
     except Exception as e:
@@ -3018,7 +3170,7 @@ def execute_command(cmd: dict, token: str = None,
         return {"status": "error", "message": str(e)}
 
 # ============================================================
-# BLOCK 27 - WEBSOCKET - version-safe for ws 8 through 16+
+# BLOCK 28 - WEBSOCKET
 # ============================================================
 async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
     while _agent_running:
@@ -3059,24 +3211,6 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
             await asyncio.sleep(1)
 
 
-def _build_ws_connect_kwargs() -> dict:
-    """
-    FIX: Build correct connect kwargs based on installed websockets version.
-    websockets >=14 uses 'open_timeout', older uses 'close_timeout'.
-    Also handles breaking API changes in ws 13+ (additional_headers removed).
-    """
-    kwargs = {
-        "ping_interval": 20,
-        "ping_timeout":  15,
-        "max_size":      50 * 1024 * 1024,
-    }
-    if _WS_MAJOR >= 14:
-        kwargs["open_timeout"] = 30
-    else:
-        kwargs["close_timeout"] = 30
-    return kwargs
-
-
 async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
     retry_delay  = 2
     max_delay    = 120
@@ -3093,40 +3227,39 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
 
             _info("Connecting to Dacexy backend...")
 
-            connect_kwargs = _build_ws_connect_kwargs()
+            connect_kwargs = {"ping_interval": 20, "ping_timeout": 15,
+                              "max_size": 50 * 1024 * 1024}
+            ws_major = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
+            if ws_major >= 14:
+                connect_kwargs["open_timeout"] = 30
+            else:
+                connect_kwargs["close_timeout"] = 30
 
-            # FIX: websockets 13+ changed connect() to be a context manager only.
-            # Use try/except to handle both old and new API gracefully.
-            try:
-                async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
-                    _ws_connection = ws
-                    retry_delay    = 2
+            async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
+                _ws_connection = ws
+                retry_delay    = 2
 
-                    await ws.send(json.dumps({
-                        "token":    token,
-                        "type":     "init",
-                        "version":  VERSION,
-                        "platform": platform.system(),
-                        "machine":  platform.machine(),
-                        "hostname": socket.gethostname(),
-                        "features": ["voice3", "vision_super", "browser_enterprise",
-                                     "email_enterprise", "whatsapp", "marketing",
-                                     "memory_vector", "swarm", "hibernation",
-                                     "scheduler", "self_healing", "file_engine",
-                                     "social_all", "ocr", "multi_monitor"],
-                        "memory_context": get_memory_context()[:300]
-                    }))
+                await ws.send(json.dumps({
+                    "token":    token,
+                    "type":     "init",
+                    "version":  VERSION,
+                    "platform": platform.system(),
+                    "machine":  platform.machine(),
+                    "hostname": socket.gethostname(),
+                    "features": ["voice3", "vision_super", "browser_enterprise",
+                                 "email_enterprise", "whatsapp", "marketing",
+                                 "memory_vector", "swarm", "hibernation",
+                                 "scheduler", "self_healing", "file_engine",
+                                 "social_all", "ocr", "multi_monitor"],
+                    "memory_context": get_memory_context()[:300]
+                }))
 
-                    _ok("Connected to Dacexy backend")
-                    speak("Dacexy is online and ready.", priority=True)
-                    await ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler)
-
-            except Exception as conn_err:
-                # FIX: Try legacy connect API (websockets < 10) as fallback
-                log.warning("WS connect error (retrying): %s", conn_err)
+                _ok("Connected to Dacexy backend")
+                speak("Dacexy is online and ready.", priority=True)
+                await ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler)
 
         except Exception as e:
-            log.warning("WS outer error: %s", e)
+            log.warning("WS connect error: %s", e)
         finally:
             _ws_connection = None
 
@@ -3136,7 +3269,7 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
             retry_delay = min(retry_delay * 2, max_delay)
 
 # ============================================================
-# BLOCK 28 - HOTKEYS
+# BLOCK 29 - HOTKEYS
 # ============================================================
 def register_hotkeys(voice: VoiceAssistant3 = None):
     if not KEYBOARD_OK:
@@ -3154,7 +3287,7 @@ def register_hotkeys(voice: VoiceAssistant3 = None):
         log.warning("Hotkeys: %s", e)
 
 # ============================================================
-# BLOCK 29 - INTERACTIVE SHELL
+# BLOCK 30 - INTERACTIVE SHELL
 # ============================================================
 def print_menu():
     lines = [
@@ -3328,6 +3461,27 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                     _err("Usage: click <x> <y>")
             elif il.startswith("type "):
                 smart_type(inp[5:])
+            elif il.startswith("open "):
+                target = inp[5:].strip()
+                website_urls = {
+                    "youtube": "https://youtube.com",
+                    "google": "https://google.com",
+                    "gmail": "https://mail.google.com",
+                    "facebook": "https://facebook.com",
+                    "instagram": "https://instagram.com",
+                    "twitter": "https://twitter.com",
+                    "linkedin": "https://linkedin.com",
+                    "whatsapp": "https://web.whatsapp.com",
+                    "netflix": "https://netflix.com",
+                    "amazon": "https://amazon.com",
+                }
+                url = website_urls.get(target.lower())
+                if url:
+                    webbrowser.open(url); _ok(f"Opened {target}")
+                elif "." in target:
+                    webbrowser.open("https://" + target); _ok(f"Opened {target}")
+                else:
+                    open_app(target)
             elif il.startswith("plan "):
                 task  = inp[5:]
                 steps = swarm.planner.run({"task": task})
@@ -3359,7 +3513,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
             _err(f"Error: {e}")
 
 # ============================================================
-# BLOCK 30 - MAIN
+# BLOCK 31 - MAIN
 # ============================================================
 async def main_async(token: str):
     log.info("main_async: initializing all subsystems")
@@ -3464,8 +3618,6 @@ def main():
     audit("STARTUP", f"v{VERSION}", "OK")
 
     try:
-        # FIX: On Windows with ProactorEventLoop, asyncio.run() is the correct call.
-        # Do NOT use get_event_loop().run_until_complete() - it causes issues on Windows.
         asyncio.run(main_async(token))
     except KeyboardInterrupt:
         print("\n\n  Dacexy stopped by user.")
