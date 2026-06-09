@@ -1243,7 +1243,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 
 
 _agent_lines = [
-   ﻿from __future__ import annotations
+﻿from __future__ import annotations
 import json
 import asyncio
 import logging
