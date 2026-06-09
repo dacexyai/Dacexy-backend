@@ -1922,52 +1922,56 @@ class EnterpriseBrowserAgent:
             pass
         return research
 
-    def send_gmail_via_browser(self, to: str, subject: str, body: str) -> bool:
-        """Open Gmail in browser and send email using Selenium."""
+    def compose_gmail(self, to: str, subject: str, body: str) -> bool:
+        """Open Gmail in browser and compose+send an email using Selenium."""
         try:
             if not self.driver:
-                if not self.start("chrome"):
-                    return False
+                self.start("chrome")
             self.go_to("https://mail.google.com", wait=4)
             time.sleep(3)
             # Click Compose
-            composed = self.find_and_click('[gh="cm"]', fallback_selectors=[
-                'div[class*="compose"]', '//div[text()="Compose"]'])
+            composed = False
+            for sel in ["[gh='cm']", ".T-I.T-I-KE.L3", "[data-tooltip='Compose']",
+                        "//div[contains(text(),'Compose')]"]:
+                by = "xpath" if sel.startswith("//") else "css"
+                if self.find_and_click(sel, by=by):
+                    composed = True
+                    break
             if not composed:
-                # Try xpath
-                self.find_and_click('//div[text()="Compose"]', by="xpath")
+                _err("Could not find Compose button in Gmail")
+                return False
             time.sleep(2)
             # To field
-            to_el = self.find('//textarea[@name="to"]', by="xpath") or \
-                    self.find('input[name="to"]')
-            if to_el:
-                to_el.click(); time.sleep(0.3)
-                to_el.send_keys(to); time.sleep(0.5)
-                to_el.send_keys(Keys.TAB)
+            for sel in ["[name='to']", ".agP.aFw input", "[aria-label='To']"]:
+                if self.find_and_type(sel, to, clear=True):
+                    break
             time.sleep(0.5)
-            # Subject
-            subj_el = self.find('//input[@name="subjectbox"]', by="xpath") or \
-                      self.find('input[name="subjectbox"]')
-            if subj_el:
-                subj_el.click(); time.sleep(0.2)
-                subj_el.send_keys(subject)
-            time.sleep(0.3)
-            # Body
-            body_el = self.find('//div[@role="textbox"][@aria-label="Message Body"]', by="xpath") or \
-                      self.find('div[role="textbox"]')
-            if body_el:
-                body_el.click(); time.sleep(0.3)
-                body_el.send_keys(body)
+            pyautogui.press("tab")
             time.sleep(0.5)
-            # Send
-            self.find_and_click('//div[@role="button"][@data-tooltip="Send"]', by="xpath",
-                                 fallback_selectors=['[data-tooltip="Send"]'])
-            time.sleep(2)
-            _ok(f"Gmail sent to {to}")
-            audit("GMAIL_BROWSER", mask_pii(to), "SENT")
-            return True
+            # Subject field
+            for sel in ["[name='subjectbox']", "[placeholder='Subject']", ".aoT"]:
+                if self.find_and_type(sel, subject, clear=True):
+                    break
+            time.sleep(0.5)
+            # Body field
+            for sel in ["[aria-label='Message Body']", ".Am.Al.editable", "[role='textbox']"]:
+                if self.find_and_type(sel, body, clear=False):
+                    break
+            time.sleep(0.5)
+            # Send button
+            for sel in ["[data-tooltip='Send']", "[aria-label='Send']",
+                        ".T-I.J-J5-Ji.aoO.v7.T-I-atl.L3",
+                        "//div[contains(@aria-label,'Send')]"]:
+                by = "xpath" if sel.startswith("//") else "css"
+                if self.find_and_click(sel, by=by):
+                    time.sleep(2)
+                    _ok(f"Email sent to {to}")
+                    audit("GMAIL_SEND", mask_pii(to), "OK")
+                    return True
+            _err("Could not find Send button")
+            return False
         except Exception as e:
-            log.error("send_gmail_via_browser: %s", e)
+            log.error("compose_gmail: %s", e)
             return False
 
     def whatsapp_bulk(self, contacts: List[str], message: str, delay: float = 3.5) -> Dict[str, Any]:
@@ -2181,7 +2185,7 @@ def is_blocked(cmd: str) -> bool:
     return any(b in cl for b in BLOCKED_COMMANDS)
 
 # ============================================================
-# BLOCK 20 - PLANNER AGENT
+# BLOCK 20 - PLANNER AGENT  (FIXED: correct action names in prompt)
 # ============================================================
 class PlannerAgent:
     def __init__(self, token: str):
@@ -2194,22 +2198,27 @@ class PlannerAgent:
             if not req_lib:
                 raise ValueError("no requests")
             ctx    = get_memory_context(desc)
+            # FIX: strict action list so planner never returns unknown actions
             prompt = (
-                f"You are a desktop automation planner for Windows.\n"
-                f"Task: {desc}\nContext: {ctx[:300]}\n\n"
-                f"Return ONLY a valid JSON array of steps. Each step must use ONLY these actions:\n"
-                f"open_url, open_app, browser_go, browser_click, browser_type, send_email,\n"
-                f"gmail_send, click, type_text, press, hotkey, screenshot, speak, wait,\n"
-                f"search_web, whatsapp_bulk, twitter_post, linkedin_post, swarm_task\n\n"
-                f"IMPORTANT RULES:\n"
-                f"- To open a website: use action 'open_url' with field 'url'\n"
-                f"- To send email via Gmail browser: use action 'gmail_send' with fields 'to', 'subject', 'body'\n"
-                f"- NEVER use action 'open' - use 'open_url' or 'open_app' instead\n"
-                f"- For clicks that need coordinates: use 'click_text' with field 'text' to find by text\n"
-                f"- For browser tasks: prefer 'gmail_send' over manual click steps\n\n"
-                f'Example: [{{"step":1,"action":"open_url","description":"Open YouTube","url":"https://youtube.com"}}]\n'
-                f'Example: [{{"step":1,"action":"gmail_send","description":"Send birthday email","to":"friend@gmail.com","subject":"Birthday Party","body":"You are invited!"}}]\n\n'
-                f"Return ONLY the JSON array, nothing else."
+                "You are a desktop automation planner. Return ONLY a JSON array, no markdown, no explanation.\n"
+                f"Task: {desc}\n"
+                f"Context: {ctx[:300]}\n\n"
+                "STRICT RULES:\n"
+                "- To open a website/URL use action 'open_url' with field 'url'\n"
+                "- To open an app use action 'open_app' with field 'app'\n"
+                "- To click on screen use action 'click' with fields 'x' and 'y' (real pixel coordinates)\n"
+                "- To type text use action 'type_text' with field 'text'\n"
+                "- To send email via Gmail browser use action 'gmail_send' with fields 'to','subject','body'\n"
+                "- To send email via SMTP use action 'send_email' with fields 'to','subject','body'\n"
+                "- To use browser automation use action 'browser_go' with field 'url'\n"
+                "- To click browser element use action 'browser_click' with field 'selector'\n"
+                "- To type in browser use action 'browser_type' with fields 'selector','text'\n"
+                "- To wait use action 'wait' with field 'seconds'\n"
+                "- To speak use action 'speak' with field 'text'\n"
+                "- To take screenshot use action 'screenshot'\n"
+                "- NEVER use action 'open' - use 'open_url' or 'open_app' instead\n"
+                "- NEVER use click with x=0,y=0 - only use click if you know real coordinates\n\n"
+                'Return ONLY: [{"step":1,"action":"open_url","description":"...","params":{},"url":"https://..."}]'
             )
             r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
                              headers={"Authorization": f"Bearer {self.token}",
@@ -2218,23 +2227,20 @@ class PlannerAgent:
                              timeout=35)
             if r.status_code == 200:
                 content = (r.json().get("content", "") or r.json().get("response", ""))
+                # strip markdown fences
+                content = re.sub(r"```(?:json)?", "", content).strip().rstrip("`")
                 m = re.search(r'\[.*\]', content, re.DOTALL)
                 if m:
                     steps = json.loads(m.group())
-                    # Normalize any stray "open" actions
-                    for step in steps:
-                        if step.get("action") == "open":
-                            url = step.get("url") or step.get("app") or step.get("text", "")
-                            if url and ("." in url or url.startswith("http")):
-                                step["action"] = "open_url"
-                                step["url"] = url
-                            else:
-                                step["action"] = "open_app"
-                                step["app"] = url
+                    # merge params into top level for executor compatibility
+                    for s in steps:
+                        for k, v in s.get("params", {}).items():
+                            if k not in s:
+                                s[k] = v
                     return steps
         except Exception as e:
             log.warning("Planning: %s", e)
-        return [{"step": 1, "action": "speak", "description": desc, "type": "speak", "params": {}}]
+        return [{"step": 1, "action": "speak", "description": desc, "text": f"I will do: {desc}", "params": {}}]
 
 
 # ============================================================
@@ -2266,7 +2272,7 @@ class AgentSwarm:
                 continue
 
     def plan_and_execute(self, task_desc: str, command_executor: Callable) -> Dict[str, Any]:
-        _task(f"Planning: {task_desc}")
+        _task(f"Swarm planning: {task_desc}")
         steps   = self.planner.run({"task": task_desc})
         _task(f"Executing {len(steps)} steps...")
         results = []
@@ -2279,7 +2285,7 @@ class AgentSwarm:
             _info(f"  Step {sn}: {desc}")
             for attempt in range(3):
                 try:
-                    r = command_executor({**step, **step.get("params", {})})
+                    r = command_executor(step)
                     results.append({"step": sn, "ok": True, "result": r})
                     get_mem().remember_success(desc, "swarm")
                     break
@@ -2482,41 +2488,30 @@ class VoiceAssistant3:
         t = text.lower().strip()
         if any(w in t for w in ["what time", "current time"]):
             return {"action": "get_time"}
-        if any(w in t for w in ["what date", "today's date"]):
+        if any(w in t for w in ["what date", "today"]):
             return {"action": "get_date"}
         if "screenshot" in t:
             return {"action": "screenshot"}
         if t.startswith("open "):
             target = t[5:].strip()
-            # Determine if it's a website or app
-            websites = ["youtube", "google", "gmail", "facebook", "instagram",
-                        "twitter", "linkedin", "whatsapp", "netflix", "amazon",
-                        "github", "stackoverflow", "reddit"]
-            website_urls = {
-                "youtube": "https://youtube.com",
-                "google": "https://google.com",
-                "gmail": "https://mail.google.com",
-                "facebook": "https://facebook.com",
-                "instagram": "https://instagram.com",
-                "twitter": "https://twitter.com",
-                "linkedin": "https://linkedin.com",
-                "whatsapp": "https://web.whatsapp.com",
-                "netflix": "https://netflix.com",
-                "amazon": "https://amazon.com",
-                "github": "https://github.com",
-                "reddit": "https://reddit.com",
-            }
-            for site, url in website_urls.items():
+            # smart routing: known sites go to browser, else open as app
+            sites = {"youtube": "https://youtube.com", "gmail": "https://mail.google.com",
+                     "google": "https://google.com", "facebook": "https://facebook.com",
+                     "instagram": "https://instagram.com", "twitter": "https://twitter.com",
+                     "whatsapp": "https://web.whatsapp.com", "linkedin": "https://linkedin.com",
+                     "netflix": "https://netflix.com", "amazon": "https://amazon.in",
+                     "flipkart": "https://flipkart.com", "github": "https://github.com"}
+            for site, url in sites.items():
                 if site in target:
                     return {"action": "open_url", "url": url}
             return {"action": "open_app", "app": target}
         if t.startswith("search for ") or t.startswith("google "):
             q = re.sub(r'^(search for|google)\s+', '', t).strip()
             return {"action": "search_web", "query": q}
-        if "send email" in t or "send a email" in t or "email" in t:
-            return {"action": "swarm_task", "task": text}
         if any(w in t for w in ["stop", "emergency stop", "halt"]):
             return {"action": "emergency_stop"}
+        if any(w in t for w in ["send email", "write email", "email to"]):
+            return {"action": "swarm_task", "task": text}
         return {"action": "swarm_task", "task": text}
 
     def _voice_loop(self):
@@ -2553,7 +2548,7 @@ class VoiceAssistant3:
                         except Exception as e:
                             log.warning("Voice callback: %s", e)
                     else:
-                        speak("Didn't catch that. Please try again.")
+                        speak("Didn't catch that. Try again.")
             except Exception as e:
                 log.debug("Voice loop: %s", e)
                 time.sleep(1)
@@ -2644,7 +2639,7 @@ def get_system_info() -> Dict[str, Any]:
         return {"error": str(e)}
 
 # ============================================================
-# BLOCK 27 - MASTER COMMAND EXECUTOR
+# BLOCK 27 - MASTER COMMAND EXECUTOR  (FIXED: all action aliases)
 # ============================================================
 def execute_command(cmd: dict, token: str = None,
                     browser: EnterpriseBrowserAgent = None,
@@ -2659,12 +2654,12 @@ def execute_command(cmd: dict, token: str = None,
     if not action:
         return {"status": "error", "message": "No action specified"}
 
-    task_desc = (cmd.get("text", "") or cmd.get("task", "") or action)
-    if is_blocked(task_desc):
+    task_desc = (cmd.get("text", "") or cmd.get("task", "") or cmd.get("url", "") or action)
+    if is_blocked(str(task_desc)):
         return {"status": "error", "message": "Command blocked for security"}
 
-    needs_perm, ptype = needs_permission(task_desc)
-    if needs_perm and not ask_permission(task_desc, ptype):
+    needs_perm, ptype = needs_permission(str(task_desc))
+    if needs_perm and not ask_permission(str(task_desc), ptype):
         return {"status": "denied", "message": "Permission denied"}
 
     audit("CMD", mask_pii(action))
@@ -2674,38 +2669,49 @@ def execute_command(cmd: dict, token: str = None,
     vi = get_vision()
 
     try:
-        # ── ALIASES: normalize any stray action names ──────────────────────
-        if action == "open":
-            url = cmd.get("url") or cmd.get("app") or cmd.get("text", "")
-            if url and ("." in url or url.startswith("http")):
-                action = "open_url"
-                cmd["url"] = url
-            else:
-                action = "open_app"
-                cmd["app"] = url
-
-        if action in ("type", "write"):
-            action = "type_text"
-
-        # ── SPEECH & NOTIFY ────────────────────────────────────────────────
+        # ── SPEECH & NOTIFY ──────────────────────────────────────
         if action == "speak":
             speak(cmd.get("text", "")); return {"status": "ok"}
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
 
-        # ── MOUSE ──────────────────────────────────────────────────────────
+        # ── OPEN aliases (FIX: handle 'open', 'launch', 'start') ─
+        elif action in ("open", "launch", "start"):
+            target = (cmd.get("url", "") or cmd.get("app", "") or
+                      cmd.get("text", "") or cmd.get("name", "")).strip()
+            if not target:
+                return {"status": "error", "message": "No target specified"}
+            sites = {"youtube": "https://youtube.com", "gmail": "https://mail.google.com",
+                     "google": "https://google.com", "facebook": "https://facebook.com",
+                     "instagram": "https://instagram.com", "twitter": "https://twitter.com",
+                     "whatsapp": "https://web.whatsapp.com", "linkedin": "https://linkedin.com",
+                     "netflix": "https://netflix.com", "amazon": "https://amazon.in",
+                     "flipkart": "https://flipkart.com", "github": "https://github.com",
+                     "chrome": "chrome", "notepad": "notepad.exe", "calculator": "calc.exe",
+                     "explorer": "explorer", "cmd": "cmd.exe", "terminal": "cmd.exe"}
+            tl = target.lower()
+            for name, dest in sites.items():
+                if name in tl:
+                    if dest.startswith("http"):
+                        webbrowser.open(dest)
+                        return {"status": "ok", "opened": dest}
+                    else:
+                        open_app(dest)
+                        return {"status": "ok", "opened": dest}
+            if target.startswith("http"):
+                webbrowser.open(target)
+                return {"status": "ok", "opened": target}
+            open_app(target)
+            return {"status": "ok", "opened": target}
+
+        # ── MOUSE ────────────────────────────────────────────────
         elif action == "click":
-            x = cmd.get("x"); y = cmd.get("y")
-            if x is None or y is None or (x == 0 and y == 0):
-                # Try to find by text if no coords
-                txt = cmd.get("text", "") or cmd.get("label", "")
-                if txt:
-                    pos = vi.find_text(txt)
-                    if pos:
-                        human_click(pos[0], pos[1])
-                        return {"status": "ok", "found_by": "text"}
-                return {"status": "skip", "message": "No coordinates provided"}
-            human_click(int(x), int(y), cmd.get("button", "left"))
+            x = int(cmd.get("x", 0) or 0)
+            y = int(cmd.get("y", 0) or 0)
+            if x == 0 and y == 0:
+                log.warning("click called with (0,0) - skipping")
+                return {"status": "skipped", "reason": "no coordinates"}
+            human_click(x, y, cmd.get("button", "left"))
             return {"status": "ok"}
         elif action == "right_click":
             human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), "right"); return {"status": "ok"}
@@ -2722,8 +2728,8 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_mouse_pos":
             x, y = pyautogui.position(); return {"status": "ok", "x": x, "y": y}
 
-        # ── KEYBOARD ───────────────────────────────────────────────────────
-        elif action == "type_text":
+        # ── KEYBOARD ─────────────────────────────────────────────
+        elif action in ("type", "type_text", "write"):
             smart_type(cmd.get("text", ""), cmd.get("clear_first", False),
                        cmd.get("human_speed", False)); return {"status": "ok"}
         elif action == "press":
@@ -2744,7 +2750,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "set_clipboard":
             set_clipboard(cmd.get("text", "")); return {"status": "ok"}
 
-        # ── VISION ─────────────────────────────────────────────────────────
+        # ── VISION ───────────────────────────────────────────────
         elif action == "screenshot":
             return {"status": "ok", "screenshot": vi.capture()}
         elif action in ("what_on_screen", "describe_screen"):
@@ -2778,7 +2784,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "start_vision_monitor":
             vi.start_monitoring(float(cmd.get("interval", 2.0))); return {"status": "ok"}
 
-        # ── WINDOW / APP ───────────────────────────────────────────────────
+        # ── WINDOW / APP ─────────────────────────────────────────
         elif action == "focus_window":
             return {"status": "ok" if focus_window(cmd.get("title", "")) else "not_found"}
         elif action == "minimize_window":
@@ -2792,30 +2798,16 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_active_window":
             return {"status": "ok", "title": get_active_window()}
         elif action == "open_app":
-            app = cmd.get("app", "")
-            app_map = {
-                "notepad": "notepad.exe", "calculator": "calc.exe",
-                "chrome": "chrome.exe", "firefox": "firefox.exe",
-                "word": "winword.exe", "excel": "excel.exe",
-                "explorer": "explorer.exe", "cmd": "cmd.exe",
-                "terminal": "cmd.exe", "paint": "mspaint.exe",
-                "vlc": "vlc.exe", "spotify": "spotify.exe",
-            }
-            resolved = app_map.get(app.lower(), app)
-            return {"status": "ok" if open_app(resolved) else "error"}
+            return {"status": "ok" if open_app(cmd.get("app", "")) else "error"}
         elif action == "kill_app":
             return {"status": "ok" if kill_app(cmd.get("name", "")) else "not_found"}
         elif action == "list_apps":
             return {"status": "ok", "apps": [a["name"] for a in list_running_apps()[:30]]}
-        elif action == "open_url":
-            url = cmd.get("url", "")
+        elif action in ("open_browser", "open_url"):
+            url = cmd.get("url", cmd.get("text", "https://google.com"))
             if not url.startswith("http"):
                 url = "https://" + url
-            webbrowser.open(url)
-            _ok(f"Opened URL: {url}")
-            return {"status": "ok", "url": url}
-        elif action == "open_browser":
-            webbrowser.open(cmd.get("url", "https://google.com")); return {"status": "ok"}
+            webbrowser.open(url); return {"status": "ok"}
         elif action == "open_notepad":
             open_app("notepad.exe"); return {"status": "ok"}
         elif action == "open_calculator":
@@ -2826,7 +2818,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "open_terminal":
             open_app("cmd.exe"); return {"status": "ok"}
 
-        # ── FILES ──────────────────────────────────────────────────────────
+        # ── FILES ────────────────────────────────────────────────
         elif action == "list_files":
             return {"status": "ok", "files": fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))}
         elif action == "read_file":
@@ -2860,34 +2852,46 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_disk_usage":
             return {"status": "ok", "usage": fe.get_disk_usage()}
 
-        # ── EMAIL ──────────────────────────────────────────────────────────
+        # ── EMAIL ────────────────────────────────────────────────
         elif action == "setup_gmail":
             if email_mgr: email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
             return {"status": "ok"}
         elif action == "setup_outlook":
             if email_mgr: email_mgr.setup_outlook(cmd.get("email", ""), cmd.get("password", ""))
             return {"status": "ok"}
-        elif action == "send_email":
-            if email_mgr:
+        elif action in ("send_email", "email"):
+            if email_mgr and email_mgr.smtp_config:
                 ok = email_mgr.send_single(cmd.get("to", ""), cmd.get("subject", ""),
                                            cmd.get("body", ""), cmd.get("html", False),
                                            cmd.get("attachment"))
+                speak(f"Email {'sent' if ok else 'failed'}.")
                 return {"status": "ok" if ok else "error"}
-            return {"status": "error", "message": "Email not configured"}
-        elif action == "gmail_send":
-            # Send via Gmail browser automation - no SMTP config needed
+            # fallback: open gmail in browser
             to      = cmd.get("to", "")
             subject = cmd.get("subject", "")
             body    = cmd.get("body", "")
-            if not browser:
-                browser = EnterpriseBrowserAgent()
-            ok = browser.send_gmail_via_browser(to, subject, body)
-            if ok:
-                speak(f"Email sent to {to}")
-                return {"status": "ok", "to": to}
+            if to:
+                url = f"https://mail.google.com/mail/?view=cm&to={quote(to)}&su={quote(subject)}&body={quote(body)}"
+                webbrowser.open(url)
+                speak(f"Opening Gmail to send email to {to}")
+                return {"status": "ok", "note": "opened in browser"}
+            return {"status": "error", "message": "No recipient specified"}
+        elif action == "gmail_send":
+            # Direct Gmail browser automation
+            to      = cmd.get("to", "")
+            subject = cmd.get("subject", "No Subject")
+            body    = cmd.get("body", "")
+            if not to:
+                return {"status": "error", "message": "No recipient"}
+            if browser and browser.driver:
+                ok = browser.compose_gmail(to, subject, body)
+                return {"status": "ok" if ok else "error"}
             else:
-                speak("Could not send email via Gmail browser. Make sure you are logged into Gmail.")
-                return {"status": "error", "message": "Gmail browser send failed"}
+                # fallback: mailto URL
+                url = f"https://mail.google.com/mail/?view=cm&to={quote(to)}&su={quote(subject)}&body={quote(body)}"
+                webbrowser.open(url)
+                speak(f"Opening Gmail compose to {to}")
+                return {"status": "ok", "note": "opened compose in browser"}
         elif action == "create_campaign":
             if email_mgr:
                 cid = email_mgr.create_campaign(
@@ -2916,16 +2920,15 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "dashboard": email_mgr.get_dashboard()}
             return {"status": "error"}
 
-        # ── BROWSER ────────────────────────────────────────────────────────
+        # ── BROWSER ──────────────────────────────────────────────
         elif action == "browser_start":
             if not browser: browser = EnterpriseBrowserAgent()
             return {"status": "ok" if browser.start(
                 cmd.get("browser", "chrome"), cmd.get("headless", False), cmd.get("profile")) else "error"}
-        elif action in ("browser_go", "browser_navigate"):
-            if browser and browser.driver:
-                browser.go_to(cmd.get("url", ""))
-            elif browser:
-                browser.start(); browser.go_to(cmd.get("url", ""))
+        elif action == "browser_go":
+            if not browser: browser = EnterpriseBrowserAgent()
+            if not browser.driver: browser.start()
+            browser.go_to(cmd.get("url", ""))
             return {"status": "ok"}
         elif action == "browser_click":
             if browser and browser.driver:
@@ -2960,7 +2963,7 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "result": browser.research_topic(
                 cmd.get("topic", "") or cmd.get("query", ""), int(cmd.get("max_pages", 3)))}
 
-        # ── SOCIAL MEDIA ───────────────────────────────────────────────────
+        # ── SOCIAL MEDIA ─────────────────────────────────────────
         elif action == "whatsapp_bulk":
             if not browser: browser = EnterpriseBrowserAgent()
             if not browser.driver: browser.start("chrome")
@@ -3023,7 +3026,7 @@ def execute_command(cmd: dict, token: str = None,
                     results["facebook"] = browser.facebook_post(cred["username"], cred["password"], text)
             return {"status": "ok", "results": results}
 
-        # ── AI SWARM ───────────────────────────────────────────────────────
+        # ── AI SWARM ─────────────────────────────────────────────
         elif action == "swarm_task":
             if swarm:
                 def _e(c):
@@ -3031,7 +3034,7 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "result": swarm.plan_and_execute(cmd.get("task", ""), _e)}
             return {"status": "error", "message": "Swarm not available"}
 
-        # ── MEMORY ─────────────────────────────────────────────────────────
+        # ── MEMORY ───────────────────────────────────────────────
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
                             importance=float(cmd.get("importance", 1.0))); return {"status": "ok"}
@@ -3074,7 +3077,7 @@ def execute_command(cmd: dict, token: str = None,
                                        cmd.get("description", ""), cmd.get("tags", []))
             return {"status": "ok", "skill_id": sid}
 
-        # ── MACROS ─────────────────────────────────────────────────────────
+        # ── MACROS ───────────────────────────────────────────────
         elif action == "create_macro":
             create_macro(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
         elif action == "run_macro":
@@ -3084,7 +3087,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
 
-        # ── SCHEDULER ──────────────────────────────────────────────────────
+        # ── SCHEDULER ────────────────────────────────────────────
         elif action == "schedule_job":
             if scheduler:
                 jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
@@ -3100,7 +3103,7 @@ def execute_command(cmd: dict, token: str = None,
             if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
             return {"status": "ok"}
 
-        # ── SYSTEM ─────────────────────────────────────────────────────────
+        # ── SYSTEM ───────────────────────────────────────────────
         elif action == "system_info":
             info = get_system_info()
             speak(f"CPU {info.get('cpu_percent','?')}%, RAM {info.get('ram_percent','?')}%")
@@ -3144,20 +3147,21 @@ def execute_command(cmd: dict, token: str = None,
             webbrowser.open(f"https://www.google.com/search?q={quote(q)}")
             return {"status": "ok"}
         elif action == "open_url":
-            url = cmd.get("url", "")
+            url = cmd.get("url", cmd.get("text", ""))
             if not url.startswith("http"): url = "https://" + url
-            webbrowser.open(url)
-            _ok(f"Opened: {url}")
-            return {"status": "ok"}
+            webbrowser.open(url); return {"status": "ok"}
         elif action == "emergency_stop":
             emergency_stop(); return {"status": "ok"}
         else:
-            log.warning("Unknown action: %s", action)
-            # Last resort: try to treat as a URL or app open
-            if action:
-                if "." in action and " " not in action:
-                    webbrowser.open("https://" + action)
-                    return {"status": "ok", "fallback": "opened as url"}
+            # last resort: try to open as URL or app
+            if action.startswith("http"):
+                webbrowser.open(action); return {"status": "ok"}
+            log.warning("Unknown action: %s — attempting as swarm task", action)
+            if swarm:
+                def _e(c):
+                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
+                task_str = cmd.get("task", "") or cmd.get("description", "") or action
+                return {"status": "ok", "result": swarm.plan_and_execute(task_str, _e)}
             return {"status": "error", "message": f"Unknown action: {action}"}
 
     except Exception as e:
@@ -3463,25 +3467,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                 smart_type(inp[5:])
             elif il.startswith("open "):
                 target = inp[5:].strip()
-                website_urls = {
-                    "youtube": "https://youtube.com",
-                    "google": "https://google.com",
-                    "gmail": "https://mail.google.com",
-                    "facebook": "https://facebook.com",
-                    "instagram": "https://instagram.com",
-                    "twitter": "https://twitter.com",
-                    "linkedin": "https://linkedin.com",
-                    "whatsapp": "https://web.whatsapp.com",
-                    "netflix": "https://netflix.com",
-                    "amazon": "https://amazon.com",
-                }
-                url = website_urls.get(target.lower())
-                if url:
-                    webbrowser.open(url); _ok(f"Opened {target}")
-                elif "." in target:
-                    webbrowser.open("https://" + target); _ok(f"Opened {target}")
-                else:
-                    open_app(target)
+                _exec({"action": "open", "text": target})
             elif il.startswith("plan "):
                 task  = inp[5:]
                 steps = swarm.planner.run({"task": task})
