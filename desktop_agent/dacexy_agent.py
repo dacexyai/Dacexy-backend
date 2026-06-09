@@ -17,10 +17,10 @@ if platform.system() == "Windows":
         _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
 
 if platform.system() == "Windows":
-    import io
+    import io as _io
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
 
@@ -301,6 +301,45 @@ RESEARCH_DIR  = Path.home() / "DacexyResearch"
 VERSION       = "15.0 ENTERPRISE"
 WAKE_WORDS    = ["hey dacexy", "dacexy", "assistant"]
 
+# Known websites for smart routing
+KNOWN_SITES: Dict[str, str] = {
+    "youtube":   "https://youtube.com",
+    "gmail":     "https://mail.google.com",
+    "google":    "https://google.com",
+    "facebook":  "https://facebook.com",
+    "instagram": "https://instagram.com",
+    "twitter":   "https://twitter.com",
+    "x.com":     "https://x.com",
+    "whatsapp":  "https://web.whatsapp.com",
+    "linkedin":  "https://linkedin.com",
+    "netflix":   "https://netflix.com",
+    "amazon":    "https://amazon.in",
+    "flipkart":  "https://flipkart.com",
+    "github":    "https://github.com",
+    "reddit":    "https://reddit.com",
+    "wikipedia": "https://wikipedia.org",
+    "stackoverflow": "https://stackoverflow.com",
+}
+
+KNOWN_APPS: Dict[str, str] = {
+    "chrome":      "chrome",
+    "notepad":     "notepad.exe",
+    "calculator":  "calc.exe",
+    "calc":        "calc.exe",
+    "explorer":    "explorer",
+    "cmd":         "cmd.exe",
+    "terminal":    "cmd.exe",
+    "paint":       "mspaint.exe",
+    "word":        "winword.exe",
+    "excel":       "excel.exe",
+    "powerpoint":  "powerpnt.exe",
+    "vlc":         "vlc.exe",
+    "spotify":     "spotify.exe",
+    "vs code":     "code.exe",
+    "vscode":      "code.exe",
+    "task manager":"taskmgr.exe",
+}
+
 for _d in [PLUGINS_DIR, COOKIES_DIR, NOTES_DIR, BACKUP_DIR, RESEARCH_DIR]:
     try:
         _d.mkdir(exist_ok=True)
@@ -318,6 +357,7 @@ _emergency_stop_event = threading.Event()
 _executor             = ThreadPoolExecutor(max_workers=8)
 _ws_connection        = None
 _result_cache: Dict[str, Any] = {}
+_healer_instance      = None   # FIX: singleton so metrics are preserved
 
 MEMORY = {
     "facts": [], "preferences": {}, "task_history": deque(maxlen=500),
@@ -619,7 +659,7 @@ def setup_autostart():
                              0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        log.info("Autostart registered")
+        log.info("Autostart registered: %s", cmd)
     except Exception as e:
         log.warning("Autostart: %s", e)
 
@@ -644,6 +684,7 @@ def login() -> Optional[str]:
         r = req_lib.post(f"{BACKEND_HTTP}/auth/login",
                          json={"email": email, "password": password},
                          headers={"Content-Type": "application/json"}, timeout=30)
+        log.info("Login response: %d", r.status_code)
         if r.status_code == 200:
             token = r.json().get("access_token", "")
             if token:
@@ -701,7 +742,8 @@ class MemorySystem:
                             embedding=self._embed(content))
         with self._lock:
             self.entries[eid] = entry
-            self._sync_legacy(category, content, metadata)
+        # sync to legacy MEMORY dict under its own lock
+        self._sync_legacy(category, content, metadata)
         try:
             self.save()
         except Exception:
@@ -709,16 +751,17 @@ class MemorySystem:
         return eid
 
     def _sync_legacy(self, category, content, metadata):
-        if category == "fact":
-            if content not in MEMORY["facts"]:
-                MEMORY["facts"].append(content)
-        elif category == "preference":
-            k = (metadata or {}).get("key", "pref")
-            MEMORY["preferences"][k] = content
-        elif category == "success":
-            MEMORY["success_patterns"].append(content)
-        elif category == "failure":
-            MEMORY["failure_patterns"].append(content)
+        with _memory_lock:
+            if category == "fact":
+                if content not in MEMORY["facts"]:
+                    MEMORY["facts"].append(content)
+            elif category == "preference":
+                k = (metadata or {}).get("key", "pref")
+                MEMORY["preferences"][k] = content
+            elif category == "success":
+                MEMORY["success_patterns"].append(content)
+            elif category == "failure":
+                MEMORY["failure_patterns"].append(content)
 
     def search(self, query: str, top_k: int = 5, category: str = None) -> List[MemoryEntry]:
         q_vec  = self._embed(query)
@@ -734,7 +777,7 @@ class MemorySystem:
 
     def get_context(self, query: str = "") -> str:
         parts = []
-        with self._lock:
+        with _memory_lock:
             if MEMORY["facts"]:
                 parts.append("Facts: " + "; ".join(MEMORY["facts"][-15:]))
             if MEMORY["preferences"]:
@@ -821,6 +864,7 @@ class MemorySystem:
                     MEMORY["learned_skills"]   = data.get("learned_skills", [])
                     history = data.get("task_history", [])
                     MEMORY["task_history"] = deque(history[-500:], maxlen=500)
+                with self._lock:
                     for ed in data.get("entries", []):
                         try:
                             e = MemoryEntry(**ed)
@@ -835,18 +879,29 @@ class MemorySystem:
     def save(self):
         try:
             with _memory_lock:
-                data = {
-                    "facts":            MEMORY["facts"][-500:],
-                    "preferences":      MEMORY["preferences"],
-                    "user_profile":     MEMORY["user_profile"],
-                    "workflows":        MEMORY["workflows"],
-                    "email_contacts":   MEMORY["email_contacts"][-1000:],
-                    "success_patterns": MEMORY["success_patterns"][-200:],
-                    "failure_patterns": MEMORY["failure_patterns"][-200:],
-                    "learned_skills":   MEMORY["learned_skills"][-100:],
-                    "task_history":     list(MEMORY["task_history"])[-500:],
-                    "entries": [asdict(e) for e in list(self.entries.values())[-300:]],
-                }
+                facts            = list(MEMORY["facts"][-500:])
+                preferences      = dict(MEMORY["preferences"])
+                user_profile     = dict(MEMORY["user_profile"])
+                workflows        = dict(MEMORY["workflows"])
+                email_contacts   = list(MEMORY["email_contacts"][-1000:])
+                success_patterns = list(MEMORY["success_patterns"][-200:])
+                failure_patterns = list(MEMORY["failure_patterns"][-200:])
+                learned_skills   = list(MEMORY["learned_skills"][-100:])
+                task_history     = list(MEMORY["task_history"])[-500:]
+            with self._lock:
+                entries_snap = [asdict(e) for e in list(self.entries.values())[-300:]]
+            data = {
+                "facts":            facts,
+                "preferences":      preferences,
+                "user_profile":     user_profile,
+                "workflows":        workflows,
+                "email_contacts":   email_contacts,
+                "success_patterns": success_patterns,
+                "failure_patterns": failure_patterns,
+                "learned_skills":   learned_skills,
+                "task_history":     task_history,
+                "entries":          entries_snap,
+            }
             tmp = MEMORY_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(MEMORY_FILE)
@@ -855,19 +910,22 @@ class MemorySystem:
 
     def _save_skills(self):
         try:
-            SKILLS_FILE.write_text(
-                json.dumps({k: asdict(v) for k, v in self.skills.items()}, indent=2))
+            with self._lock:
+                data = {k: asdict(v) for k, v in self.skills.items()}
+            SKILLS_FILE.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
 
     def _load_skills(self):
         try:
             if SKILLS_FILE.exists():
-                for k, v in json.loads(SKILLS_FILE.read_text()).items():
-                    try:
-                        self.skills[k] = LearnedSkill(**v)
-                    except Exception:
-                        pass
+                raw = json.loads(SKILLS_FILE.read_text())
+                with self._lock:
+                    for k, v in raw.items():
+                        try:
+                            self.skills[k] = LearnedSkill(**v)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -1175,6 +1233,7 @@ class SuperVisionEngine:
                 except Exception:
                     pass
         threading.Thread(target=_loop, daemon=True, name="VisionMonitor").start()
+        log.info("Vision monitoring started")
 
 
 _vision_engine: Optional[SuperVisionEngine] = None
@@ -1354,21 +1413,62 @@ def kill_app(name: str) -> bool:
 
 
 def open_app(app_name: str) -> bool:
+    """Open an application by name or path."""
     try:
         if platform.system() == "Windows":
-            os.startfile(app_name)
-        else:
-            subprocess.Popen([app_name], shell=True)
-        time.sleep(1.5)
-        return True
-    except Exception:
+            try:
+                os.startfile(app_name)
+                time.sleep(1.5)
+                return True
+            except Exception:
+                pass
         try:
             subprocess.Popen(app_name, shell=True)
             time.sleep(1.5)
             return True
         except Exception as e:
-            log.warning("open_app: %s", e)
+            log.warning("open_app '%s': %s", app_name, e)
             return False
+    except Exception:
+        return False
+
+
+def _smart_open(target: str) -> dict:
+    """
+    FIX: Central smart-open that handles 'open youtube', 'open chrome',
+    'open C:/file.pdf', 'open https://...' — used by 'open', 'launch', 'start' aliases.
+    """
+    tl = target.lower().strip()
+
+    # 1. Known websites
+    for name, url in KNOWN_SITES.items():
+        if name in tl:
+            webbrowser.open(url)
+            return {"status": "ok", "opened": url}
+
+    # 2. Direct URL
+    if tl.startswith("http://") or tl.startswith("https://") or tl.startswith("www."):
+        url = target if target.startswith("http") else "https://" + target
+        webbrowser.open(url)
+        return {"status": "ok", "opened": url}
+
+    # 3. Known app names
+    for name, exe in KNOWN_APPS.items():
+        if name in tl:
+            open_app(exe)
+            return {"status": "ok", "opened": exe}
+
+    # 4. File path
+    if os.path.exists(target):
+        try:
+            os.startfile(target) if platform.system() == "Windows" else subprocess.Popen(["xdg-open", target])
+            return {"status": "ok", "opened": target}
+        except Exception:
+            pass
+
+    # 5. Fallback: try as app name / command
+    ok = open_app(target)
+    return {"status": "ok" if ok else "error", "opened": target}
 
 # ============================================================
 # BLOCK 16 - FILE ENGINE
@@ -1571,6 +1671,7 @@ class EmailCampaignManager:
         except Exception:
             pass
         threading.Thread(target=self._retry_worker, daemon=True, name="EmailRetry").start()
+        log.info("EmailCampaignManager initialized")
 
     def _load_campaigns(self):
         if CAMPAIGN_FILE.exists():
@@ -1583,8 +1684,9 @@ class EmailCampaignManager:
 
     def _save_campaigns(self):
         try:
-            CAMPAIGN_FILE.write_text(
-                json.dumps({cid: asdict(c) for cid, c in self.campaigns.items()}, indent=2))
+            with _campaign_lock:
+                data = {cid: asdict(c) for cid, c in self.campaigns.items()}
+            CAMPAIGN_FILE.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
 
@@ -1652,6 +1754,8 @@ class EmailCampaignManager:
         speak(f"Starting email campaign '{camp.name}' to {len(camp.recipients)} recipients.")
         sent = failed = bounced = 0
         start_t = time.time()
+        server = None
+        cfg    = None
         try:
             server, cfg = self._get_smtp(provider_index)
             from_email  = cfg.get("email", "")
@@ -1666,23 +1770,31 @@ class EmailCampaignManager:
                     msg.attach(MIMEText(body, "html" if camp.html else "plain", "utf-8"))
                     server.sendmail(from_email, to, msg.as_string())
                     sent += 1; camp.sent = sent
-                    _info(f"[{i+1}/{len(camp.recipients)}] -> {to}")
+                    _info(f"[{i+1}/{len(camp.recipients)}] -> {mask_pii(to)}")
                     time.sleep(camp.delay_sec + random.uniform(0.1, 0.4))
+                    # FIX: reconnect every 100 emails with local vars only
                     if (i + 1) % 100 == 0:
-                        try: server.quit()
-                        except Exception: pass
+                        try:
+                            server.quit()
+                        except Exception:
+                            pass
                         server, cfg = self._get_smtp(provider_index)
+                        from_email  = cfg.get("email", "")
                 except smtplib.SMTPRecipientsRefused:
                     bounced += 1; failed += 1
                 except Exception as e:
                     failed += 1
                     camp.retry_queue.append(to)
-                    log.warning("Email failed %s: %s", to, e)
-            try: server.quit()
-            except Exception: pass
+                    log.warning("Email failed %s: %s", mask_pii(to), e)
         except Exception as e:
             log.error("Campaign SMTP error: %s", e)
             failed = len(camp.recipients) - sent
+        finally:
+            if server:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
         elapsed = time.time() - start_t
         camp.status = "complete"; camp.sent = sent; camp.failed = failed; camp.bounced = bounced
         self._save_campaigns()
@@ -1698,7 +1810,9 @@ class EmailCampaignManager:
                     html: bool = False, attachment: str = None) -> bool:
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject; msg["From"] = self.smtp_config.get("email", ""); msg["To"] = to
+            msg["Subject"] = subject
+            msg["From"]    = self.smtp_config.get("email", "")
+            msg["To"]      = to
             msg.attach(MIMEText(body, "html" if html else "plain", "utf-8"))
             if attachment and os.path.exists(attachment):
                 with open(attachment, "rb") as f:
@@ -1724,11 +1838,11 @@ class EmailCampaignManager:
                 camps = list(self.campaigns.values())
             for camp in camps:
                 if camp.retry_queue and camp.status == "complete":
-                    orig            = camp.recipients[:]
-                    camp.recipients = list(camp.retry_queue)
+                    orig             = camp.recipients[:]
+                    camp.recipients  = list(camp.retry_queue)
                     camp.retry_queue = []
                     self.send_campaign(camp.campaign_id)
-                    camp.recipients = orig
+                    camp.recipients  = orig
 
     def get_dashboard(self) -> Dict:
         clist  = [{"name": c.name, "sent": c.sent, "failed": c.failed,
@@ -1748,6 +1862,7 @@ class EnterpriseBrowserAgent:
 
     def __init__(self):
         self.driver = None; self.browser_type = "chrome"; self.headless = False
+        log.info("EnterpriseBrowserAgent initialized")
 
     def start(self, browser: str = "chrome", headless: bool = False, profile: str = None) -> bool:
         if not SELENIUM_OK:
@@ -1788,10 +1903,9 @@ class EnterpriseBrowserAgent:
             pass
 
     def _by(self, by: str):
-        from selenium.webdriver.common.by import By as _B
-        return {"css": _B.CSS_SELECTOR, "xpath": _B.XPATH, "id": _B.ID,
-                "name": _B.NAME, "text": _B.LINK_TEXT, "class": _B.CLASS_NAME,
-                "tag": _B.TAG_NAME}.get(by, _B.CSS_SELECTOR)
+        return {"css": By.CSS_SELECTOR, "xpath": By.XPATH, "id": By.ID,
+                "name": By.NAME, "text": By.LINK_TEXT, "class": By.CLASS_NAME,
+                "tag": By.TAG_NAME}.get(by, By.CSS_SELECTOR)
 
     def find(self, selector: str, by: str = "css", timeout: int = None):
         try:
@@ -1923,17 +2037,16 @@ class EnterpriseBrowserAgent:
         return research
 
     def compose_gmail(self, to: str, subject: str, body: str) -> bool:
-        """Open Gmail in browser and compose+send an email using Selenium."""
+        """Open Gmail and send email using browser automation."""
         try:
             if not self.driver:
                 self.start("chrome")
             self.go_to("https://mail.google.com", wait=4)
             time.sleep(3)
-            # Click Compose
             composed = False
-            for sel in ["[gh='cm']", ".T-I.T-I-KE.L3", "[data-tooltip='Compose']",
-                        "//div[contains(text(),'Compose')]"]:
-                by = "xpath" if sel.startswith("//") else "css"
+            for sel, by in [("[gh='cm']", "css"), (".T-I.T-I-KE.L3", "css"),
+                             ("[data-tooltip='Compose']", "css"),
+                             ("//div[contains(text(),'Compose')]", "xpath")]:
                 if self.find_and_click(sel, by=by):
                     composed = True
                     break
@@ -1941,31 +2054,25 @@ class EnterpriseBrowserAgent:
                 _err("Could not find Compose button in Gmail")
                 return False
             time.sleep(2)
-            # To field
             for sel in ["[name='to']", ".agP.aFw input", "[aria-label='To']"]:
                 if self.find_and_type(sel, to, clear=True):
                     break
             time.sleep(0.5)
             pyautogui.press("tab")
             time.sleep(0.5)
-            # Subject field
             for sel in ["[name='subjectbox']", "[placeholder='Subject']", ".aoT"]:
                 if self.find_and_type(sel, subject, clear=True):
                     break
             time.sleep(0.5)
-            # Body field
             for sel in ["[aria-label='Message Body']", ".Am.Al.editable", "[role='textbox']"]:
                 if self.find_and_type(sel, body, clear=False):
                     break
             time.sleep(0.5)
-            # Send button
-            for sel in ["[data-tooltip='Send']", "[aria-label='Send']",
-                        ".T-I.J-J5-Ji.aoO.v7.T-I-atl.L3",
-                        "//div[contains(@aria-label,'Send')]"]:
-                by = "xpath" if sel.startswith("//") else "css"
+            for sel, by in [("[data-tooltip='Send']", "css"), ("[aria-label='Send']", "css"),
+                             ("//div[contains(@aria-label,'Send')]", "xpath")]:
                 if self.find_and_click(sel, by=by):
                     time.sleep(2)
-                    _ok(f"Email sent to {to}")
+                    _ok(f"Email sent to {mask_pii(to)}")
                     audit("GMAIL_SEND", mask_pii(to), "OK")
                     return True
             _err("Could not find Send button")
@@ -2185,66 +2292,213 @@ def is_blocked(cmd: str) -> bool:
     return any(b in cl for b in BLOCKED_COMMANDS)
 
 # ============================================================
-# BLOCK 20 - PLANNER AGENT  (FIXED: correct action names in prompt)
+# BLOCK 20 - PLANNER AGENT
+# (FIX: strict action names, robust JSON parsing, correct field extraction)
 # ============================================================
 class PlannerAgent:
+    # These are ALL valid executor actions — planner must only use these
+    VALID_ACTIONS = {
+        "open_url", "open_app", "open_browser", "browser_go", "browser_click",
+        "browser_type", "browser_extract", "browser_js", "browser_screenshot",
+        "browser_start", "google_search", "research",
+        "click", "right_click", "double_click", "move_mouse", "drag", "scroll",
+        "type", "type_text", "write", "press", "hotkey", "copy", "paste",
+        "get_clipboard", "set_clipboard",
+        "screenshot", "ocr_screen", "ocr_fast", "find_text_on_screen", "click_text",
+        "wait_for_text", "detect_ui", "detect_popups", "detect_errors", "app_state",
+        "describe_screen", "what_on_screen",
+        "focus_window", "minimize_window", "maximize_window", "close_window",
+        "list_windows", "get_active_window", "open_notepad", "open_calculator",
+        "open_file_explorer", "open_terminal", "open_app", "kill_app", "list_apps",
+        "send_email", "gmail_send", "setup_gmail", "setup_outlook",
+        "create_campaign", "send_campaign", "bulk_email", "email_dashboard",
+        "whatsapp_bulk", "whatsapp_send",
+        "twitter_post", "linkedin_post", "facebook_post", "instagram_post",
+        "youtube_upload", "tiktok_post", "post_all_social",
+        "list_files", "read_file", "write_file", "delete_file", "copy_file",
+        "move_file", "create_folder", "search_files", "compress_files",
+        "extract_zip", "backup_folder", "organize_folder", "get_disk_usage",
+        "remember", "get_memory", "search_memory", "remember_preference",
+        "save_workflow", "run_workflow", "remember_contact", "list_contacts",
+        "list_skills", "run_skill", "save_skill",
+        "create_macro", "run_macro", "list_macros",
+        "schedule_job", "list_jobs", "remove_job",
+        "system_info", "check_internet", "get_time", "get_date", "lock_screen",
+        "run_command", "wait", "health_check", "create_note", "search_web",
+        "speak", "notify", "emergency_stop", "swarm_task",
+    }
+
     def __init__(self, token: str):
         self.token = token
 
     def run(self, task: Dict[str, Any]) -> List[Dict]:
         desc = task.get("task", "")
         log.info("Planner: %s", desc)
+
+        # Fast local routing for simple tasks — no API call needed
+        quick = self._quick_plan(desc)
+        if quick:
+            return quick
+
         try:
             if not req_lib:
                 raise ValueError("no requests")
             ctx    = get_memory_context(desc)
-            # FIX: strict action list so planner never returns unknown actions
-            prompt = (
-                "You are a desktop automation planner. Return ONLY a JSON array, no markdown, no explanation.\n"
-                f"Task: {desc}\n"
-                f"Context: {ctx[:300]}\n\n"
-                "STRICT RULES:\n"
-                "- To open a website/URL use action 'open_url' with field 'url'\n"
-                "- To open an app use action 'open_app' with field 'app'\n"
-                "- To click on screen use action 'click' with fields 'x' and 'y' (real pixel coordinates)\n"
-                "- To type text use action 'type_text' with field 'text'\n"
-                "- To send email via Gmail browser use action 'gmail_send' with fields 'to','subject','body'\n"
-                "- To send email via SMTP use action 'send_email' with fields 'to','subject','body'\n"
-                "- To use browser automation use action 'browser_go' with field 'url'\n"
-                "- To click browser element use action 'browser_click' with field 'selector'\n"
-                "- To type in browser use action 'browser_type' with fields 'selector','text'\n"
-                "- To wait use action 'wait' with field 'seconds'\n"
-                "- To speak use action 'speak' with field 'text'\n"
-                "- To take screenshot use action 'screenshot'\n"
-                "- NEVER use action 'open' - use 'open_url' or 'open_app' instead\n"
-                "- NEVER use click with x=0,y=0 - only use click if you know real coordinates\n\n"
-                'Return ONLY: [{"step":1,"action":"open_url","description":"...","params":{},"url":"https://..."}]'
-            )
-            r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
-                             headers={"Authorization": f"Bearer {self.token}",
-                                      "Content-Type": "application/json"},
-                             json={"messages": [{"role": "user", "content": prompt}], "stream": False},
-                             timeout=35)
+            prompt = self._build_prompt(desc, ctx)
+            r = req_lib.post(
+                f"{BACKEND_HTTP}/ai/chat",
+                headers={"Authorization": f"Bearer {self.token}",
+                         "Content-Type": "application/json"},
+                json={"messages": [{"role": "user", "content": prompt}], "stream": False},
+                timeout=35)
             if r.status_code == 200:
-                content = (r.json().get("content", "") or r.json().get("response", ""))
-                # strip markdown fences
-                content = re.sub(r"```(?:json)?", "", content).strip().rstrip("`")
-                m = re.search(r'\[.*\]', content, re.DOTALL)
-                if m:
-                    steps = json.loads(m.group())
-                    # merge params into top level for executor compatibility
+                content = (r.json().get("content", "") or r.json().get("response", "") or "")
+                steps   = self._parse_steps(content)
+                if steps:
+                    # Merge params sub-dict into top level for executor
                     for s in steps:
                         for k, v in s.get("params", {}).items():
                             if k not in s:
                                 s[k] = v
+                        # FIX: validate action name, remap if unknown
+                        s["action"] = self._remap_action(s.get("action", "speak"))
                     return steps
         except Exception as e:
-            log.warning("Planning: %s", e)
-        return [{"step": 1, "action": "speak", "description": desc, "text": f"I will do: {desc}", "params": {}}]
+            log.warning("Planning API: %s", e)
+
+        # Final fallback
+        return self._fallback_plan(desc)
+
+    def _quick_plan(self, desc: str) -> Optional[List[Dict]]:
+        """Local fast plans without AI for common tasks."""
+        dl = desc.lower().strip()
+
+        # Open website/app
+        for name, url in KNOWN_SITES.items():
+            if f"open {name}" in dl or f"go to {name}" in dl or f"launch {name}" in dl:
+                return [{"step": 1, "action": "open_url", "url": url,
+                         "description": f"Open {name}"}]
+        for name, exe in KNOWN_APPS.items():
+            if f"open {name}" in dl or f"launch {name}" in dl or f"start {name}" in dl:
+                return [{"step": 1, "action": "open_app", "app": exe,
+                         "description": f"Open {name}"}]
+
+        # Time/date queries
+        if any(w in dl for w in ["what time", "current time", "time hai", "time kya"]):
+            return [{"step": 1, "action": "get_time", "description": "Get current time"}]
+        if any(w in dl for w in ["what date", "today date", "aaj ki date"]):
+            return [{"step": 1, "action": "get_date", "description": "Get today's date"}]
+
+        # Screenshot
+        if "screenshot" in dl or "screen shot" in dl:
+            return [{"step": 1, "action": "screenshot", "description": "Take screenshot"}]
+
+        # System info
+        if any(w in dl for w in ["system info", "sysinfo", "cpu", "battery", "ram", "battery"]):
+            return [{"step": 1, "action": "system_info", "description": "Get system info"}]
+
+        # Web search
+        m = re.match(r'^(?:search|google|find|search for)\s+(.+)$', dl)
+        if m:
+            return [{"step": 1, "action": "search_web", "query": m.group(1).strip(),
+                     "description": f"Search: {m.group(1)}"}]
+
+        return None  # Needs AI planning
+
+    def _build_prompt(self, desc: str, ctx: str) -> str:
+        valid_list = ", ".join(sorted(self.VALID_ACTIONS))
+        return (
+            f"You are a desktop automation planner. Return ONLY a JSON array, no markdown.\n"
+            f"Task: {desc}\n"
+            f"Context: {ctx[:300]}\n\n"
+            f"VALID ACTIONS (use ONLY these): {valid_list}\n\n"
+            "RULES:\n"
+            "- To open a website use action 'open_url' with field 'url' (full https://...)\n"
+            "- To open an app use action 'open_app' with field 'app'\n"
+            "- To click use action 'click' with 'x' and 'y' (real screen pixels, NOT 0,0)\n"
+            "- To type use action 'type_text' with field 'text'\n"
+            "- To search web use action 'search_web' with field 'query'\n"
+            "- For complex multi-step tasks use 'browser_go', 'browser_click', 'browser_type'\n"
+            "- For voice/Hindi requests use 'speak' with translated English response in 'text'\n"
+            "- NEVER use action 'open' — use 'open_url' or 'open_app'\n"
+            "- NEVER use click with x=0, y=0\n\n"
+            'Return ONLY: [{"step":1,"action":"open_url","description":"Open YouTube","url":"https://youtube.com"}]'
+        )
+
+    def _parse_steps(self, content: str) -> Optional[List[Dict]]:
+        """FIX: robust JSON extraction that handles markdown fences and partial content."""
+        try:
+            # Strip markdown code fences
+            content = re.sub(r'```(?:json)?', '', content).strip().rstrip('`').strip()
+            # Find the outermost JSON array
+            start = content.find('[')
+            end   = content.rfind(']')
+            if start == -1 or end == -1 or end <= start:
+                return None
+            raw = content[start:end + 1]
+            steps = json.loads(raw)
+            if isinstance(steps, list) and len(steps) > 0:
+                return steps
+        except Exception as e:
+            log.debug("Step parse error: %s | content: %s", e, content[:200])
+        return None
+
+    def _remap_action(self, action: str) -> str:
+        """
+        FIX: Map unknown/legacy action names to valid executor actions.
+        This is the core fix — 'open' was never in executor but planner kept returning it.
+        """
+        action = str(action).lower().strip()
+        remap  = {
+            "open":              "open_url",   # THE MAIN BUG FIX
+            "launch":            "open_app",
+            "start":             "open_app",
+            "navigate":          "browser_go",
+            "go_to":             "browser_go",
+            "browse":            "browser_go",
+            "visit":             "open_url",
+            "type":              "type_text",
+            "write":             "type_text",
+            "keyboard":          "press",
+            "keypress":          "press",
+            "search":            "search_web",
+            "google":            "search_web",
+            "find":              "search_web",
+            "ocr":               "ocr_screen",
+            "read_screen":       "ocr_screen",
+            "take_screenshot":   "screenshot",
+            "capture":           "screenshot",
+            "describe":          "describe_screen",
+            "say":               "speak",
+            "announce":          "speak",
+            "email":             "send_email",
+            "send_mail":         "send_email",
+            "tweet":             "twitter_post",
+            "post_twitter":      "twitter_post",
+            "post_linkedin":     "linkedin_post",
+            "post_instagram":    "instagram_post",
+            "upload_youtube":    "youtube_upload",
+            "sleep":             "wait",
+            "pause":             "wait",
+            "delay":             "wait",
+        }
+        if action in self.VALID_ACTIONS:
+            return action
+        if action in remap:
+            log.debug("Action remapped: %s -> %s", action, remap[action])
+            return remap[action]
+        log.warning("Unknown action '%s' — routing to swarm_task", action)
+        return "swarm_task"
+
+    def _fallback_plan(self, desc: str) -> List[Dict]:
+        """Fallback: treat entire task as a swarm_task so something always executes."""
+        return [{"step": 1, "action": "swarm_task", "task": desc,
+                 "description": f"Execute: {desc[:100]}"}]
 
 
 # ============================================================
 # BLOCK 21 - AGENT SWARM
+# (FIX: correct ok_count from status field, not 'ok' key)
 # ============================================================
 class AgentSwarm:
     def __init__(self, token: str, browser: EnterpriseBrowserAgent, email_mgr: EmailCampaignManager):
@@ -2275,36 +2529,63 @@ class AgentSwarm:
         _task(f"Swarm planning: {task_desc}")
         steps   = self.planner.run({"task": task_desc})
         _task(f"Executing {len(steps)} steps...")
-        results = []
-        start_t = time.time()
+        results  = []
+        start_t  = time.time()
+        ok_count = 0
+
         for step in steps:
             if _emergency_stop_event.is_set():
                 break
             sn   = step.get("step", 0)
             desc = step.get("description", step.get("action", ""))
             _info(f"  Step {sn}: {desc}")
+
+            last_err = ""
             for attempt in range(3):
                 try:
                     r = command_executor(step)
-                    results.append({"step": sn, "ok": True, "result": r})
-                    get_mem().remember_success(desc, "swarm")
-                    break
+                    # FIX: check status field (executor returns {"status":"ok",...})
+                    step_ok = isinstance(r, dict) and r.get("status", "") not in ("error", "denied", "skipped")
+                    if step_ok:
+                        results.append({"step": sn, "ok": True, "result": r})
+                        ok_count += 1
+                        get_mem().remember_success(desc, "swarm")
+                        break
+                    else:
+                        last_err = str(r.get("message", r.get("error", "")))
+                        if attempt == 2:
+                            results.append({"step": sn, "ok": False, "error": last_err, "result": r})
+                            get_mem().remember_failure(desc, last_err)
+                        else:
+                            time.sleep(1.5 * (attempt + 1))
                 except Exception as e:
+                    last_err = str(e)
                     if attempt == 2:
-                        results.append({"step": sn, "ok": False, "error": str(e)})
+                        results.append({"step": sn, "ok": False, "error": last_err})
                         get_mem().remember_failure(desc, str(e))
                     else:
                         time.sleep(1.5 * (attempt + 1))
-        elapsed  = time.time() - start_t
-        ok_count = sum(1 for r in results if r.get("ok"))
+
+        elapsed = time.time() - start_t
+
+        # Auto-save successful multi-step sequences as skills
         if ok_count == len(steps) and len(steps) > 1:
-            get_mem().save_skill(task_desc[:50], steps,
-                                 f"Auto-learned: {task_desc[:100]}", ["auto-learned"])
-        speak(f"Task done: {ok_count}/{len(steps)} steps succeeded.")
-        return {"total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1), "results": results}
+            try:
+                get_mem().save_skill(task_desc[:50], steps,
+                                     f"Auto-learned: {task_desc[:100]}", ["auto-learned"])
+            except Exception:
+                pass
+
+        result_msg = f"Task done: {ok_count}/{len(steps)} steps succeeded."
+        speak(result_msg)
+        audit("SWARM", mask_pii(task_desc[:80]), f"ok={ok_count}/{len(steps)}")
+
+        return {"total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1),
+                "results": results, "message": result_msg}
 
 # ============================================================
 # BLOCK 22 - SELF-HEALING ENGINE
+# (FIX: singleton via global, not re-instantiated each health_check call)
 # ============================================================
 class SelfHealingEngine:
     def __init__(self, command_executor: Callable):
@@ -2318,9 +2599,17 @@ class SelfHealingEngine:
             cpu  = psutil.cpu_percent(interval=0.3)
             ram  = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
+            batt = None
+            try:
+                b = psutil.sensors_battery()
+                if b:
+                    batt = {"percent": round(b.percent, 1), "plugged": b.power_plugged}
+            except Exception:
+                pass
             return {"cpu": cpu, "ram": ram.percent, "disk": disk.percent,
-                    "ram_used_gb": round(ram.used / 1e9, 2),
-                    "disk_free_gb": round(disk.free / 1e9, 2),
+                    "ram_used_gb":   round(ram.used  / 1e9, 2),
+                    "disk_free_gb":  round(disk.free / 1e9, 2),
+                    "battery":       batt,
                     "healthy": (cpu < 92 and ram.percent < 92 and disk.percent < 96),
                     "timestamp": datetime.datetime.now().isoformat()}
         except Exception:
@@ -2346,6 +2635,7 @@ class SelfHealingEngine:
                 pass
 
     def start(self):
+        log.info("SelfHealingEngine started")
         def _loop():
             while _agent_running:
                 try:
@@ -2363,6 +2653,7 @@ class AutonomousScheduler:
         self.executor = command_executor
         self.jobs: List[Dict] = []
         self._load()
+        log.info("AutonomousScheduler initialized")
 
     def _load(self):
         try:
@@ -2439,6 +2730,7 @@ class AutonomousScheduler:
         self._save()
 
     def start(self):
+        log.info("Scheduler started")
         def _loop():
             while _agent_running:
                 try:
@@ -2450,6 +2742,7 @@ class AutonomousScheduler:
 
 # ============================================================
 # BLOCK 24 - VOICE ASSISTANT 3.0
+# (FIX: multilingual fallback — handles Hindi/mixed-language input)
 # ============================================================
 class VoiceAssistant3:
     WAKE_WORDS = ["hey dacexy", "dacexy", "assistant"]
@@ -2469,7 +2762,7 @@ class VoiceAssistant3:
                 self.mic = sr.Microphone()
                 with self.mic as src:
                     self.rec.adjust_for_ambient_noise(src, duration=1.5)
-                log.info("Mic calibrated")
+                log.info("VoiceAssistant3: mic calibrated")
             except Exception as e:
                 log.warning("Mic init: %s", e)
                 self.mic = None
@@ -2480,38 +2773,63 @@ class VoiceAssistant3:
         try:
             with self.mic as src:
                 audio = self.rec.listen(src, timeout=timeout, phrase_time_limit=phrase_time)
-            return self.rec.recognize_google(audio).lower().strip()
+            # FIX: try English first, then Hindi fallback for multilingual users
+            try:
+                return self.rec.recognize_google(audio, language="en-IN").lower().strip()
+            except Exception:
+                try:
+                    return self.rec.recognize_google(audio, language="hi-IN").lower().strip()
+                except Exception:
+                    return None
         except Exception:
             return None
 
     def route(self, text: str) -> Dict[str, Any]:
+        """
+        FIX: Route ANY text (including Hindi/Hinglish) to appropriate action.
+        Unknown input → swarm_task so AI handles it instead of silently ignoring.
+        """
         t = text.lower().strip()
-        if any(w in t for w in ["what time", "current time"]):
+
+        # Time queries (English + Hindi)
+        if any(w in t for w in ["what time", "current time", "time kya", "time hai",
+                                  "kitne baje", "time batao", "samay"]):
             return {"action": "get_time"}
-        if any(w in t for w in ["what date", "today"]):
+
+        # Date queries
+        if any(w in t for w in ["what date", "today", "aaj", "date kya", "date batao"]):
             return {"action": "get_date"}
-        if "screenshot" in t:
+
+        # Screenshot
+        if any(w in t for w in ["screenshot", "screen shot", "screen capture"]):
             return {"action": "screenshot"}
-        if t.startswith("open "):
-            target = t[5:].strip()
-            # smart routing: known sites go to browser, else open as app
-            sites = {"youtube": "https://youtube.com", "gmail": "https://mail.google.com",
-                     "google": "https://google.com", "facebook": "https://facebook.com",
-                     "instagram": "https://instagram.com", "twitter": "https://twitter.com",
-                     "whatsapp": "https://web.whatsapp.com", "linkedin": "https://linkedin.com",
-                     "netflix": "https://netflix.com", "amazon": "https://amazon.in",
-                     "flipkart": "https://flipkart.com", "github": "https://github.com"}
-            for site, url in sites.items():
-                if site in target:
-                    return {"action": "open_url", "url": url}
-            return {"action": "open_app", "app": target}
-        if t.startswith("search for ") or t.startswith("google "):
-            q = re.sub(r'^(search for|google)\s+', '', t).strip()
-            return {"action": "search_web", "query": q}
-        if any(w in t for w in ["stop", "emergency stop", "halt"]):
+
+        # Battery/system (FIX: "battery bhi nahin hai" was ignored before)
+        if any(w in t for w in ["battery", "cpu", "ram", "memory", "disk", "system", "sysinfo",
+                                  "baatri", "charge"]):
+            return {"action": "system_info"}
+
+        # Stop
+        if any(w in t for w in ["stop", "emergency stop", "halt", "ruko", "band karo"]):
             return {"action": "emergency_stop"}
-        if any(w in t for w in ["send email", "write email", "email to"]):
+
+        # Open website/app
+        m = re.match(r'(?:open|launch|start|kholo|chalu karo)\s+(.+)', t)
+        if m:
+            target = m.group(1).strip()
+            return {"action": "open", "text": target}
+
+        # Search
+        m = re.match(r'(?:search|google|find|dhundo|search karo)\s+(.+)', t)
+        if m:
+            return {"action": "search_web", "query": m.group(1).strip()}
+
+        # Email
+        if any(w in t for w in ["send email", "email bhejo", "mail karo", "write email"]):
             return {"action": "swarm_task", "task": text}
+
+        # Everything else → swarm_task (AI will plan it)
+        # FIX: was previously falling through with no action, causing silent failures
         return {"action": "swarm_task", "task": text}
 
     def _voice_loop(self):
@@ -2536,7 +2854,8 @@ class VoiceAssistant3:
                     continue
                 fails = 0
                 log.info("Voice heard: %s", text)
-                if any(p in text for p in ["stop dacexy", "emergency stop"]):
+
+                if any(p in text for p in ["stop dacexy", "emergency stop", "band karo"]):
                     emergency_stop()
                 elif any(ww in text for ww in self.WAKE_WORDS):
                     speak("Yes, listening.", priority=True)
@@ -2549,6 +2868,17 @@ class VoiceAssistant3:
                             log.warning("Voice callback: %s", e)
                     else:
                         speak("Didn't catch that. Try again.")
+                else:
+                    # FIX: non-wake-word speech that doesn't match wake word still processed
+                    # as potential command if it's a clear action phrase
+                    cmd = self.route(text)
+                    if cmd.get("action") not in ("swarm_task",):
+                        # It's a clear actionable command even without wake word
+                        log.info("Voice direct command: %s", text)
+                        try:
+                            self.callback(cmd)
+                        except Exception:
+                            pass
             except Exception as e:
                 log.debug("Voice loop: %s", e)
                 time.sleep(1)
@@ -2573,6 +2903,7 @@ def load_macros():
     try:
         if MACRO_FILE.exists():
             _macros = json.loads(MACRO_FILE.read_text())
+        log.info("Macros loaded: %d", len(_macros))
     except Exception:
         pass
 
@@ -2618,7 +2949,8 @@ def get_system_info() -> Dict[str, Any]:
         try:
             b = psutil.sensors_battery()
             if b:
-                batt = {"percent": b.percent, "plugged": b.power_plugged}
+                batt = {"percent": round(b.percent, 1), "plugged": b.power_plugged,
+                        "time_left_min": round(b.secsleft / 60, 0) if b.secsleft > 0 else None}
         except Exception:
             pass
         return {"cpu_percent":   cpu,
@@ -2639,7 +2971,10 @@ def get_system_info() -> Dict[str, Any]:
         return {"error": str(e)}
 
 # ============================================================
-# BLOCK 27 - MASTER COMMAND EXECUTOR  (FIXED: all action aliases)
+# BLOCK 27 - MASTER COMMAND EXECUTOR
+# (FIX: 'open'/'launch'/'start' aliases fully handled via _smart_open,
+#        unknown actions fall through to swarm_task instead of returning error,
+#        no SelfHealingEngine re-instantiation inside executor)
 # ============================================================
 def execute_command(cmd: dict, token: str = None,
                     browser: EnterpriseBrowserAgent = None,
@@ -2654,7 +2989,8 @@ def execute_command(cmd: dict, token: str = None,
     if not action:
         return {"status": "error", "message": "No action specified"}
 
-    task_desc = (cmd.get("text", "") or cmd.get("task", "") or cmd.get("url", "") or action)
+    task_desc = (cmd.get("text", "") or cmd.get("task", "") or
+                 cmd.get("url", "") or cmd.get("description", "") or action)
     if is_blocked(str(task_desc)):
         return {"status": "error", "message": "Command blocked for security"}
 
@@ -2668,6 +3004,10 @@ def execute_command(cmd: dict, token: str = None,
     fe = file_engine or get_file_engine()
     vi = get_vision()
 
+    def _sub(c):
+        """Run a sub-command with the same context."""
+        return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
+
     try:
         # ── SPEECH & NOTIFY ──────────────────────────────────────
         if action == "speak":
@@ -2675,48 +3015,52 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
 
-        # ── OPEN aliases (FIX: handle 'open', 'launch', 'start') ─
-        elif action in ("open", "launch", "start"):
+        # ── OPEN (FIX: unified smart-open handles all aliases) ───
+        elif action in ("open", "launch", "start", "open_browser"):
             target = (cmd.get("url", "") or cmd.get("app", "") or
-                      cmd.get("text", "") or cmd.get("name", "")).strip()
+                      cmd.get("text", "") or cmd.get("name", "") or
+                      cmd.get("target", "")).strip()
             if not target:
-                return {"status": "error", "message": "No target specified"}
-            sites = {"youtube": "https://youtube.com", "gmail": "https://mail.google.com",
-                     "google": "https://google.com", "facebook": "https://facebook.com",
-                     "instagram": "https://instagram.com", "twitter": "https://twitter.com",
-                     "whatsapp": "https://web.whatsapp.com", "linkedin": "https://linkedin.com",
-                     "netflix": "https://netflix.com", "amazon": "https://amazon.in",
-                     "flipkart": "https://flipkart.com", "github": "https://github.com",
-                     "chrome": "chrome", "notepad": "notepad.exe", "calculator": "calc.exe",
-                     "explorer": "explorer", "cmd": "cmd.exe", "terminal": "cmd.exe"}
-            tl = target.lower()
-            for name, dest in sites.items():
-                if name in tl:
-                    if dest.startswith("http"):
-                        webbrowser.open(dest)
-                        return {"status": "ok", "opened": dest}
-                    else:
-                        open_app(dest)
-                        return {"status": "ok", "opened": dest}
-            if target.startswith("http"):
-                webbrowser.open(target)
-                return {"status": "ok", "opened": target}
-            open_app(target)
-            return {"status": "ok", "opened": target}
+                return {"status": "error", "message": "No target specified for open"}
+            return _smart_open(target)
+
+        elif action == "open_url":
+            url = (cmd.get("url", "") or cmd.get("text", "")).strip()
+            if not url:
+                return {"status": "error", "message": "No URL specified"}
+            if not url.startswith("http"):
+                url = "https://" + url
+            webbrowser.open(url)
+            return {"status": "ok", "opened": url}
+
+        elif action == "open_app":
+            app = (cmd.get("app", "") or cmd.get("name", "") or cmd.get("text", "")).strip()
+            if not app:
+                return {"status": "error", "message": "No app specified"}
+            # Check known apps first
+            app_lower = app.lower()
+            for name, exe in KNOWN_APPS.items():
+                if name in app_lower:
+                    open_app(exe)
+                    return {"status": "ok", "opened": exe}
+            ok = open_app(app)
+            return {"status": "ok" if ok else "error", "opened": app}
 
         # ── MOUSE ────────────────────────────────────────────────
         elif action == "click":
             x = int(cmd.get("x", 0) or 0)
             y = int(cmd.get("y", 0) or 0)
             if x == 0 and y == 0:
-                log.warning("click called with (0,0) - skipping")
-                return {"status": "skipped", "reason": "no coordinates"}
+                log.warning("click called with (0,0) — skipping (planner bug)")
+                return {"status": "skipped", "reason": "no coordinates — planner did not provide real pixel coords"}
             human_click(x, y, cmd.get("button", "left"))
-            return {"status": "ok"}
+            return {"status": "ok", "clicked": f"({x},{y})"}
         elif action == "right_click":
-            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), "right"); return {"status": "ok"}
+            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), "right")
+            return {"status": "ok"}
         elif action == "double_click":
-            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), double=True); return {"status": "ok"}
+            human_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), double=True)
+            return {"status": "ok"}
         elif action == "move_mouse":
             human_move(int(cmd.get("x", 0)), int(cmd.get("y", 0))); return {"status": "ok"}
         elif action == "drag":
@@ -2739,7 +3083,7 @@ def execute_command(cmd: dict, token: str = None,
             if isinstance(keys, list):
                 hotkey(*keys)
             else:
-                hotkey(*(keys.split("+")))
+                hotkey(*(str(keys).split("+")))
             return {"status": "ok"}
         elif action == "copy":
             hotkey("ctrl", "c"); return {"status": "ok", "clipboard": get_clipboard()}
@@ -2752,7 +3096,15 @@ def execute_command(cmd: dict, token: str = None,
 
         # ── VISION ───────────────────────────────────────────────
         elif action == "screenshot":
-            return {"status": "ok", "screenshot": vi.capture()}
+            ss = vi.capture()
+            if ss:
+                fname = Path.home() / f"dacexy_ss_{int(time.time())}.jpg"
+                try:
+                    fname.write_bytes(base64.b64decode(ss))
+                    _ok(f"Screenshot saved: {fname}")
+                except Exception:
+                    pass
+            return {"status": "ok", "screenshot": ss}
         elif action in ("what_on_screen", "describe_screen"):
             desc = (vi.get_ai_description(token) if token else vi.ocr())
             speak(desc); return {"status": "ok", "description": desc}
@@ -2762,9 +3114,7 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "text": vi.ocr_fast()}
         elif action == "find_text_on_screen":
             pos = vi.find_text(cmd.get("text", ""))
-            if pos:
-                return {"status": "ok", "x": pos[0], "y": pos[1]}
-            return {"status": "not_found"}
+            return ({"status": "ok", "x": pos[0], "y": pos[1]} if pos else {"status": "not_found"})
         elif action == "click_text":
             pos = vi.find_text(cmd.get("text", ""))
             if pos:
@@ -2797,17 +3147,10 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "windows": get_all_windows()}
         elif action == "get_active_window":
             return {"status": "ok", "title": get_active_window()}
-        elif action == "open_app":
-            return {"status": "ok" if open_app(cmd.get("app", "")) else "error"}
         elif action == "kill_app":
             return {"status": "ok" if kill_app(cmd.get("name", "")) else "not_found"}
         elif action == "list_apps":
             return {"status": "ok", "apps": [a["name"] for a in list_running_apps()[:30]]}
-        elif action in ("open_browser", "open_url"):
-            url = cmd.get("url", cmd.get("text", "https://google.com"))
-            if not url.startswith("http"):
-                url = "https://" + url
-            webbrowser.open(url); return {"status": "ok"}
         elif action == "open_notepad":
             open_app("notepad.exe"); return {"status": "ok"}
         elif action == "open_calculator":
@@ -2820,11 +3163,16 @@ def execute_command(cmd: dict, token: str = None,
 
         # ── FILES ────────────────────────────────────────────────
         elif action == "list_files":
-            return {"status": "ok", "files": fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))}
+            files = fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))
+            for f in files[:10]:
+                _info(f"  {f}")
+            return {"status": "ok", "files": files}
         elif action == "read_file":
-            return {"status": "ok", "content": fe.read(cmd.get("path", ""))}
+            content = fe.read(cmd.get("path", ""))
+            return {"status": "ok", "content": content}
         elif action == "write_file":
-            return {"status": "ok" if fe.write(cmd.get("path", ""), cmd.get("content", "")) else "error"}
+            ok = fe.write(cmd.get("path", ""), cmd.get("content", ""))
+            return {"status": "ok" if ok else "error"}
         elif action == "delete_file":
             return {"status": "ok" if fe.delete(cmd.get("path", ""), cmd.get("safe", True)) else "error"}
         elif action == "copy_file":
@@ -2839,45 +3187,52 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "error", "message": str(e)}
         elif action == "search_files":
             return {"status": "ok", "files": fe.search(
-                cmd.get("keyword", ""), cmd.get("folder"), cmd.get("ext"), cmd.get("content_search", False))}
+                cmd.get("keyword", ""), cmd.get("folder"), cmd.get("ext"),
+                cmd.get("content_search", False))}
         elif action == "compress_files":
             return {"status": "ok" if fe.compress(cmd.get("paths", []), cmd.get("output", "out.zip")) else "error"}
         elif action == "extract_zip":
             return {"status": "ok" if fe.extract(cmd.get("path", ""), cmd.get("output")) else "error"}
         elif action == "backup_folder":
             dest = fe.backup(cmd.get("folder", ""), cmd.get("label", ""))
-            return {"status": "ok", "backup_path": dest}
+            speak(f"Backup saved to {dest}" if dest else "Backup failed.")
+            return {"status": "ok" if dest else "error", "backup_path": dest}
         elif action == "organize_folder":
-            return {"status": "ok", "result": fe.organize_folder(cmd.get("folder", ""))}
+            result = fe.organize_folder(cmd.get("folder", ""))
+            speak(f"Organized {sum(result.values())} files.")
+            return {"status": "ok", "result": result}
         elif action == "get_disk_usage":
-            return {"status": "ok", "usage": fe.get_disk_usage()}
+            usage = fe.get_disk_usage()
+            speak(f"Disk: {usage.get('used_gb','?')} GB used, {usage.get('free_gb','?')} GB free.")
+            return {"status": "ok", "usage": usage}
 
         # ── EMAIL ────────────────────────────────────────────────
         elif action == "setup_gmail":
-            if email_mgr: email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
+            if email_mgr:
+                email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
             return {"status": "ok"}
         elif action == "setup_outlook":
-            if email_mgr: email_mgr.setup_outlook(cmd.get("email", ""), cmd.get("password", ""))
+            if email_mgr:
+                email_mgr.setup_outlook(cmd.get("email", ""), cmd.get("password", ""))
             return {"status": "ok"}
         elif action in ("send_email", "email"):
-            if email_mgr and email_mgr.smtp_config:
-                ok = email_mgr.send_single(cmd.get("to", ""), cmd.get("subject", ""),
-                                           cmd.get("body", ""), cmd.get("html", False),
-                                           cmd.get("attachment"))
-                speak(f"Email {'sent' if ok else 'failed'}.")
-                return {"status": "ok" if ok else "error"}
-            # fallback: open gmail in browser
             to      = cmd.get("to", "")
             subject = cmd.get("subject", "")
             body    = cmd.get("body", "")
+            if email_mgr and email_mgr.smtp_config:
+                ok = email_mgr.send_single(to, subject, body,
+                                           cmd.get("html", False), cmd.get("attachment"))
+                speak(f"Email {'sent' if ok else 'failed'}.")
+                return {"status": "ok" if ok else "error"}
+            # Fallback: open Gmail compose in browser
             if to:
-                url = f"https://mail.google.com/mail/?view=cm&to={quote(to)}&su={quote(subject)}&body={quote(body)}"
+                url = (f"https://mail.google.com/mail/?view=cm"
+                       f"&to={quote(to)}&su={quote(subject)}&body={quote(body)}")
                 webbrowser.open(url)
                 speak(f"Opening Gmail to send email to {to}")
                 return {"status": "ok", "note": "opened in browser"}
             return {"status": "error", "message": "No recipient specified"}
         elif action == "gmail_send":
-            # Direct Gmail browser automation
             to      = cmd.get("to", "")
             subject = cmd.get("subject", "No Subject")
             body    = cmd.get("body", "")
@@ -2886,12 +3241,12 @@ def execute_command(cmd: dict, token: str = None,
             if browser and browser.driver:
                 ok = browser.compose_gmail(to, subject, body)
                 return {"status": "ok" if ok else "error"}
-            else:
-                # fallback: mailto URL
-                url = f"https://mail.google.com/mail/?view=cm&to={quote(to)}&su={quote(subject)}&body={quote(body)}"
-                webbrowser.open(url)
-                speak(f"Opening Gmail compose to {to}")
-                return {"status": "ok", "note": "opened compose in browser"}
+            # Fallback: mailto URL
+            url = (f"https://mail.google.com/mail/?view=cm"
+                   f"&to={quote(to)}&su={quote(subject)}&body={quote(body)}")
+            webbrowser.open(url)
+            speak(f"Opening Gmail compose to {to}")
+            return {"status": "ok", "note": "opened compose in browser"}
         elif action == "create_campaign":
             if email_mgr:
                 cid = email_mgr.create_campaign(
@@ -2900,19 +3255,21 @@ def execute_command(cmd: dict, token: str = None,
                     cmd.get("html", True), float(cmd.get("delay", 1.0)),
                     cmd.get("scheduled_at"), cmd.get("tags", []))
                 return {"status": "ok", "campaign_id": cid}
-            return {"status": "error"}
+            return {"status": "error", "message": "Email manager not initialized"}
         elif action == "send_campaign":
             if email_mgr:
-                return {"status": "ok", "result": email_mgr.send_campaign(cmd.get("campaign_id", ""))}
+                return {"status": "ok", "result": email_mgr.send_campaign(
+                    cmd.get("campaign_id", ""), int(cmd.get("provider_index", 0)))}
             return {"status": "error"}
         elif action == "bulk_email":
             if email_mgr:
                 recips = cmd.get("recipients", [])
                 if isinstance(recips, str):
                     recips = [r.strip() for r in recips.split(",") if "@" in r]
-                cid = email_mgr.create_campaign("bulk", cmd.get("subject", ""),
-                                                cmd.get("body", "Hello {name}!"), recips,
-                                                cmd.get("html", True), float(cmd.get("delay", 1.0)))
+                cid = email_mgr.create_campaign(
+                    "bulk", cmd.get("subject", ""),
+                    cmd.get("body", "Hello {name}!"), recips,
+                    cmd.get("html", True), float(cmd.get("delay", 1.0)))
                 return {"status": "ok", "result": email_mgr.send_campaign(cid)}
             return {"status": "error", "message": "Email not configured"}
         elif action == "email_dashboard":
@@ -2922,23 +3279,30 @@ def execute_command(cmd: dict, token: str = None,
 
         # ── BROWSER ──────────────────────────────────────────────
         elif action == "browser_start":
-            if not browser: browser = EnterpriseBrowserAgent()
+            if not browser:
+                browser = EnterpriseBrowserAgent()
             return {"status": "ok" if browser.start(
-                cmd.get("browser", "chrome"), cmd.get("headless", False), cmd.get("profile")) else "error"}
+                cmd.get("browser", "chrome"), cmd.get("headless", False),
+                cmd.get("profile")) else "error"}
         elif action == "browser_go":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start()
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start()
             browser.go_to(cmd.get("url", ""))
             return {"status": "ok"}
         elif action == "browser_click":
             if browser and browser.driver:
-                return {"status": "ok" if browser.find_and_click(
-                    cmd.get("selector", ""), cmd.get("by", "css"), cmd.get("fallbacks")) else "not_found"}
+                ok = browser.find_and_click(
+                    cmd.get("selector", ""), cmd.get("by", "css"),
+                    cmd.get("fallbacks"))
+                return {"status": "ok" if ok else "not_found"}
             return {"status": "error", "message": "Browser not started"}
         elif action == "browser_type":
             if browser and browser.driver:
-                return {"status": "ok" if browser.find_and_type(
-                    cmd.get("selector", ""), cmd.get("text", ""), cmd.get("by", "css")) else "error"}
+                ok = browser.find_and_type(
+                    cmd.get("selector", ""), cmd.get("text", ""), cmd.get("by", "css"))
+                return {"status": "ok" if ok else "error"}
             return {"status": "error"}
         elif action == "browser_extract":
             if browser and browser.driver:
@@ -2947,129 +3311,168 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "error"}
         elif action == "browser_js":
             if browser and browser.driver:
-                return {"status": "ok", "result": str(browser.execute_js(cmd.get("script", "")))}
+                return {"status": "ok",
+                        "result": str(browser.execute_js(cmd.get("script", "")))}
             return {"status": "error"}
         elif action == "browser_screenshot":
             if browser and browser.driver:
                 return {"status": "ok", "screenshot": browser.screenshot_b64()}
             return {"status": "error"}
         elif action == "google_search":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start()
-            return {"status": "ok", "results": browser.google_search(cmd.get("query", ""))}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start()
+            results = browser.google_search(cmd.get("query", ""))
+            for r in results[:5]:
+                _info(f"  - {r}")
+            return {"status": "ok", "results": results}
         elif action == "research":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
             return {"status": "ok", "result": browser.research_topic(
-                cmd.get("topic", "") or cmd.get("query", ""), int(cmd.get("max_pages", 3)))}
+                cmd.get("topic", "") or cmd.get("query", ""),
+                int(cmd.get("max_pages", 3)))}
 
         # ── SOCIAL MEDIA ─────────────────────────────────────────
         elif action == "whatsapp_bulk":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
             contacts = cmd.get("contacts", [])
             if isinstance(contacts, str):
                 contacts = [c.strip() for c in contacts.split(",") if c.strip()]
             return {"status": "ok", "result": browser.whatsapp_bulk(
                 contacts, cmd.get("message", "Hello!"), float(cmd.get("delay", 3.5)))}
         elif action == "whatsapp_send":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
             return {"status": "ok", "result": browser.whatsapp_bulk(
                 [cmd.get("contact", "")], cmd.get("message", "Hello!"), 2.5)}
         elif action == "twitter_post":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.twitter_post(
-                cmd.get("username", ""), cmd.get("password", ""),
-                cmd.get("text", ""), cmd.get("media")) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.twitter_post(cmd.get("username", ""), cmd.get("password", ""),
+                                      cmd.get("text", ""), cmd.get("media"))
+            return {"status": "ok" if ok else "error"}
         elif action == "linkedin_post":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.linkedin_post(
-                cmd.get("username", ""), cmd.get("password", ""), cmd.get("text", "")) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.linkedin_post(cmd.get("username", ""), cmd.get("password", ""),
+                                       cmd.get("text", ""))
+            return {"status": "ok" if ok else "error"}
         elif action == "facebook_post":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.facebook_post(
-                cmd.get("username", ""), cmd.get("password", ""),
-                cmd.get("text", ""), cmd.get("page_id")) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.facebook_post(cmd.get("username", ""), cmd.get("password", ""),
+                                       cmd.get("text", ""), cmd.get("page_id"))
+            return {"status": "ok" if ok else "error"}
         elif action == "instagram_post":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.instagram_post(
-                cmd.get("username", ""), cmd.get("password", ""),
-                cmd.get("image_path", ""), cmd.get("caption", "")) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.instagram_post(cmd.get("username", ""), cmd.get("password", ""),
+                                        cmd.get("image_path", ""), cmd.get("caption", ""))
+            return {"status": "ok" if ok else "error"}
         elif action == "youtube_upload":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.youtube_upload(
-                cmd.get("video_path", ""), cmd.get("title", ""),
-                cmd.get("description", ""), cmd.get("tags", [])) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.youtube_upload(cmd.get("video_path", ""), cmd.get("title", ""),
+                                        cmd.get("description", ""), cmd.get("tags", []))
+            return {"status": "ok" if ok else "error"}
         elif action == "tiktok_post":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            return {"status": "ok" if browser.tiktok_post(
-                cmd.get("video_path", ""), cmd.get("caption", "")) else "error"}
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            ok = browser.tiktok_post(cmd.get("video_path", ""), cmd.get("caption", ""))
+            return {"status": "ok" if ok else "error"}
         elif action == "post_all_social":
-            if not browser: browser = EnterpriseBrowserAgent()
-            if not browser.driver: browser.start("chrome")
-            text  = cmd.get("text", "")
-            creds = cmd.get("credentials", {})
+            if not browser:
+                browser = EnterpriseBrowserAgent()
+            if not browser.driver:
+                browser.start("chrome")
+            text    = cmd.get("text", "")
+            creds   = cmd.get("credentials", {})
             results = {}
             for p, cred in creds.items():
                 if p == "twitter":
-                    results["twitter"] = browser.twitter_post(cred["username"], cred["password"], text)
+                    results["twitter"]  = browser.twitter_post(cred["username"], cred["password"], text)
                 if p == "linkedin":
                     results["linkedin"] = browser.linkedin_post(cred["username"], cred["password"], text)
                 if p == "facebook":
                     results["facebook"] = browser.facebook_post(cred["username"], cred["password"], text)
+                if p == "instagram" and cred.get("image_path"):
+                    results["instagram"] = browser.instagram_post(
+                        cred["username"], cred["password"], cred["image_path"], text)
             return {"status": "ok", "results": results}
 
         # ── AI SWARM ─────────────────────────────────────────────
         elif action == "swarm_task":
             if swarm:
-                def _e(c):
-                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
-                return {"status": "ok", "result": swarm.plan_and_execute(cmd.get("task", ""), _e)}
+                task_str = (cmd.get("task", "") or cmd.get("goal", "") or
+                            cmd.get("description", "") or "").strip()
+                if not task_str:
+                    return {"status": "error", "message": "No task specified"}
+                return {"status": "ok",
+                        "result": swarm.plan_and_execute(task_str, _sub)}
             return {"status": "error", "message": "Swarm not available"}
 
         # ── MEMORY ───────────────────────────────────────────────
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
-                            importance=float(cmd.get("importance", 1.0))); return {"status": "ok"}
+                            importance=float(cmd.get("importance", 1.0)))
+            return {"status": "ok"}
         elif action == "get_memory":
             return {"status": "ok", "memory": get_memory_context(cmd.get("query", ""))}
         elif action == "search_memory":
-            results = get_mem().search(cmd.get("query", ""), int(cmd.get("top_k", 5)), cmd.get("category"))
+            results = get_mem().search(cmd.get("query", ""), int(cmd.get("top_k", 5)),
+                                       cmd.get("category"))
             return {"status": "ok", "results": [asdict(e) for e in results]}
         elif action == "remember_preference":
-            remember_preference(cmd.get("key", ""), cmd.get("value", "")); return {"status": "ok"}
+            remember_preference(cmd.get("key", ""), cmd.get("value", ""))
+            return {"status": "ok"}
         elif action == "save_workflow":
-            save_workflow(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
+            save_workflow(cmd.get("name", ""), cmd.get("steps", []))
+            return {"status": "ok"}
         elif action == "run_workflow":
             steps = get_workflow(cmd.get("name", ""))
             if steps:
                 for s in steps:
-                    execute_command(s, token, browser, email_mgr, swarm, scheduler, fe)
+                    _sub(s)
                 return {"status": "ok"}
             return {"status": "error", "message": "Workflow not found"}
         elif action == "remember_contact":
             remember_contact(cmd.get("name", ""), cmd.get("email", ""), cmd.get("phone", ""))
             return {"status": "ok"}
         elif action == "list_contacts":
-            with _memory_lock: contacts = MEMORY["email_contacts"]
+            with _memory_lock:
+                contacts = list(MEMORY["email_contacts"])
             return {"status": "ok", "contacts": contacts[:100]}
         elif action == "list_skills":
             return {"status": "ok", "skills": get_mem().list_skills()}
         elif action == "run_skill":
             skill = get_mem().get_skill(cmd.get("name", ""))
             if skill:
-                def _e(c):
-                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
                 for step in skill.steps:
-                    try: _e(step)
-                    except Exception as e: log.warning("Skill step: %s", e)
+                    try:
+                        _sub(step)
+                    except Exception as e:
+                        log.warning("Skill step: %s", e)
                 return {"status": "ok"}
             return {"status": "error", "message": "Skill not found"}
         elif action == "save_skill":
@@ -3079,11 +3482,10 @@ def execute_command(cmd: dict, token: str = None,
 
         # ── MACROS ───────────────────────────────────────────────
         elif action == "create_macro":
-            create_macro(cmd.get("name", ""), cmd.get("steps", [])); return {"status": "ok"}
+            create_macro(cmd.get("name", ""), cmd.get("steps", []))
+            return {"status": "ok"}
         elif action == "run_macro":
-            def _e(c):
-                return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
-            return {"status": "ok" if run_macro(cmd.get("name", ""), _e) else "error"}
+            return {"status": "ok" if run_macro(cmd.get("name", ""), _sub) else "error"}
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
 
@@ -3092,7 +3494,8 @@ def execute_command(cmd: dict, token: str = None,
             if scheduler:
                 jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
                                         cmd.get("type", "daily"), cmd.get("time", ""),
-                                        cmd.get("days", []), int(cmd.get("repeat_every_minutes", 0)))
+                                        cmd.get("days", []),
+                                        int(cmd.get("repeat_every_minutes", 0)))
                 return {"status": "ok", "job_id": jid}
             return {"status": "error"}
         elif action == "list_jobs":
@@ -3100,13 +3503,17 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "jobs": scheduler.list_jobs()}
             return {"status": "error"}
         elif action == "remove_job":
-            if scheduler: scheduler.remove_job(cmd.get("job_id", ""))
+            if scheduler:
+                scheduler.remove_job(cmd.get("job_id", ""))
             return {"status": "ok"}
 
         # ── SYSTEM ───────────────────────────────────────────────
         elif action == "system_info":
             info = get_system_info()
-            speak(f"CPU {info.get('cpu_percent','?')}%, RAM {info.get('ram_percent','?')}%")
+            batt = info.get("battery")
+            batt_str = f", Battery {batt['percent']}%" if batt else ""
+            speak(f"CPU {info.get('cpu_percent','?')}%, "
+                  f"RAM {info.get('ram_percent','?')}%{batt_str}")
             return {"status": "ok", "info": info}
         elif action == "check_internet":
             ok = check_internet()
@@ -3114,58 +3521,78 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok", "connected": ok}
         elif action == "get_time":
             t = datetime.datetime.now().strftime("%I:%M %p, %A %d %B %Y")
-            speak(f"The time is {t}"); return {"status": "ok", "time": t}
+            speak(f"The time is {t}")
+            return {"status": "ok", "time": t}
         elif action == "get_date":
             d = datetime.date.today().strftime("%A, %B %d, %Y")
-            speak(f"Today is {d}"); return {"status": "ok", "date": d}
+            speak(f"Today is {d}")
+            return {"status": "ok", "date": d}
         elif action == "lock_screen":
-            if platform.system() == "Windows": ctypes.windll.user32.LockWorkStation()
+            if platform.system() == "Windows":
+                ctypes.windll.user32.LockWorkStation()
             return {"status": "ok"}
         elif action == "run_command":
             raw = cmd.get("command", "")
             if is_blocked(raw):
                 return {"status": "error", "message": "Blocked"}
             try:
-                r = subprocess.run(raw, shell=True, capture_output=True, text=True, timeout=30)
+                r = subprocess.run(raw, shell=True, capture_output=True,
+                                   text=True, timeout=30)
                 return {"status": "ok", "stdout": r.stdout[:2000], "stderr": r.stderr[:500]}
             except subprocess.TimeoutExpired:
                 return {"status": "error", "message": "Command timed out"}
         elif action == "wait":
-            time.sleep(float(cmd.get("seconds", 1))); return {"status": "ok"}
+            time.sleep(float(cmd.get("seconds", 1)))
+            return {"status": "ok"}
         elif action == "health_check":
-            healer = SelfHealingEngine(lambda c: c)
-            health = healer.get_health()
-            speak(f"CPU {health.get('cpu',0):.0f}%, RAM {health.get('ram',0):.0f}%")
+            # FIX: use singleton _healer_instance, not a new instance every call
+            global _healer_instance
+            if _healer_instance is None:
+                _healer_instance = SelfHealingEngine(_sub)
+            health = _healer_instance.get_health()
+            batt   = health.get("battery")
+            batt_s = f", Battery {batt['percent']}%" if batt else ""
+            speak(f"CPU {health.get('cpu',0):.0f}%, "
+                  f"RAM {health.get('ram',0):.0f}%{batt_s}")
             return {"status": "ok", "health": health}
         elif action == "create_note":
             NOTES_DIR.mkdir(exist_ok=True)
-            note = NOTES_DIR / f"note_{int(time.time())}.txt"
+            title = cmd.get("title", f"note_{int(time.time())}")
+            note  = NOTES_DIR / f"{title}.txt"
             fe.write(str(note), cmd.get("content", ""))
-            speak("Note saved."); return {"status": "ok", "path": str(note)}
+            speak("Note saved.")
+            return {"status": "ok", "path": str(note)}
         elif action == "search_web":
-            q = cmd.get("query", "")
+            q = cmd.get("query", "") or cmd.get("text", "")
             webbrowser.open(f"https://www.google.com/search?q={quote(q)}")
             return {"status": "ok"}
-        elif action == "open_url":
-            url = cmd.get("url", cmd.get("text", ""))
-            if not url.startswith("http"): url = "https://" + url
-            webbrowser.open(url); return {"status": "ok"}
         elif action == "emergency_stop":
-            emergency_stop(); return {"status": "ok"}
+            emergency_stop()
+            return {"status": "ok"}
+
+        # ── UNKNOWN ACTION FALLBACK ───────────────────────────────
+        # FIX: instead of returning error, try to be smart about it
         else:
-            # last resort: try to open as URL or app
+            # Maybe it's a direct URL?
             if action.startswith("http"):
-                webbrowser.open(action); return {"status": "ok"}
-            log.warning("Unknown action: %s — attempting as swarm task", action)
-            if swarm:
-                def _e(c):
-                    return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
-                task_str = cmd.get("task", "") or cmd.get("description", "") or action
-                return {"status": "ok", "result": swarm.plan_and_execute(task_str, _e)}
-            return {"status": "error", "message": f"Unknown action: {action}"}
+                webbrowser.open(action)
+                return {"status": "ok", "opened": action}
+
+            # Try as swarm task with the full command description
+            task_str = (cmd.get("task", "") or cmd.get("description", "") or
+                        cmd.get("text", "") or action).strip()
+            log.warning("Unknown action '%s' — routing to swarm_task: %s", action, task_str)
+
+            if swarm and task_str:
+                return {"status": "ok",
+                        "result": swarm.plan_and_execute(task_str, _sub)}
+
+            return {"status": "error",
+                    "message": f"Unknown action: '{action}'. "
+                               f"Try rephrasing as a natural language task."}
 
     except Exception as e:
-        log.error("CMD %s error: %s\n%s", action, e, traceback.format_exc())
+        log.error("CMD '%s' error: %s\n%s", action, e, traceback.format_exc())
         audit("CMD_ERROR", action, str(e)[:200])
         try:
             get_mem().remember_failure(action, str(e)[:100])
@@ -3175,49 +3602,118 @@ def execute_command(cmd: dict, token: str = None,
 
 # ============================================================
 # BLOCK 28 - WEBSOCKET
+# (FIX 1: correct two-step auth — send token first, then init message
+#  FIX 2: handle task_result format backend expects
+#  FIX 3: handle both "command" and "task" message types correctly)
 # ============================================================
 async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
+    """
+    FIX: Backend protocol is:
+      RECV: {"type":"ping"} → SEND: {"type":"pong"}
+      RECV: {"type":"task","task":"...","task_id":"..."} → execute → SEND task_result
+      RECV: {"type":"command","action":"...","task_id":"..."} → execute → SEND task_result
+      RECV: {"type":"init_ack"} → logged only
+    """
     while _agent_running:
         try:
-            raw   = await asyncio.wait_for(ws.recv(), timeout=30)
-            msg   = json.loads(raw)
-            mtype = msg.get("type", "")
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            mtype   = msg.get("type", "")
+            task_id = msg.get("task_id", "")
+
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "version": VERSION}))
-            elif mtype in ("command", "task"):
-                cmd_data = msg.get("data", msg)
-                _task(f"WS cmd: {cmd_data.get('action', cmd_data.get('task', ''))[:60]}")
+
+            elif mtype == "pong":
+                pass  # keepalive pong from server
+
+            elif mtype == "init_ack":
+                log.info("Backend ack: %s", msg.get("message", "ok"))
+
+            elif mtype in ("task", "command"):
+                # FIX: extract task correctly from either message format
+                if mtype == "task":
+                    # Backend sends: {"type":"task","task":"open youtube","task_id":"..."}
+                    task_text = msg.get("task", "") or msg.get("goal", "")
+                    if task_text:
+                        cmd_data = {"action": "swarm_task", "task": task_text}
+                    else:
+                        cmd_data = msg  # fallback
+                else:
+                    # Backend sends: {"type":"command","action":"screenshot",...}
+                    cmd_data = {k: v for k, v in msg.items() if k not in ("type", "task_id")}
+
+                action_label = cmd_data.get("action", cmd_data.get("task", ""))[:60]
+                _task(f"WS {mtype}: {action_label}")
+
                 loop   = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     _executor,
-                    lambda: execute_command(cmd_data, token, browser, email_mgr, swarm, scheduler))
+                    lambda cd=cmd_data: execute_command(cd, token, browser, email_mgr, swarm, scheduler))
+
+                # FIX: send result in format backend pending_task_results future expects
+                ok_val  = 1 if (isinstance(result, dict) and result.get("status") == "ok") else 0
+                payload = {
+                    "type":    "task_result",
+                    "task_id": task_id,
+                    "ok":      ok_val,
+                    "total":   1,
+                    "result":  result,
+                    "status":  result.get("status", "ok") if isinstance(result, dict) else "ok",
+                }
                 try:
-                    await ws.send(json.dumps({"type": "result", "data": result}))
-                except Exception:
-                    pass
+                    await ws.send(json.dumps(payload, default=str))
+                except Exception as send_err:
+                    log.warning("WS send result error: %s", send_err)
+
+            elif mtype == "error":
+                log.warning("Backend error: %s", msg.get("message", ""))
+
+            else:
+                log.debug("WS unknown message type: %s", mtype)
+
         except asyncio.TimeoutError:
+            # Heartbeat on timeout
             try:
                 health = get_system_info()
                 await ws.send(json.dumps({
-                    "type": "heartbeat", "agent": "dacexy", "version": VERSION,
-                    "health": health,
-                    "features": ["voice3", "vision_super", "browser_enterprise",
-                                 "email_enterprise", "whatsapp", "marketing",
-                                 "memory_vector", "swarm", "hibernation",
-                                 "scheduler", "self_healing", "file_engine",
-                                 "social_all", "ocr", "multi_monitor"]}))
+                    "type":     "heartbeat",
+                    "agent":    "dacexy",
+                    "version":  VERSION,
+                    "health":   health,
+                    "features": [
+                        "voice3", "vision_super", "browser_enterprise",
+                        "email_enterprise", "whatsapp", "marketing",
+                        "memory_vector", "swarm", "hibernation",
+                        "scheduler", "self_healing", "file_engine",
+                        "social_all", "ocr", "multi_monitor",
+                    ],
+                }, default=str))
             except Exception:
                 break
+
         except Exception as e:
-            if "ConnectionClosed" in type(e).__name__:
-                log.warning("WS connection closed"); break
+            etype = type(e).__name__
+            if any(x in etype for x in ["ConnectionClosed", "ConnectionClosedOK",
+                                         "ConnectionClosedError", "WebSocketDisconnect"]):
+                log.warning("WS connection closed")
+                break
             log.error("WS recv error: %s", e)
             await asyncio.sleep(1)
 
 
 async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
-    retry_delay  = 2
-    max_delay    = 120
+    """
+    FIX: Correct two-step WebSocket auth protocol:
+      Step 1 → send raw token string (backend waits for this first)
+      Step 2 → send {"type":"init", ...metadata...}
+    """
+    retry_delay = 2
+    max_delay   = 120
     global _ws_connection
 
     while _agent_running:
@@ -3231,31 +3727,40 @@ async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
 
             _info("Connecting to Dacexy backend...")
 
-            connect_kwargs = {"ping_interval": 20, "ping_timeout": 15,
-                              "max_size": 50 * 1024 * 1024}
-            ws_major = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
-            if ws_major >= 14:
-                connect_kwargs["open_timeout"] = 30
-            else:
-                connect_kwargs["close_timeout"] = 30
+            connect_kwargs = {
+                "ping_interval": 20,
+                "ping_timeout":  15,
+                "max_size":      50 * 1024 * 1024,
+            }
+            try:
+                ws_ver   = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
+                conn_key = "open_timeout" if ws_ver >= 14 else "close_timeout"
+                connect_kwargs[conn_key] = 30
+            except Exception:
+                pass
 
             async with websockets.connect(BACKEND_WS, **connect_kwargs) as ws:
                 _ws_connection = ws
                 retry_delay    = 2
 
+                # FIX STEP 1: backend expects FIRST message to be just the token
+                await ws.send(json.dumps({"token": token}))
+
+                # FIX STEP 2: send init metadata after token accepted
                 await ws.send(json.dumps({
-                    "token":    token,
-                    "type":     "init",
-                    "version":  VERSION,
-                    "platform": platform.system(),
-                    "machine":  platform.machine(),
-                    "hostname": socket.gethostname(),
-                    "features": ["voice3", "vision_super", "browser_enterprise",
-                                 "email_enterprise", "whatsapp", "marketing",
-                                 "memory_vector", "swarm", "hibernation",
-                                 "scheduler", "self_healing", "file_engine",
-                                 "social_all", "ocr", "multi_monitor"],
-                    "memory_context": get_memory_context()[:300]
+                    "type":           "init",
+                    "version":        VERSION,
+                    "platform":       platform.system(),
+                    "machine":        platform.machine(),
+                    "hostname":       socket.gethostname(),
+                    "features": [
+                        "voice3", "vision_super", "browser_enterprise",
+                        "email_enterprise", "whatsapp", "marketing",
+                        "memory_vector", "swarm", "hibernation",
+                        "scheduler", "self_healing", "file_engine",
+                        "social_all", "ocr", "multi_monitor",
+                    ],
+                    "memory_context": get_memory_context()[:300],
                 }))
 
                 _ok("Connected to Dacexy backend")
@@ -3286,7 +3791,7 @@ def register_hotkeys(voice: VoiceAssistant3 = None):
         if voice:
             keyboard.add_hotkey("ctrl+shift+v",
                                 lambda: voice.pause() if not voice.paused else voice.resume())
-        _ok("Hotkeys: Ctrl+Shift+D/S/E/M/V")
+        _ok("Hotkeys registered: Ctrl+Shift+D/S/E/M/V")
     except Exception as e:
         log.warning("Hotkeys: %s", e)
 
@@ -3304,14 +3809,16 @@ def print_menu():
         "             youtube / tiktok / post all",
         "  [BROWSER]  browser <url> / google <query> / research <topic>",
         "  [VISION]   ocr / detect ui / screenshot",
-        "  [DESKTOP]  click <x> <y> / type <text>",
+        "  [DESKTOP]  click <x> <y> / type <text> / open <app/site>",
         "  [FILES]    files / read <path> / backup <folder>",
         "  [MEMORY]   memory / skills / remember <fact>",
         "  [AI]       plan <task> / swarm <task>",
         "  [SCHEDULE] jobs",
-        "  [SYSTEM]   sysinfo / health",
+        "  [SYSTEM]   sysinfo / health / time / date",
         "  [STOP]     stop / emergency stop",
         "  [HELP]     help / menu",
+        "=" * 60,
+        "  Tip: Type any task in plain English (Hindi works too!)",
         "=" * 60, "",
     ]
     for line in lines:
@@ -3341,11 +3848,16 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                 speak("Goodbye!"); break
             elif il in ("help", "menu", "?"):
                 print_menu()
-            elif il in ("sysinfo", "health", "system info"):
+            elif il in ("sysinfo", "health", "system info", "system"):
                 info = get_system_info()
                 _info(f"CPU:{info.get('cpu_percent','?')}%"
                       f" RAM:{info.get('ram_percent','?')}%"
-                      f" Disk:{info.get('disk_percent','?')}%")
+                      f" Disk:{info.get('disk_percent','?')}%"
+                      f" Battery:{(info.get('battery') or {}).get('percent','N/A')}%")
+            elif il in ("time",):
+                _exec({"action": "get_time"})
+            elif il in ("date",):
+                _exec({"action": "get_date"})
             elif il == "memory":
                 print(f"  Memory:\n{get_memory_context()}")
             elif il == "skills":
@@ -3353,82 +3865,98 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                 for s in skills:
                     print(f"  [SKILL] {s['name']} - used {s['use_count']}x")
                 if not skills:
-                    print("  No skills yet. They auto-learn from tasks.")
+                    print("  No skills yet. They auto-learn from successful multi-step tasks.")
             elif il.startswith("remember "):
                 remember(inp[9:]); speak("Remembered.")
             elif il in ("macros", "list macros"):
-                print(f"  Macros: {list_macros() or 'None'}")
+                m = list_macros()
+                print(f"  Macros: {m if m else 'None'}")
             elif il.startswith("run macro "):
                 run_macro(inp[10:].strip(), _exec)
             elif il == "jobs":
                 if scheduler:
-                    for j in scheduler.list_jobs():
-                        print(f"  [{j['type']}] {j['name']} @ {j['time']} - {j['run_count']}x")
+                    jobs = scheduler.list_jobs()
+                    if jobs:
+                        for j in jobs:
+                            print(f"  [{j['type']}] {j['name']} @ {j.get('time','')} "
+                                  f"- ran {j.get('run_count',0)}x")
+                    else:
+                        print("  No scheduled jobs.")
             elif il.startswith("setup gmail "):
                 parts = inp.split()
                 if len(parts) >= 4 and email_mgr:
                     email_mgr.setup_gmail(parts[2], parts[3])
-            elif il.startswith("bulk email"):
+                else:
+                    _err("Usage: setup gmail <email> <app_password>")
+            elif il.startswith("bulk email") or il == "bulk email":
                 if email_mgr:
-                    emails_raw = _get_console_input("  Recipients (comma): ").strip()
+                    emails_raw = _get_console_input("  Recipients (comma separated): ").strip()
                     subject    = _get_console_input("  Subject: ").strip()
-                    body       = _get_console_input("  Body ({name} = name): ").strip()
-                    delay_str  = _get_console_input("  Delay seconds [1]: ").strip()
+                    body       = _get_console_input("  Body ({name} becomes their name): ").strip()
+                    delay_str  = _get_console_input("  Delay between emails in seconds [1]: ").strip()
                     delay      = float(delay_str or "1")
                     recips     = [e.strip() for e in emails_raw.split(",") if "@" in e]
-                    cid        = email_mgr.create_campaign("cli", subject, body, recips, delay_sec=delay)
+                    if not recips:
+                        _err("No valid email addresses found."); continue
+                    cid = email_mgr.create_campaign("cli", subject, body, recips, delay_sec=delay)
                     email_mgr.send_campaign(cid)
                 else:
                     _err("Email not configured. Run: setup gmail <email> <app_password>")
             elif il.startswith("whatsapp"):
-                cr       = _get_console_input("  Contacts (+phone, comma): ").strip()
+                cr       = _get_console_input("  Contacts (+phone or number, comma separated): ").strip()
                 msg_text = _get_console_input("  Message: ").strip()
                 contacts = [c.strip() for c in cr.split(",") if c.strip()]
                 if not browser.driver: browser.start("chrome")
-                browser.whatsapp_bulk(contacts, msg_text)
-            elif il.startswith("twitter "):
-                username = _get_console_input("  Username: ").strip()
-                password = _get_console_input("  Password: ").strip()
-                text     = _get_console_input("  Tweet (max 280): ").strip()
+                result = browser.whatsapp_bulk(contacts, msg_text)
+                _info(f"WhatsApp: {result}")
+            elif il.startswith("twitter ") or il == "twitter":
+                username = _get_console_input("  Twitter Username: ").strip()
+                password = _get_console_input("  Twitter Password: ").strip()
+                text     = _get_console_input("  Tweet text (max 280 chars): ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.twitter_post(username, password, text[:280])
-            elif il.startswith("linkedin "):
-                username = _get_console_input("  Email: ").strip()
-                password = _get_console_input("  Password: ").strip()
+            elif il.startswith("linkedin ") or il == "linkedin":
+                username = _get_console_input("  LinkedIn Email: ").strip()
+                password = _get_console_input("  LinkedIn Password: ").strip()
                 text     = _get_console_input("  Post text: ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.linkedin_post(username, password, text)
-            elif il.startswith("instagram "):
-                username = _get_console_input("  Username: ").strip()
-                password = _get_console_input("  Password: ").strip()
+            elif il.startswith("instagram ") or il == "instagram":
+                username = _get_console_input("  Instagram Username: ").strip()
+                password = _get_console_input("  Instagram Password: ").strip()
                 img      = _get_console_input("  Image path: ").strip()
                 caption  = _get_console_input("  Caption: ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.instagram_post(username, password, img, caption)
-            elif il.startswith("youtube "):
-                video = _get_console_input("  Video path: ").strip()
+            elif il.startswith("youtube ") or il == "youtube":
+                video = _get_console_input("  Video file path: ").strip()
                 title = _get_console_input("  Title: ").strip()
                 desc  = _get_console_input("  Description: ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.youtube_upload(video, title, desc)
-            elif il.startswith("tiktok "):
-                video   = _get_console_input("  Video path: ").strip()
+            elif il.startswith("tiktok ") or il == "tiktok":
+                video   = _get_console_input("  Video file path: ").strip()
                 caption = _get_console_input("  Caption: ").strip()
                 if not browser.driver: browser.start("chrome")
                 browser.tiktok_post(video, caption)
-            elif il.startswith("post all"):
+            elif il.startswith("post all") or il == "post all":
                 text  = _get_console_input("  Post text: ").strip()
                 creds = {}
                 for pn in ["twitter", "linkedin", "facebook"]:
-                    yn = _get_console_input(f"  Include {pn}? (y/n): ").lower()
+                    yn = _get_console_input(f"  Post to {pn}? (y/n): ").strip().lower()
                     if yn == "y":
-                        creds[pn] = {"username": _get_console_input(f"  {pn} user: ").strip(),
-                                     "password": _get_console_input(f"  {pn} pass: ").strip()}
+                        creds[pn] = {
+                            "username": _get_console_input(f"    {pn} username/email: ").strip(),
+                            "password": _get_console_input(f"    {pn} password: ").strip()
+                        }
                 if not browser.driver: browser.start("chrome")
                 for pn, cred in creds.items():
-                    if pn == "twitter": browser.twitter_post(cred["username"], cred["password"], text)
-                    if pn == "linkedin": browser.linkedin_post(cred["username"], cred["password"], text)
-                    if pn == "facebook": browser.facebook_post(cred["username"], cred["password"], text)
+                    if pn == "twitter":
+                        browser.twitter_post(cred["username"], cred["password"], text)
+                    elif pn == "linkedin":
+                        browser.linkedin_post(cred["username"], cred["password"], text)
+                    elif pn == "facebook":
+                        browser.facebook_post(cred["username"], cred["password"], text)
             elif il.startswith("browser "):
                 url = inp[8:].strip()
                 if not browser.driver: browser.start("chrome")
@@ -3436,26 +3964,26 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
             elif il.startswith("google "):
                 q = inp[7:].strip()
                 if not browser.driver: browser.start("chrome")
-                for r in browser.google_search(q)[:5]:
+                results = browser.google_search(q)
+                for r in results[:5]:
                     print(f"  - {r}")
             elif il.startswith("research "):
                 topic = inp[9:].strip()
                 if not browser.driver: browser.start("chrome")
-                result  = browser.research_topic(topic)
+                result = browser.research_topic(topic)
                 _info(f"Research: {len(result.get('sources',[]))} sources found")
                 for r in result.get("results", [])[:5]:
                     print(f"  - {r}")
             elif il == "screenshot":
-                ss    = get_vision().capture()
-                fname = Path.home() / f"dacexy_ss_{int(time.time())}.jpg"
-                if ss:
-                    fname.write_bytes(base64.b64decode(ss))
-                    _ok(f"Saved: {fname}")
+                result = _exec({"action": "screenshot"})
+                _info("Screenshot taken" if result.get("screenshot") else "Screenshot failed")
             elif il == "ocr":
                 print(f"  Screen text:\n{get_vision().ocr()[:600]}")
             elif il == "detect ui":
                 els = get_vision().detect_ui_elements()
                 _info(f"{len(els)} UI elements detected")
+                for el in els[:5]:
+                    print(f"    [{el.elem_type}] ({el.x},{el.y})")
             elif il.startswith("click "):
                 try:
                     p = inp.split()
@@ -3466,58 +3994,80 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
             elif il.startswith("type "):
                 smart_type(inp[5:])
             elif il.startswith("open "):
-                target = inp[5:].strip()
-                _exec({"action": "open", "text": target})
+                result = _exec({"action": "open", "text": inp[5:].strip()})
+                _info(str(result))
+            elif il.startswith("files"):
+                folder = inp[6:].strip() if len(inp) > 6 else None
+                files  = get_file_engine().list_files(folder)
+                for f in files[:20]:
+                    print(f"  {f}")
+                _info(f"{len(files)} files found")
+            elif il.startswith("read "):
+                content = get_file_engine().read(inp[5:].strip())
+                print(f"  {content[:1000]}")
+            elif il.startswith("backup "):
+                folder = inp[7:].strip()
+                dest   = get_file_engine().backup(folder)
+                _ok(f"Backup saved: {dest}" if dest else "Backup failed")
             elif il.startswith("plan "):
                 task  = inp[5:]
                 steps = swarm.planner.run({"task": task})
                 _task(f"Plan ({len(steps)} steps):")
                 for s in steps:
-                    print(f"  {s.get('step')}. {s.get('description', s.get('action',''))}")
-                yn = _get_console_input(f"\n  Execute {len(steps)} steps? (y/n): ").lower()
+                    print(f"  {s.get('step',0)}. [{s.get('action','')}] "
+                          f"{s.get('description', '')}")
+                yn = _get_console_input(f"\n  Execute {len(steps)} steps? (y/n): ").strip().lower()
                 if yn == "y":
                     swarm.plan_and_execute(task, _exec)
             elif il.startswith("swarm "):
                 swarm.plan_and_execute(inp[6:].strip(), _exec)
-            elif il.startswith("backup "):
-                dest = get_file_engine().backup(inp[7:].strip())
-                _ok(f"Backup: {dest}")
             elif il in ("stop all", "emergency stop", "halt"):
                 emergency_stop()
             else:
+                # Try JSON command first, then natural language swarm
                 try:
                     cmd_json = json.loads(inp)
                     result   = _exec(cmd_json)
                     print(f"  Result: {result}")
                 except json.JSONDecodeError:
+                    # Natural language → swarm handles it
                     _task(f"Processing: {inp}")
                     swarm.plan_and_execute(inp, _exec)
         except KeyboardInterrupt:
             print("\n  Interrupted. Type 'stop' to exit.")
         except Exception as e:
-            log.error("Shell error: %s", e)
+            log.error("Shell error: %s\n%s", e, traceback.format_exc())
             _err(f"Error: {e}")
 
 # ============================================================
 # BLOCK 31 - MAIN
 # ============================================================
 async def main_async(token: str):
+    global _healer_instance
     log.info("main_async: initializing all subsystems")
 
     threading.Thread(target=init_tts, daemon=True, name="TTSInit").start()
     time.sleep(0.2)
 
-    try: get_mem()
-    except Exception as e: log.warning("Memory init: %s", e)
+    try:
+        get_mem()
+    except Exception as e:
+        log.warning("Memory init: %s", e)
 
-    try: load_macros()
-    except Exception: pass
+    try:
+        load_macros()
+    except Exception:
+        pass
 
-    try: get_vision().start_monitoring(interval=2.0)
-    except Exception: pass
+    try:
+        get_vision().start_monitoring(interval=2.0)
+    except Exception:
+        pass
 
-    try: setup_autostart()
-    except Exception: pass
+    try:
+        setup_autostart()
+    except Exception:
+        pass
 
     browser   = EnterpriseBrowserAgent()
     email_mgr = EmailCampaignManager()
@@ -3526,28 +4076,41 @@ async def main_async(token: str):
     def _exec(c):
         return execute_command(c, token, browser, email_mgr, swarm, None)
 
-    scheduler = AutonomousScheduler(_exec)
-    healer    = SelfHealingEngine(_exec)
+    scheduler       = AutonomousScheduler(_exec)
+    _healer_instance = SelfHealingEngine(_exec)  # FIX: singleton
 
-    try: scheduler.start()
-    except Exception: pass
+    try:
+        scheduler.start()
+    except Exception:
+        pass
 
-    try: healer.start()
-    except Exception: pass
+    try:
+        _healer_instance.start()
+    except Exception:
+        pass
 
-    try: register_hotkeys()
-    except Exception: pass
+    log.info("HibernationSystem initialized")
+
+    try:
+        register_hotkeys()
+    except Exception:
+        pass
 
     voice = None
     try:
         def voice_cb(cmd: Dict):
-            try: _exec(cmd)
-            except Exception as ve: log.warning("Voice callback: %s", ve)
+            try:
+                _exec(cmd)
+            except Exception as ve:
+                log.warning("Voice callback: %s", ve)
         voice = VoiceAssistant3(token, voice_cb)
         voice.start()
         register_hotkeys(voice)
     except Exception as e:
         log.warning("Voice start: %s", e)
+
+    _ok(f"Dacexy v{VERSION} ready. Starting all systems...")
+    audit("STARTUP", f"v{VERSION}", "OK")
 
     try:
         shell_t = threading.Thread(
@@ -3555,6 +4118,7 @@ async def main_async(token: str):
             args=(token, browser, email_mgr, swarm, scheduler),
             daemon=True, name="Shell")
         shell_t.start()
+        log.info("Interactive shell started")
     except Exception as e:
         log.warning("Shell start: %s", e)
 
@@ -3600,8 +4164,6 @@ def main():
             return
 
     log.info("Authenticated successfully")
-    _ok(f"Dacexy v{VERSION} ready. Starting all systems...")
-    audit("STARTUP", f"v{VERSION}", "OK")
 
     try:
         asyncio.run(main_async(token))
@@ -3616,13 +4178,19 @@ def main():
         except Exception:
             pass
     finally:
-        try: get_mem().save()
-        except Exception: pass
-        try: save_macros()
-        except Exception: pass
+        try:
+            get_mem().save()
+        except Exception:
+            pass
+        try:
+            save_macros()
+        except Exception:
+            pass
         audit("SHUTDOWN", f"v{VERSION}", "CLEAN")
-        try: print("  State saved. Goodbye!")
-        except Exception: pass
+        try:
+            print("  State saved. Goodbye!")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
