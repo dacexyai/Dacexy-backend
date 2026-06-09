@@ -1243,538 +1243,539 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 
 
 _agent_lines = [
-from __future__ import annotations
-import json
-import asyncio
-import logging
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, FileResponse
-from pathlib import Path
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, Dict, Any, List
-from src.infrastructure.persistence.database import get_db
-from src.infrastructure.persistence.models.orm_models import User, AiTask
-from src.infrastructure.ai_providers.deepseek import DeepSeekProvider
-from src.interfaces.http.dependencies.container import get_deepseek
-from src.interfaces.http.routes.auth import _get_current_user
-from src.shared.config.settings import settings
-
-log = logging.getLogger('dacexy.agent')
-router = APIRouter(prefix='/agent', tags=['agent'])
-
-active_agents: Dict[str, WebSocket] = {}
-agent_results: Dict[str, Dict] = {}
-pending_task_results: Dict[str, Dict[str, asyncio.Future]] = {}
-agent_metadata: Dict[str, Dict] = {}
-
-class AgentRunRequest(BaseModel):
-    task: Optional[str] = None
-    goal: Optional[str] = None
-    context: Optional[str] = None
-    max_steps: int = 10
-    use_swarm: bool = True
-
-class TaskRequest(BaseModel):
-    task: Optional[str] = None
-    goal: Optional[str] = None
-    context: Optional[str] = None
-
-class CampaignRequest(BaseModel):
-    name: str
-    subject: str
-    body: str
-    recipients: List[str]
-    html: bool = True
-    delay_sec: float = 1.0
-    tags: List[str] = []
-    scheduled_at: Optional[str] = None
-
-class BulkWhatsAppRequest(BaseModel):
-    contacts: List[str]
-    message: str
-    delay: float = 3.5
-
-class SocialPostRequest(BaseModel):
-    platform: str
-    username: str
-    password: str
-    text: Optional[str] = None
-    image_path: Optional[str] = None
-    video_path: Optional[str] = None
-    caption: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    page_id: Optional[str] = None
-
-class DesktopCommandRequest(BaseModel):
-    action: str
-    x: Optional[int] = None
-    y: Optional[int] = None
-    text: Optional[str] = None
-    key: Optional[str] = None
-    keys: Optional[list] = None
-    url: Optional[str] = None
-    command: Optional[str] = None
-    clicks: Optional[int] = 3
-    app: Optional[str] = None
-    button: Optional[str] = 'left'
-    selector: Optional[str] = None
-    by: Optional[str] = 'css'
-    task: Optional[str] = None
-    query: Optional[str] = None
-    path: Optional[str] = None
-    content: Optional[str] = None
-    campaign_id: Optional[str] = None
-    contacts: Optional[list] = None
-    message: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    recipients: Optional[list] = None
-    subject: Optional[str] = None
-    body: Optional[str] = None
-    title: Optional[str] = None
-    name: Optional[str] = None
-    folder: Optional[str] = None
-    keyword: Optional[str] = None
-    direction: Optional[str] = 'down'
-    timeout: Optional[int] = 30
-    headless: Optional[bool] = False
-    html: Optional[bool] = True
-    delay: Optional[float] = 1.0
-    src: Optional[str] = None
-    dst: Optional[str] = None
-    output: Optional[str] = None
-    paths: Optional[list] = None
-    importance: Optional[float] = 1.0
-    seconds: Optional[float] = 1.0
-    safe: Optional[bool] = True
-    top_k: Optional[int] = 5
-    max_pages: Optional[int] = 3
-    topic: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    app_password: Optional[str] = None
-    host: Optional[str] = None
-    port: Optional[int] = 587
-    use_tls: Optional[bool] = True
-    enabled: Optional[bool] = True
-    value: Optional[Any] = None
-    script: Optional[str] = None
-    media: Optional[str] = None
-    pattern: Optional[str] = '*'
-    ext: Optional[str] = None
-    fallbacks: Optional[list] = None
-    amount: Optional[int] = 700
-    clear_first: Optional[bool] = False
-    human_speed: Optional[bool] = False
-    provider_index: Optional[int] = 0
-    credentials: Optional[dict] = None
-    tags: Optional[list] = None
-    steps: Optional[list] = None
-    image_path: Optional[str] = None
-    caption: Optional[str] = None
-    video_path: Optional[str] = None
-    description: Optional[str] = None
-    page_id: Optional[str] = None
-    job_id: Optional[str] = None
-    schedule_type: Optional[str] = None
-    time_str: Optional[str] = None
-    days: Optional[list] = None
-    repeat_every_minutes: Optional[int] = 0
-    day_of_month: Optional[int] = None
-    region: Optional[list] = None
-    retries: Optional[int] = 3
-    expected: Optional[str] = None
-    fact: Optional[str] = None
-    category: Optional[str] = None
-    contact: Optional[str] = None
-    task_name: Optional[str] = None
-    notes: Optional[list] = None
-    run_on_startup: Optional[bool] = False
-    csv_path: Optional[str] = None
-    success_indicator: Optional[str] = None
-    email_selector: Optional[str] = None
-    pass_selector: Optional[str] = None
-    submit_selector: Optional[str] = None
-    content_search: Optional[bool] = False
-    x1: Optional[int] = None
-    y1: Optional[int] = None
-    x2: Optional[int] = None
-    y2: Optional[int] = None
-    duration: Optional[float] = 0.3
-    browser_type: Optional[str] = 'chrome'
-
-def _decode_ws_token(token: str) -> Optional[str]:
-    if not token or len(token) < 20:
-        return None
-    try:
-        from jose import jwt
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
-        uid = str(payload.get('sub') or payload.get('user_id') or '')
-        return uid if uid else None
-    except Exception as e:
-        log.debug('JWT decode failed: %s', e)
-        return None
-
-@router.post('/run')
-async def run_agent(
-    body: AgentRunRequest,
-    user: User = Depends(_get_current_user),
-    db: AsyncSession = Depends(get_db),
-    ai: DeepSeekProvider = Depends(get_deepseek),
-):
-    task_text = (body.task or body.goal or '').strip()[:2000]
-    if not task_text:
-        raise HTTPException(400, 'task or goal is required')
-    user_id = str(user.id)
-    task_record = AiTask(
-        org_id=user.org_id, user_id=user.id, task_type='agent_run',
-        status='running',
-        input_data={'task': task_text, 'context': body.context, 'use_swarm': body.use_swarm, 'max_steps': body.max_steps},
-    )
-    db.add(task_record)
-    await db.flush()
-    await db.commit()
-    if user_id in active_agents:
-        ws = active_agents[user_id]
-        try:
-            loop = asyncio.get_event_loop()
-            future = loop.create_future()
-            pending_task_results.setdefault(user_id, {})[str(task_record.id)] = future
-            payload = {'type': 'task' if body.use_swarm else 'command', 'task': task_text, 'action': 'swarm_task' if body.use_swarm else 'speak', 'context': body.context or '', 'task_id': str(task_record.id)}
-            await ws.send_text(json.dumps(payload))
-            try:
-                result_data = await asyncio.wait_for(asyncio.shield(future), timeout=300)
-                ok = int(result_data.get('ok') or 0)
-                total = int(result_data.get('total') or 1)
-                raw = result_data.get('result', '')
-                result_status = str(result_data.get('status') or '').lower()
-                failed = result_status in ('error', 'failed', 'denied', 'skipped') or ok < total
-                result_text = json.dumps(raw) if isinstance(raw, dict) else (str(raw) if raw else 'Completed ' + str(ok) + '/' + str(total) + ' steps.')
-                task_record.status = 'failed' if failed else 'completed'
-                task_record.output_data = {'result': result_text, 'desktop_result': result_data, 'ok': ok, 'total': total}
-                await db.commit()
-                return {'id': str(task_record.id), 'task': task_text, 'status': task_record.status, 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}
-            except asyncio.TimeoutError:
-                task_record.status = 'running'
-                result_text = 'Task sent to desktop agent and is still running. No success result has been received yet.'
-                task_record.output_data = {'result': result_text}
-                await db.commit()
-                return {'id': str(task_record.id), 'task': task_text, 'status': 'running', 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}
-            except asyncio.CancelledError:
-                task_record.status = 'failed'
-                result_text = 'Task was cancelled before the desktop agent confirmed completion.'
-                task_record.output_data = {'error': result_text}
-                await db.commit()
-                return {'id': str(task_record.id), 'task': task_text, 'status': 'failed', 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}
-            finally:
-                pending_task_results.get(user_id, {}).pop(str(task_record.id), None)
-        except WebSocketDisconnect:
-            active_agents.pop(user_id, None)
-            pending_task_results.pop(user_id, None)
-        except Exception as e:
-            active_agents.pop(user_id, None)
-            pending_task_results.pop(user_id, None)
-            log.warning('Agent task error for %s: %s', user_id, e)
-    system_prompt = 'You are Dacexy AI. The Desktop Agent is not connected. Explain that the task cannot be executed on the PC until the Desktop Agent is connected. Do not claim completion.'
-    ctx_part = (' Context: ' + str(body.context)) if body.context else ''
-    messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': 'Task: ' + task_text + ctx_part}]
-    try:
-        result = await ai.chat(messages, model='deepseek-chat', stream=False)
-        if isinstance(result, list):
-            result = ' '.join(b.get('text', '') for b in result if isinstance(b, dict) and b.get('type') == 'text')
-        result = str(result)
-        task_record.status = 'failed'
-        task_record.output_data = {'error': 'Desktop Agent not connected.', 'result': result}
-        await db.commit()
-        return {'id': str(task_record.id), 'task': task_text, 'status': 'failed', 'result': result, 'created_at': str(task_record.created_at), 'note': 'Desktop Agent not connected.'}
-    except Exception as e:
-        task_record.status = 'failed'
-        task_record.output_data = {'error': str(e)}
-        await db.commit()
-        raise HTTPException(500, 'Agent AI error: ' + str(e))
-
-@router.get('/tasks')
-async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import select
-    try:
-        result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(100))
-        tasks = result.scalars().all()
-        return [{'id': str(t.id), 'task': (t.input_data or {}).get('task', ''), 'status': t.status, 'result': (t.output_data or {}).get('result'), 'error': (t.output_data or {}).get('error'), 'type': t.task_type, 'created_at': str(t.created_at)} for t in tasks]
-    except Exception as e:
-        log.error('list_tasks: %s', e)
-        return []
-
-@router.get('/tasks/{task_id}')
-async def get_task(task_id: str, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import select
-    try:
-        result = await db.execute(select(AiTask).where(AiTask.id == task_id, AiTask.org_id == user.org_id))
-        task = result.scalar_one_or_none()
-        if not task: raise HTTPException(404, 'Task not found')
-        return {'id': str(task.id), 'task': (task.input_data or {}).get('task', ''), 'status': task.status, 'result': (task.output_data or {}).get('result'), 'error': (task.output_data or {}).get('error'), 'input': task.input_data, 'output': task.output_data, 'created_at': str(task.created_at)}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.get('/desktop/status')
-async def desktop_status(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    meta = agent_metadata.get(uid, {})
-    features = meta.get('features', [])
-    return {'connected': uid in active_agents, 'user_id': uid, 'agent_version': meta.get('version', ''), 'platform': meta.get('platform', ''), 'hostname': meta.get('hostname', ''), 'features': features, 'connected_since': meta.get('connected_since', ''), 'capabilities': {'vision': 'vision_super' in features, 'voice': 'voice3' in features, 'browser': 'browser_enterprise' in features, 'email': 'email_enterprise' in features, 'swarm': 'swarm10' in features, 'memory': 'memory_vector' in features, 'social': 'social_all' in features, 'multi_monitor': 'multi_monitor' in features, 'self_healing': 'self_healing' in features, 'scheduler': 'scheduler' in features, 'plugins': 'plugins' in features}}
-
-@router.get('/desktop/last_result')
-async def get_last_result(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    return {'result': agent_results.get(uid), 'connected': uid in active_agents, 'agent_version': agent_metadata.get(uid, {}).get('version', '')}
-
-@router.post('/desktop/command')
-async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    ws = active_agents[uid]
-    try:
-        payload = {k: v for k, v in body.dict().items() if v is not None}
-        await ws.send_text(json.dumps(payload))
-        return {'status': 'sent', 'action': body.action}
-    except WebSocketDisconnect:
-        active_agents.pop(uid, None)
-        raise HTTPException(400, 'Desktop agent disconnected.')
-    except Exception as e:
-        active_agents.pop(uid, None)
-        raise HTTPException(500, 'Failed to send command: ' + str(e))
-
-@router.post('/desktop/task')
-async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    task_text = (body.task or body.goal or '').strip()[:2000]
-    if not task_text: raise HTTPException(400, 'task or goal required')
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    ws = active_agents[uid]
-    try:
-        await ws.send_text(json.dumps({'type': 'task', 'task': task_text, 'action': 'swarm_task', 'context': body.context or ''}))
-        return {'status': 'sent', 'task': task_text}
-    except Exception as e:
-        active_agents.pop(uid, None)
-        raise HTTPException(500, 'Failed to send task: ' + str(e))
-
-@router.post('/desktop/screenshot')
-async def take_screenshot(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'screenshot'}))
-        await asyncio.sleep(2)
-        result = agent_results.get(uid, {})
-        return {'status': 'ok', 'screenshot': result.get('screenshot', '')}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.post('/desktop/ocr')
-async def ocr_screen(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'ocr_screen'}))
-        await asyncio.sleep(3)
-        result = agent_results.get(uid, {})
-        return {'status': 'ok', 'text': result.get('text', '')}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.post('/desktop/email/campaign')
-async def create_email_campaign(body: CampaignRequest, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'create_campaign', 'name': body.name, 'subject': body.subject, 'body': body.body, 'recipients': body.recipients, 'html': body.html, 'delay': body.delay_sec, 'tags': body.tags, 'scheduled_at': body.scheduled_at}))
-        await asyncio.sleep(1)
-        result = agent_results.get(uid, {})
-        campaign_id = result.get('campaign_id', '')
-        if campaign_id:
-            await active_agents[uid].send_text(json.dumps({'action': 'send_campaign', 'campaign_id': campaign_id}))
-        return {'status': 'ok', 'campaign_id': campaign_id, 'recipients': len(body.recipients)}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.post('/desktop/whatsapp/bulk')
-async def whatsapp_bulk(body: BulkWhatsAppRequest, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'whatsapp_bulk', 'contacts': body.contacts, 'message': body.message, 'delay': body.delay}))
-        return {'status': 'sent', 'contacts': len(body.contacts)}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.post('/desktop/social/post')
-async def social_post(body: SocialPostRequest, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    action_map = {'twitter': 'twitter_post', 'linkedin': 'linkedin_post', 'facebook': 'facebook_post', 'instagram': 'instagram_post', 'youtube': 'youtube_upload', 'tiktok': 'tiktok_post'}
-    action = action_map.get(body.platform.lower())
-    if not action: raise HTTPException(400, 'Unsupported platform: ' + body.platform)
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': action, 'username': body.username, 'password': body.password, 'text': body.text, 'image_path': body.image_path, 'video_path': body.video_path, 'caption': body.caption, 'title': body.title, 'description': body.description, 'page_id': body.page_id}))
-        return {'status': 'sent', 'platform': body.platform}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.post('/desktop/social/post_all')
-async def post_all_social(body: dict, user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'post_all_social', 'text': body.get('text', ''), 'credentials': body.get('credentials', {})}))
-        return {'status': 'sent', 'platforms': list(body.get('credentials', {}).keys())}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.get('/desktop/health')
-async def agent_health(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'health_check'}))
-        await asyncio.sleep(2)
-        result = agent_results.get(uid, {})
-        return {'status': 'ok', 'health': result.get('health', {})}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.get('/desktop/memory')
-async def get_agent_memory(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'get_memory', 'query': ''}))
-        await asyncio.sleep(1.5)
-        result = agent_results.get(uid, {})
-        return {'status': 'ok', 'memory': result.get('memory', '')}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.get('/desktop/skills')
-async def get_agent_skills(user: User = Depends(_get_current_user)):
-    uid = str(user.id)
-    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')
-    try:
-        await active_agents[uid].send_text(json.dumps({'action': 'list_skills'}))
-        await asyncio.sleep(1.5)
-        result = agent_results.get(uid, {})
-        return {'status': 'ok', 'skills': result.get('skills', [])}
-    except Exception as e: raise HTTPException(500, str(e))
-
-@router.websocket('/desktop/ws')
-async def desktop_websocket(websocket: WebSocket):
-    await websocket.accept()
-    user_id = None
-    try:
-        try:
-            auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
-        except asyncio.TimeoutError:
-            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Authentication timeout'}))
-            await websocket.close(code=1008)
-            return
-        token = ''
-        try:
-            auth_data = json.loads(auth_raw)
-            token = auth_data.get('token', '') or auth_data.get('access_token', '')
-        except json.JSONDecodeError:
-            token = auth_raw.strip()
-        if not token or len(token) < 20:
-            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Invalid token format.'}))
-            await websocket.close(code=1008)
-            return
-        user_id = _decode_ws_token(token)
-        if not user_id:
-            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Authentication failed.'}))
-            await websocket.close(code=1008)
-            return
-        if user_id in active_agents:
-            old_ws = active_agents[user_id]
-            try:
-                await old_ws.send_text(json.dumps({'type': 'error', 'message': 'Newer connection established.'}))
-                await old_ws.close(code=1001)
-            except Exception: pass
-        import datetime as _dt
-        active_agents[user_id] = websocket
-        agent_metadata[user_id] = {'connected_since': _dt.datetime.now().isoformat(), 'version': '', 'platform': '', 'hostname': '', 'features': []}
-        log.info('Agent connected: user=%s', user_id)
-        await websocket.send_text(json.dumps({'type': 'connected', 'message': 'Desktop Agent connected successfully.', 'user_id': user_id}))
-        consecutive_errors = 0
-        while True:
-            try:
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
-                    consecutive_errors = 0
-                except asyncio.TimeoutError:
-                    try:
-                        await asyncio.wait_for(websocket.send_text(json.dumps({'type': 'ping'})), timeout=5)
-                    except Exception:
-                        break
-                    continue
-                try:
-                    msg = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                msg_type = msg.get('type', '')
-                if msg_type == 'ping':
-                    await websocket.send_text(json.dumps({'type': 'pong'}))
-                elif msg_type == 'pong': pass
-                elif msg_type == 'init':
-                    agent_metadata[user_id].update({'version': msg.get('version', ''), 'platform': msg.get('platform', ''), 'hostname': msg.get('hostname', ''), 'features': msg.get('features', []), 'memory_context': msg.get('memory_context', '')})
-                    await websocket.send_text(json.dumps({'type': 'init_ack', 'message': 'Agent registered.', 'version': msg.get('version', '')}))
-                elif msg_type == 'task_result':
-                    agent_results[user_id] = msg
-                    future = pending_task_results.get(user_id, {}).get(str(msg.get('task_id', '')))
-                    if future and not future.done():
-                        try: future.set_result(msg)
-                        except asyncio.InvalidStateError: pass
-                elif msg_type in ('result', 'command_result', 'screenshot_before', 'screenshot_after', 'system_info', 'error', 'voice_result', 'ocr_result', 'vision_result', 'memory_result', 'health_result', 'skill_result', 'heartbeat'):
-                    agent_results[user_id] = msg
-                    future = pending_task_results.get(user_id)
-                    if future and not future.done() and msg_type == 'result':
-                        try: future.set_result(msg)
-                        except asyncio.InvalidStateError: pass
-                elif msg_type == 'heartbeat':
-                    health = msg.get('health', {})
-                    if health:
-                        agent_metadata[user_id]['last_health'] = health
-                        agent_metadata[user_id]['last_seen'] = _dt.datetime.now().isoformat()
-                    agent_results[user_id] = msg
-                elif msg_type == 'log':
-                    log.info('[AGENT:%s] %s: %s', user_id, msg.get('level', 'INFO').upper(), msg.get('message', '')[:300])
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                consecutive_errors += 1
-                log.warning('Message loop error user=%s: %s', user_id, e)
-                if consecutive_errors >= 5: break
-                await asyncio.sleep(0.5)
-    except WebSocketDisconnect: pass
-    except Exception as e: log.error('WebSocket handler error user=%s: %s', user_id, e)
-    finally:
-        if user_id:
-            active_agents.pop(user_id, None)
-            agent_results.pop(user_id, None)
-            agent_metadata.pop(user_id, None)
-            future = pending_task_results.pop(user_id, None)
-            if future and not future.done(): future.cancel()
-
-@router.get('/track/{campaign_id}/{recipient_index}')
-async def track_email_open(campaign_id: str, recipient_index: int, db: AsyncSession = Depends(get_db)):
-    gif_bytes = bytes([71,73,70,56,57,97,1,0,1,0,128,0,0,255,255,255,0,0,0,33,249,4,0,0,0,0,0,44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,59])
-    return Response(content=gif_bytes, media_type='image/gif', headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
-
-@router.get('/download/windows')
-async def download_windows_installer():
-    installer_path = Path(__file__).resolve().parents[4] / 'desktop_agent' / 'install_dacexy_agent.bat'
-    if not installer_path.exists(): raise HTTPException(status_code=404, detail='Installer not found')
-    return FileResponse(path=str(installer_path), filename='install_dacexy_agent.bat', media_type='application/octet-stream')
-
-@router.get('/download/mac')
-async def download_mac_installer():
-    sh_content = bytes([35,33,47,98,105,110,47,98,97,115,104,10,101,99,104,111,32,39,68,97,99,101,120,121,32,65,103,101,110,116,32,73,110,115,116,97,108,108,101,114,39,10])
-    resp = Response(content=sh_content, media_type='application/octet-stream')
-    resp.headers['Content-Disposition'] = 'attachment; filename=install_dacexy_agent.sh'
-    return resp
+    'from __future__ import annotations',
+    'import json',
+    'import asyncio',
+    'import logging',
+    'from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect',
+    'from fastapi.responses import Response, FileResponse',
+    'from pathlib import Path',
+    'from pydantic import BaseModel',
+    'from sqlalchemy.ext.asyncio import AsyncSession',
+    'from typing import Optional, Dict, Any, List',
+    'from src.infrastructure.persistence.database import get_db',
+    'from src.infrastructure.persistence.models.orm_models import User, AiTask',
+    'from src.infrastructure.ai_providers.deepseek import DeepSeekProvider',
+    'from src.interfaces.http.dependencies.container import get_deepseek',
+    'from src.interfaces.http.routes.auth import _get_current_user',
+    'from src.shared.config.settings import settings',
+    '',
+    "log = logging.getLogger('dacexy.agent')",
+    "router = APIRouter(prefix='/agent', tags=['agent'])",
+    '',
+    'active_agents: Dict[str, WebSocket] = {}',
+    'agent_results: Dict[str, Dict] = {}',
+    'pending_task_results: Dict[str, Dict[str, asyncio.Future]] = {}',
+    'agent_metadata: Dict[str, Dict] = {}',
+    '',
+    'class AgentRunRequest(BaseModel):',
+    '    task: Optional[str] = None',
+    '    goal: Optional[str] = None',
+    '    context: Optional[str] = None',
+    '    max_steps: int = 10',
+    '    use_swarm: bool = True',
+    '',
+    'class TaskRequest(BaseModel):',
+    '    task: Optional[str] = None',
+    '    goal: Optional[str] = None',
+    '    context: Optional[str] = None',
+    '',
+    'class CampaignRequest(BaseModel):',
+    '    name: str',
+    '    subject: str',
+    '    body: str',
+    '    recipients: List[str]',
+    '    html: bool = True',
+    '    delay_sec: float = 1.0',
+    '    tags: List[str] = []',
+    '    scheduled_at: Optional[str] = None',
+    '',
+    'class BulkWhatsAppRequest(BaseModel):',
+    '    contacts: List[str]',
+    '    message: str',
+    '    delay: float = 3.5',
+    '',
+    'class SocialPostRequest(BaseModel):',
+    '    platform: str',
+    '    username: str',
+    '    password: str',
+    '    text: Optional[str] = None',
+    '    image_path: Optional[str] = None',
+    '    video_path: Optional[str] = None',
+    '    caption: Optional[str] = None',
+    '    title: Optional[str] = None',
+    '    description: Optional[str] = None',
+    '    page_id: Optional[str] = None',
+    '',
+    'class DesktopCommandRequest(BaseModel):',
+    '    action: str',
+    '    x: Optional[int] = None',
+    '    y: Optional[int] = None',
+    '    text: Optional[str] = None',
+    '    key: Optional[str] = None',
+    '    keys: Optional[list] = None',
+    '    url: Optional[str] = None',
+    '    command: Optional[str] = None',
+    '    clicks: Optional[int] = 3',
+    '    app: Optional[str] = None',
+    "    button: Optional[str] = 'left'",
+    '    selector: Optional[str] = None',
+    "    by: Optional[str] = 'css'",
+    '    task: Optional[str] = None',
+    '    query: Optional[str] = None',
+    '    path: Optional[str] = None',
+    '    content: Optional[str] = None',
+    '    campaign_id: Optional[str] = None',
+    '    contacts: Optional[list] = None',
+    '    message: Optional[str] = None',
+    '    username: Optional[str] = None',
+    '    password: Optional[str] = None',
+    '    recipients: Optional[list] = None',
+    '    subject: Optional[str] = None',
+    '    body: Optional[str] = None',
+    '    title: Optional[str] = None',
+    '    name: Optional[str] = None',
+    '    folder: Optional[str] = None',
+    '    keyword: Optional[str] = None',
+    "    direction: Optional[str] = 'down'",
+    '    timeout: Optional[int] = 30',
+    '    headless: Optional[bool] = False',
+    '    html: Optional[bool] = True',
+    '    delay: Optional[float] = 1.0',
+    '    src: Optional[str] = None',
+    '    dst: Optional[str] = None',
+    '    output: Optional[str] = None',
+    '    paths: Optional[list] = None',
+    '    importance: Optional[float] = 1.0',
+    '    seconds: Optional[float] = 1.0',
+    '    safe: Optional[bool] = True',
+    '    top_k: Optional[int] = 5',
+    '    max_pages: Optional[int] = 3',
+    '    topic: Optional[str] = None',
+    '    email: Optional[str] = None',
+    '    phone: Optional[str] = None',
+    '    app_password: Optional[str] = None',
+    '    host: Optional[str] = None',
+    '    port: Optional[int] = 587',
+    '    use_tls: Optional[bool] = True',
+    '    enabled: Optional[bool] = True',
+    '    value: Optional[Any] = None',
+    '    script: Optional[str] = None',
+    '    media: Optional[str] = None',
+    "    pattern: Optional[str] = '*'",
+    '    ext: Optional[str] = None',
+    '    fallbacks: Optional[list] = None',
+    '    amount: Optional[int] = 700',
+    '    clear_first: Optional[bool] = False',
+    '    human_speed: Optional[bool] = False',
+    '    provider_index: Optional[int] = 0',
+    '    credentials: Optional[dict] = None',
+    '    tags: Optional[list] = None',
+    '    steps: Optional[list] = None',
+    '    image_path: Optional[str] = None',
+    '    caption: Optional[str] = None',
+    '    video_path: Optional[str] = None',
+    '    description: Optional[str] = None',
+    '    page_id: Optional[str] = None',
+    '    job_id: Optional[str] = None',
+    '    schedule_type: Optional[str] = None',
+    '    time_str: Optional[str] = None',
+    '    days: Optional[list] = None',
+    '    repeat_every_minutes: Optional[int] = 0',
+    '    day_of_month: Optional[int] = None',
+    '    region: Optional[list] = None',
+    '    retries: Optional[int] = 3',
+    '    expected: Optional[str] = None',
+    '    fact: Optional[str] = None',
+    '    category: Optional[str] = None',
+    '    contact: Optional[str] = None',
+    '    task_name: Optional[str] = None',
+    '    notes: Optional[list] = None',
+    '    run_on_startup: Optional[bool] = False',
+    '    csv_path: Optional[str] = None',
+    '    success_indicator: Optional[str] = None',
+    '    email_selector: Optional[str] = None',
+    '    pass_selector: Optional[str] = None',
+    '    submit_selector: Optional[str] = None',
+    '    content_search: Optional[bool] = False',
+    '    x1: Optional[int] = None',
+    '    y1: Optional[int] = None',
+    '    x2: Optional[int] = None',
+    '    y2: Optional[int] = None',
+    '    duration: Optional[float] = 0.3',
+    "    browser_type: Optional[str] = 'chrome'",
+    '',
+    'def _decode_ws_token(token: str) -> Optional[str]:',
+    '    if not token or len(token) < 20:',
+    '        return None',
+    '    try:',
+    '        from jose import jwt',
+    "        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])",
+    "        uid = str(payload.get('sub') or payload.get('user_id') or '')",
+    '        return uid if uid else None',
+    '    except Exception as e:',
+    "        log.debug('JWT decode failed: %s', e)",
+    '        return None',
+    '',
+    "@router.post('/run')",
+    'async def run_agent(',
+    '    body: AgentRunRequest,',
+    '    user: User = Depends(_get_current_user),',
+    '    db: AsyncSession = Depends(get_db),',
+    '    ai: DeepSeekProvider = Depends(get_deepseek),',
+    '):',
+    "    task_text = (body.task or body.goal or '').strip()[:2000]",
+    '    if not task_text:',
+    "        raise HTTPException(400, 'task or goal is required')",
+    '    user_id = str(user.id)',
+    '    task_record = AiTask(',
+    "        org_id=user.org_id, user_id=user.id, task_type='agent_run',",
+    "        status='running',",
+    "        input_data={'task': task_text, 'context': body.context, 'use_swarm': body.use_swarm, 'max_steps': body.max_steps},",
+    '    )',
+    '    db.add(task_record)',
+    '    await db.flush()',
+    '    await db.commit()',
+    '    if user_id in active_agents:',
+    '        ws = active_agents[user_id]',
+    '        try:',
+    '            loop = asyncio.get_event_loop()',
+    '            future = loop.create_future()',
+    '            pending_task_results.setdefault(user_id, {})[str(task_record.id)] = future',
+    "            payload = {'type': 'task' if body.use_swarm else 'command', 'task': task_text, 'action': 'swarm_task' if body.use_swarm else 'speak', 'context': body.context or '', 'task_id': str(task_record.id)}",
+    '            await ws.send_text(json.dumps(payload))',
+    '            try:',
+    '                result_data = await asyncio.wait_for(asyncio.shield(future), timeout=300)',
+    "                ok = int(result_data.get('ok') or 0)",
+    "                total = int(result_data.get('total') or 1)",
+    "                raw = result_data.get('result', '')",
+    "                result_status = str(result_data.get('status') or '').lower()",
+    "                failed = result_status in ('error', 'failed', 'denied', 'skipped') or ok < total",
+    "                result_text = json.dumps(raw) if isinstance(raw, dict) else (str(raw) if raw else 'Completed ' + str(ok) + '/' + str(total) + ' steps.')",
+    "                task_record.status = 'failed' if failed else 'completed'",
+    "                task_record.output_data = {'result': result_text, 'desktop_result': result_data, 'ok': ok, 'total': total}",
+    '                await db.commit()',
+    "                return {'id': str(task_record.id), 'task': task_text, 'status': task_record.status, 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}",
+    '            except asyncio.TimeoutError:',
+    "                task_record.status = 'running'",
+    "                result_text = 'Task sent to desktop agent and is still running. No success result has been received yet.'",
+    "                task_record.output_data = {'result': result_text}",
+    '                await db.commit()',
+    "                return {'id': str(task_record.id), 'task': task_text, 'status': 'running', 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}",
+    '            except asyncio.CancelledError:',
+    "                task_record.status = 'failed'",
+    "                result_text = 'Task was cancelled before the desktop agent confirmed completion.'",
+    "                task_record.output_data = {'error': result_text}",
+    '                await db.commit()',
+    "                return {'id': str(task_record.id), 'task': task_text, 'status': 'failed', 'result': result_text, 'created_at': str(task_record.created_at), 'agent_version': agent_metadata.get(user_id, {}).get('version', '')}",
+    '            finally:',
+    '                pending_task_results.get(user_id, {}).pop(str(task_record.id), None)',
+    '        except WebSocketDisconnect:',
+    '            active_agents.pop(user_id, None)',
+    '            pending_task_results.pop(user_id, None)',
+    '        except Exception as e:',
+    '            active_agents.pop(user_id, None)',
+    '            pending_task_results.pop(user_id, None)',
+    "            log.warning('Agent task error for %s: %s', user_id, e)",
+    "    system_prompt = 'You are Dacexy AI. The Desktop Agent is not connected. Explain that the task cannot be executed on the PC until the Desktop Agent is connected. Do not claim completion.'",
+    "    ctx_part = (' Context: ' + str(body.context)) if body.context else ''",
+    "    messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': 'Task: ' + task_text + ctx_part}]",
+    '    try:',
+    "        result = await ai.chat(messages, model='deepseek-chat', stream=False)",
+    '        if isinstance(result, list):',
+    "            result = ' '.join(b.get('text', '') for b in result if isinstance(b, dict) and b.get('type') == 'text')",
+    '        result = str(result)',
+    "        task_record.status = 'failed'",
+    "        task_record.output_data = {'error': 'Desktop Agent not connected.', 'result': result}",
+    '        await db.commit()',
+    "        return {'id': str(task_record.id), 'task': task_text, 'status': 'failed', 'result': result, 'created_at': str(task_record.created_at), 'note': 'Desktop Agent not connected.'}",
+    '    except Exception as e:',
+    "        task_record.status = 'failed'",
+    "        task_record.output_data = {'error': str(e)}",
+    '        await db.commit()',
+    "        raise HTTPException(500, 'Agent AI error: ' + str(e))",
+    '',
+    "@router.get('/tasks')",
+    'async def list_tasks(user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):',
+    '    from sqlalchemy import select',
+    '    try:',
+    '        result = await db.execute(select(AiTask).where(AiTask.org_id == user.org_id).order_by(AiTask.created_at.desc()).limit(100))',
+    '        tasks = result.scalars().all()',
+    "        return [{'id': str(t.id), 'task': (t.input_data or {}).get('task', ''), 'status': t.status, 'result': (t.output_data or {}).get('result'), 'error': (t.output_data or {}).get('error'), 'type': t.task_type, 'created_at': str(t.created_at)} for t in tasks]",
+    '    except Exception as e:',
+    "        log.error('list_tasks: %s', e)",
+    '        return []',
+    '',
+    "@router.get('/tasks/{task_id}')",
+    'async def get_task(task_id: str, user: User = Depends(_get_current_user), db: AsyncSession = Depends(get_db)):',
+    '    from sqlalchemy import select',
+    '    try:',
+    '        result = await db.execute(select(AiTask).where(AiTask.id == task_id, AiTask.org_id == user.org_id))',
+    '        task = result.scalar_one_or_none()',
+    "        if not task: raise HTTPException(404, 'Task not found')",
+    "        return {'id': str(task.id), 'task': (task.input_data or {}).get('task', ''), 'status': task.status, 'result': (task.output_data or {}).get('result'), 'error': (task.output_data or {}).get('error'), 'input': task.input_data, 'output': task.output_data, 'created_at': str(task.created_at)}",
+    '    except HTTPException: raise',
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.get('/desktop/status')",
+    'async def desktop_status(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    '    meta = agent_metadata.get(uid, {})',
+    "    features = meta.get('features', [])",
+    "    return {'connected': uid in active_agents, 'user_id': uid, 'agent_version': meta.get('version', ''), 'platform': meta.get('platform', ''), 'hostname': meta.get('hostname', ''), 'features': features, 'connected_since': meta.get('connected_since', ''), 'capabilities': {'vision': 'vision_super' in features, 'voice': 'voice3' in features, 'browser': 'browser_enterprise' in features, 'email': 'email_enterprise' in features, 'swarm': 'swarm10' in features, 'memory': 'memory_vector' in features, 'social': 'social_all' in features, 'multi_monitor': 'multi_monitor' in features, 'self_healing': 'self_healing' in features, 'scheduler': 'scheduler' in features, 'plugins': 'plugins' in features}}",
+    '',
+    "@router.get('/desktop/last_result')",
+    'async def get_last_result(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    return {'result': agent_results.get(uid), 'connected': uid in active_agents, 'agent_version': agent_metadata.get(uid, {}).get('version', '')}",
+    '',
+    "@router.post('/desktop/command')",
+    'async def send_desktop_command(body: DesktopCommandRequest, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    ws = active_agents[uid]',
+    '    try:',
+    '        payload = {k: v for k, v in body.dict().items() if v is not None}',
+    '        await ws.send_text(json.dumps(payload))',
+    "        return {'status': 'sent', 'action': body.action}",
+    '    except WebSocketDisconnect:',
+    '        active_agents.pop(uid, None)',
+    "        raise HTTPException(400, 'Desktop agent disconnected.')",
+    '    except Exception as e:',
+    '        active_agents.pop(uid, None)',
+    "        raise HTTPException(500, 'Failed to send command: ' + str(e))",
+    '',
+    "@router.post('/desktop/task')",
+    'async def send_desktop_task(body: TaskRequest, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    task_text = (body.task or body.goal or '').strip()[:2000]",
+    "    if not task_text: raise HTTPException(400, 'task or goal required')",
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    ws = active_agents[uid]',
+    '    try:',
+    "        await ws.send_text(json.dumps({'type': 'task', 'task': task_text, 'action': 'swarm_task', 'context': body.context or ''}))",
+    "        return {'status': 'sent', 'task': task_text}",
+    '    except Exception as e:',
+    '        active_agents.pop(uid, None)',
+    "        raise HTTPException(500, 'Failed to send task: ' + str(e))",
+    '',
+    "@router.post('/desktop/screenshot')",
+    'async def take_screenshot(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'screenshot'}))",
+    '        await asyncio.sleep(2)',
+    '        result = agent_results.get(uid, {})',
+    "        return {'status': 'ok', 'screenshot': result.get('screenshot', '')}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.post('/desktop/ocr')",
+    'async def ocr_screen(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'ocr_screen'}))",
+    '        await asyncio.sleep(3)',
+    '        result = agent_results.get(uid, {})',
+    "        return {'status': 'ok', 'text': result.get('text', '')}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.post('/desktop/email/campaign')",
+    'async def create_email_campaign(body: CampaignRequest, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'create_campaign', 'name': body.name, 'subject': body.subject, 'body': body.body, 'recipients': body.recipients, 'html': body.html, 'delay': body.delay_sec, 'tags': body.tags, 'scheduled_at': body.scheduled_at}))",
+    '        await asyncio.sleep(1)',
+    '        result = agent_results.get(uid, {})',
+    "        campaign_id = result.get('campaign_id', '')",
+    '        if campaign_id:',
+    "            await active_agents[uid].send_text(json.dumps({'action': 'send_campaign', 'campaign_id': campaign_id}))",
+    "        return {'status': 'ok', 'campaign_id': campaign_id, 'recipients': len(body.recipients)}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.post('/desktop/whatsapp/bulk')",
+    'async def whatsapp_bulk(body: BulkWhatsAppRequest, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'whatsapp_bulk', 'contacts': body.contacts, 'message': body.message, 'delay': body.delay}))",
+    "        return {'status': 'sent', 'contacts': len(body.contacts)}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.post('/desktop/social/post')",
+    'async def social_post(body: SocialPostRequest, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    "    action_map = {'twitter': 'twitter_post', 'linkedin': 'linkedin_post', 'facebook': 'facebook_post', 'instagram': 'instagram_post', 'youtube': 'youtube_upload', 'tiktok': 'tiktok_post'}",
+    '    action = action_map.get(body.platform.lower())',
+    "    if not action: raise HTTPException(400, 'Unsupported platform: ' + body.platform)",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': action, 'username': body.username, 'password': body.password, 'text': body.text, 'image_path': body.image_path, 'video_path': body.video_path, 'caption': body.caption, 'title': body.title, 'description': body.description, 'page_id': body.page_id}))",
+    "        return {'status': 'sent', 'platform': body.platform}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.post('/desktop/social/post_all')",
+    'async def post_all_social(body: dict, user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'post_all_social', 'text': body.get('text', ''), 'credentials': body.get('credentials', {})}))",
+    "        return {'status': 'sent', 'platforms': list(body.get('credentials', {}).keys())}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.get('/desktop/health')",
+    'async def agent_health(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'health_check'}))",
+    '        await asyncio.sleep(2)',
+    '        result = agent_results.get(uid, {})',
+    "        return {'status': 'ok', 'health': result.get('health', {})}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.get('/desktop/memory')",
+    'async def get_agent_memory(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'get_memory', 'query': ''}))",
+    '        await asyncio.sleep(1.5)',
+    '        result = agent_results.get(uid, {})',
+    "        return {'status': 'ok', 'memory': result.get('memory', '')}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.get('/desktop/skills')",
+    'async def get_agent_skills(user: User = Depends(_get_current_user)):',
+    '    uid = str(user.id)',
+    "    if uid not in active_agents: raise HTTPException(400, 'Desktop agent not connected.')",
+    '    try:',
+    "        await active_agents[uid].send_text(json.dumps({'action': 'list_skills'}))",
+    '        await asyncio.sleep(1.5)',
+    '        result = agent_results.get(uid, {})',
+    "        return {'status': 'ok', 'skills': result.get('skills', [])}",
+    '    except Exception as e: raise HTTPException(500, str(e))',
+    '',
+    "@router.websocket('/desktop/ws')",
+    'async def desktop_websocket(websocket: WebSocket):',
+    '    await websocket.accept()',
+    '    user_id = None',
+    '    try:',
+    '        try:',
+    '            auth_raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)',
+    '        except asyncio.TimeoutError:',
+    "            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Authentication timeout'}))",
+    '            await websocket.close(code=1008)',
+    '            return',
+    "        token = ''",
+    '        try:',
+    '            auth_data = json.loads(auth_raw)',
+    "            token = auth_data.get('token', '') or auth_data.get('access_token', '')",
+    '        except json.JSONDecodeError:',
+    '            token = auth_raw.strip()',
+    '        if not token or len(token) < 20:',
+    "            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Invalid token format.'}))",
+    '            await websocket.close(code=1008)',
+    '            return',
+    '        user_id = _decode_ws_token(token)',
+    '        if not user_id:',
+    "            await websocket.send_text(json.dumps({'type': 'error', 'message': 'Authentication failed.'}))",
+    '            await websocket.close(code=1008)',
+    '            return',
+    '        if user_id in active_agents:',
+    '            old_ws = active_agents[user_id]',
+    '            try:',
+    "                await old_ws.send_text(json.dumps({'type': 'error', 'message': 'Newer connection established.'}))",
+    '                await old_ws.close(code=1001)',
+    '            except Exception: pass',
+    '        import datetime as _dt',
+    '        active_agents[user_id] = websocket',
+    "        agent_metadata[user_id] = {'connected_since': _dt.datetime.now().isoformat(), 'version': '', 'platform': '', 'hostname': '', 'features': []}",
+    "        log.info('Agent connected: user=%s', user_id)",
+    "        await websocket.send_text(json.dumps({'type': 'connected', 'message': 'Desktop Agent connected successfully.', 'user_id': user_id}))",
+    '        consecutive_errors = 0',
+    '        while True:',
+    '            try:',
+    '                try:',
+    '                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60)',
+    '                    consecutive_errors = 0',
+    '                except asyncio.TimeoutError:',
+    '                    try:',
+    "                        await asyncio.wait_for(websocket.send_text(json.dumps({'type': 'ping'})), timeout=5)",
+    '                    except Exception:',
+    '                        break',
+    '                    continue',
+    '                try:',
+    '                    msg = json.loads(data)',
+    '                except json.JSONDecodeError:',
+    '                    continue',
+    "                msg_type = msg.get('type', '')",
+    "                if msg_type == 'ping':",
+    "                    await websocket.send_text(json.dumps({'type': 'pong'}))",
+    "                elif msg_type == 'pong': pass",
+    "                elif msg_type == 'init':",
+    "                    agent_metadata[user_id].update({'version': msg.get('version', ''), 'platform': msg.get('platform', ''), 'hostname': msg.get('hostname', ''), 'features': msg.get('features', []), 'memory_context': msg.get('memory_context', '')})",
+    "                    await websocket.send_text(json.dumps({'type': 'init_ack', 'message': 'Agent registered.', 'version': msg.get('version', '')}))",
+    "                elif msg_type == 'task_result':",
+    '                    agent_results[user_id] = msg',
+    "                    future = pending_task_results.get(user_id, {}).get(str(msg.get('task_id', '')))",
+    '                    if future and not future.done():',
+    '                        try: future.set_result(msg)',
+    '                        except asyncio.InvalidStateError: pass',
+    "                elif msg_type in ('result', 'command_result', 'screenshot_before', 'screenshot_after', 'system_info', 'error', 'voice_result', 'ocr_result', 'vision_result', 'memory_result', 'health_result', 'skill_result', 'heartbeat'):",
+    '                    agent_results[user_id] = msg',
+    '                    future = pending_task_results.get(user_id)',
+    "                    if future and not future.done() and msg_type == 'result':",
+    '                        try: future.set_result(msg)',
+    '                        except asyncio.InvalidStateError: pass',
+    "                elif msg_type == 'heartbeat':",
+    "                    health = msg.get('health', {})",
+    '                    if health:',
+    "                        agent_metadata[user_id]['last_health'] = health",
+    "                        agent_metadata[user_id]['last_seen'] = _dt.datetime.now().isoformat()",
+    '                    agent_results[user_id] = msg',
+    "                elif msg_type == 'log':",
+    "                    log.info('[AGENT:%s] %s: %s', user_id, msg.get('level', 'INFO').upper(), msg.get('message', '')[:300])",
+    '            except WebSocketDisconnect:',
+    '                break',
+    '            except Exception as e:',
+    '                consecutive_errors += 1',
+    "                log.warning('Message loop error user=%s: %s', user_id, e)",
+    '                if consecutive_errors >= 5: break',
+    '                await asyncio.sleep(0.5)',
+    '    except WebSocketDisconnect: pass',
+    "    except Exception as e: log.error('WebSocket handler error user=%s: %s', user_id, e)",
+    '    finally:',
+    '        if user_id:',
+    '            active_agents.pop(user_id, None)',
+    '            agent_results.pop(user_id, None)',
+    '            agent_metadata.pop(user_id, None)',
+    '            future = pending_task_results.pop(user_id, None)',
+    '            if future and not future.done(): future.cancel()',
+    '',
+    "@router.get('/track/{campaign_id}/{recipient_index}')",
+    'async def track_email_open(campaign_id: str, recipient_index: int, db: AsyncSession = Depends(get_db)):',
+    '    gif_bytes = bytes([71,73,70,56,57,97,1,0,1,0,128,0,0,255,255,255,0,0,0,33,249,4,0,0,0,0,0,44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,59])',
+    "    return Response(content=gif_bytes, media_type='image/gif', headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})",
+    '',
+    "@router.get('/download/windows')",
+    'async def download_windows_installer():',
+    "    installer_path = Path(__file__).resolve().parents[4] / 'desktop_agent' / 'install_dacexy_agent.bat'",
+    "    if not installer_path.exists(): raise HTTPException(status_code=404, detail='Installer not found')",
+    "    return FileResponse(path=str(installer_path), filename='install_dacexy_agent.bat', media_type='application/octet-stream')",
+    '',
+    "@router.get('/download/mac')",
+    'async def download_mac_installer():',
+    '    sh_content = bytes([35,33,47,98,105,110,47,98,97,115,104,10,101,99,104,111,32,39,68,97,99,101,120,121,32,65,103,101,110,116,32,73,110,115,116,97,108,108,101,114,39,10])',
+    "    resp = Response(content=sh_content, media_type='application/octet-stream')",
+    "    resp.headers['Content-Disposition'] = 'attachment; filename=install_dacexy_agent.sh'",
+    '    return resp',
 ]
 
 w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
+
 
 
 
