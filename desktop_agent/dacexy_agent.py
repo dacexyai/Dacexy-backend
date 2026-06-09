@@ -2155,7 +2155,7 @@ class PlannerAgent:
                       f"Task: {desc}\nContext: {ctx[:300]}\n\n"
                       f"Return ONLY a JSON array of steps:\n"
                       f'[{{"step":1,"action":"...","description":"...",'
-                      f'"type":"click|type|open|wait|browser|email|whatsapp|social|screenshot|speak|system|file",'
+                      f'"type":"click|type|open_url|open_app|wait|browser|email|whatsapp|social|screenshot|speak|system|file",'
                       f'"params":{{}}}}]')
             r = req_lib.post(f"{BACKEND_HTTP}/ai/chat",
                              headers={"Authorization": f"Bearer {self.token}",
@@ -2680,6 +2680,12 @@ def execute_command(cmd: dict, token: str = None,
             return {"status": "ok" if kill_app(cmd.get("name", "")) else "not_found"}
         elif action == "list_apps":
             return {"status": "ok", "apps": [a["name"] for a in list_running_apps()[:30]]}
+        elif action == "open":
+            url = cmd.get("url", "") or cmd.get("app", "") or cmd.get("text", "")
+            if url:
+                if not url.startswith("http"): url = "https://" + url
+                webbrowser.open(url)
+            return {"status": "ok"}
         elif action == "open_browser":
             webbrowser.open(cmd.get("url", "https://google.com")); return {"status": "ok"}
         elif action == "open_notepad":
