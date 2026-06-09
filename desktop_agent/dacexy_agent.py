@@ -1,4 +1,4 @@
-﻿"""
+"""
 DACEXY DESKTOP AGENT v15.0 ENTERPRISE
 World's Most Powerful AI Desktop Agent
 24/7 cloud-connected, voice-controlled, fully autonomous
