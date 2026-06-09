@@ -139,19 +139,17 @@ exit /b 1
 copy /y "%~f0" "%USERPROFILE%\DacexyAgent\install_dacexy_agent.bat" >nul 2>&1
 
 :: Clear old session token so fresh login happens
-if exist "%USERPROFILE%\.dacexy_agent.json" (
-    python -c "
-import json
-from pathlib import Path
-f = Path.home() / '.dacexy_agent.json'
-try:
-    d = json.loads(f.read_text(encoding='utf-8'))
-    d.pop('access_token', None)
-    f.write_text(json.dumps(d, indent=2), encoding='utf-8')
-except:
-    pass
-" >nul 2>&1
-)
+echo import json > "%TEMP%\dacexy_clear.py"
+echo from pathlib import Path >> "%TEMP%\dacexy_clear.py"
+echo f = Path.home() / '.dacexy_agent.json' >> "%TEMP%\dacexy_clear.py"
+echo if f.exists(): >> "%TEMP%\dacexy_clear.py"
+echo     try: >> "%TEMP%\dacexy_clear.py"
+echo         d = json.loads(f.read_text(encoding='utf-8')) >> "%TEMP%\dacexy_clear.py"
+echo         d.pop('access_token', None) >> "%TEMP%\dacexy_clear.py"
+echo         f.write_text(json.dumps(d, indent=2), encoding='utf-8') >> "%TEMP%\dacexy_clear.py"
+echo     except: pass >> "%TEMP%\dacexy_clear.py"
+python "%TEMP%\dacexy_clear.py" >nul 2>&1
+del "%TEMP%\dacexy_clear.py" >nul 2>&1
 
 :: ── Step 5: Create desktop shortcut + autostart ────────────────────────────
 echo.
@@ -214,17 +212,17 @@ if %EXIT_CODE% EQU 0 (
 
 if %EXIT_CODE% EQU 2 (
     echo  Session expired. Clearing login and restarting...
-    python -c "
-import json
-from pathlib import Path
-f = Path.home() / '.dacexy_agent.json'
-if f.exists():
-    try:
-        d = json.loads(f.read_text())
-        d.pop('access_token', None)
-        f.write_text(json.dumps(d, indent=2))
-    except: pass
-" >nul 2>&1
+    echo import json > "%TEMP%\dacexy_clear2.py"
+    echo from pathlib import Path >> "%TEMP%\dacexy_clear2.py"
+    echo f = Path.home() / '.dacexy_agent.json' >> "%TEMP%\dacexy_clear2.py"
+    echo if f.exists(): >> "%TEMP%\dacexy_clear2.py"
+    echo     try: >> "%TEMP%\dacexy_clear2.py"
+    echo         d = json.loads(f.read_text()) >> "%TEMP%\dacexy_clear2.py"
+    echo         d.pop('access_token', None) >> "%TEMP%\dacexy_clear2.py"
+    echo         f.write_text(json.dumps(d, indent=2)) >> "%TEMP%\dacexy_clear2.py"
+    echo     except: pass >> "%TEMP%\dacexy_clear2.py"
+    python "%TEMP%\dacexy_clear2.py" >nul 2>&1
+    del "%TEMP%\dacexy_clear2.py" >nul 2>&1
     goto :AGENT_LOOP
 )
 
