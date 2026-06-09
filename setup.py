@@ -1243,7 +1243,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 
 
 _agent_lines = [
-﻿from __future__ import annotations
+from __future__ import annotations
 import json
 import asyncio
 import logging
@@ -1772,7 +1772,6 @@ async def download_mac_installer():
     resp = Response(content=sh_content, media_type='application/octet-stream')
     resp.headers['Content-Disposition'] = 'attachment; filename=install_dacexy_agent.sh'
     return resp
-
 ]
 
 w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
