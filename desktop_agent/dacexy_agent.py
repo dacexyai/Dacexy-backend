@@ -1,4 +1,4 @@
-"""
+﻿"""
 DACEXY DESKTOP AGENT v15.0 ENTERPRISE
 World's Most Powerful AI Desktop Agent
 24/7 cloud-connected, voice-controlled, fully autonomous
@@ -1436,7 +1436,7 @@ def open_app(app_name: str) -> bool:
 def _smart_open(target: str) -> dict:
     """
     FIX: Central smart-open that handles 'open youtube', 'open chrome',
-    'open C:/file.pdf', 'open https://...' — used by 'open', 'launch', 'start' aliases.
+    'open C:/file.pdf', 'open https://...' â€” used by 'open', 'launch', 'start' aliases.
     """
     tl = target.lower().strip()
 
@@ -2296,7 +2296,7 @@ def is_blocked(cmd: str) -> bool:
 # (FIX: strict action names, robust JSON parsing, correct field extraction)
 # ============================================================
 class PlannerAgent:
-    # These are ALL valid executor actions — planner must only use these
+    # These are ALL valid executor actions â€” planner must only use these
     VALID_ACTIONS = {
         "open_url", "open_app", "open_browser", "browser_go", "browser_click",
         "browser_type", "browser_extract", "browser_js", "browser_screenshot",
@@ -2335,7 +2335,7 @@ class PlannerAgent:
         desc = task.get("task", "")
         log.info("Planner: %s", desc)
 
-        # Fast local routing for simple tasks — no API call needed
+        # Fast local routing for simple tasks â€” no API call needed
         quick = self._quick_plan(desc)
         if quick:
             return quick
@@ -2375,11 +2375,11 @@ class PlannerAgent:
 
         # Open website/app
         for name, url in KNOWN_SITES.items():
-            if f"open {name}" in dl or f"go to {name}" in dl or f"launch {name}" in dl:
+            if (f"open {name}" in dl or f"go to {name}" in dl or f"launch {name}" in dl or f"visit {name}" in dl or (("open" in dl or "go" in dl or "launch" in dl or "visit" in dl) and name in dl)):
                 return [{"step": 1, "action": "open_url", "url": url,
                          "description": f"Open {name}"}]
         for name, exe in KNOWN_APPS.items():
-            if f"open {name}" in dl or f"launch {name}" in dl or f"start {name}" in dl:
+            if (f"open {name}" in dl or f"launch {name}" in dl or f"start {name}" in dl or (("open" in dl or "launch" in dl or "start" in dl) and name in dl)):
                 return [{"step": 1, "action": "open_app", "app": exe,
                          "description": f"Open {name}"}]
 
@@ -2420,7 +2420,7 @@ class PlannerAgent:
             "- To search web use action 'search_web' with field 'query'\n"
             "- For complex multi-step tasks use 'browser_go', 'browser_click', 'browser_type'\n"
             "- For voice/Hindi requests use 'speak' with translated English response in 'text'\n"
-            "- NEVER use action 'open' — use 'open_url' or 'open_app'\n"
+            "- NEVER use action 'open' â€” use 'open_url' or 'open_app'\n"
             "- NEVER use click with x=0, y=0\n\n"
             'Return ONLY: [{"step":1,"action":"open_url","description":"Open YouTube","url":"https://youtube.com"}]'
         )
@@ -2446,7 +2446,7 @@ class PlannerAgent:
     def _remap_action(self, action: str) -> str:
         """
         FIX: Map unknown/legacy action names to valid executor actions.
-        This is the core fix — 'open' was never in executor but planner kept returning it.
+        This is the core fix â€” 'open' was never in executor but planner kept returning it.
         """
         action = str(action).lower().strip()
         remap  = {
@@ -2487,13 +2487,13 @@ class PlannerAgent:
         if action in remap:
             log.debug("Action remapped: %s -> %s", action, remap[action])
             return remap[action]
-        log.warning("Unknown action '%s' — routing to swarm_task", action)
-        return "swarm_task"
+        log.warning("Unknown action '%s' - routing to speak/error instead of recursive swarm", action)
+        return "speak"
 
     def _fallback_plan(self, desc: str) -> List[Dict]:
-        """Fallback: treat entire task as a swarm_task so something always executes."""
-        return [{"step": 1, "action": "swarm_task", "task": desc,
-                 "description": f"Execute: {desc[:100]}"}]
+        """Fallback: do not recurse into swarm_task; report that planning failed."""
+        return [{"step": 1, "action": "speak", "text": "I could not create a safe executable plan for: " + desc[:160],
+                 "description": "Planning failed safely"}]
 
 
 # ============================================================
@@ -2580,7 +2580,8 @@ class AgentSwarm:
         speak(result_msg)
         audit("SWARM", mask_pii(task_desc[:80]), f"ok={ok_count}/{len(steps)}")
 
-        return {"total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1),
+        return {"status": "ok" if ok_count == len(steps) and len(steps) > 0 else "error",
+                "total": len(steps), "ok": ok_count, "elapsed_sec": round(elapsed, 1),
                 "results": results, "message": result_msg}
 
 # ============================================================
@@ -2742,7 +2743,7 @@ class AutonomousScheduler:
 
 # ============================================================
 # BLOCK 24 - VOICE ASSISTANT 3.0
-# (FIX: multilingual fallback — handles Hindi/mixed-language input)
+# (FIX: multilingual fallback â€” handles Hindi/mixed-language input)
 # ============================================================
 class VoiceAssistant3:
     WAKE_WORDS = ["hey dacexy", "dacexy", "assistant"]
@@ -2787,7 +2788,7 @@ class VoiceAssistant3:
     def route(self, text: str) -> Dict[str, Any]:
         """
         FIX: Route ANY text (including Hindi/Hinglish) to appropriate action.
-        Unknown input → swarm_task so AI handles it instead of silently ignoring.
+        Unknown input â†’ swarm_task so AI handles it instead of silently ignoring.
         """
         t = text.lower().strip()
 
@@ -2828,7 +2829,7 @@ class VoiceAssistant3:
         if any(w in t for w in ["send email", "email bhejo", "mail karo", "write email"]):
             return {"action": "swarm_task", "task": text}
 
-        # Everything else → swarm_task (AI will plan it)
+        # Everything else â†’ swarm_task (AI will plan it)
         # FIX: was previously falling through with no action, causing silent failures
         return {"action": "swarm_task", "task": text}
 
@@ -3009,13 +3010,13 @@ def execute_command(cmd: dict, token: str = None,
         return execute_command(c, token, browser, email_mgr, swarm, scheduler, fe)
 
     try:
-        # ── SPEECH & NOTIFY ──────────────────────────────────────
+        # â”€â”€ SPEECH & NOTIFY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if action == "speak":
             speak(cmd.get("text", "")); return {"status": "ok"}
         elif action == "notify":
             notify_desktop(cmd.get("title", "Dacexy"), cmd.get("text", "")); return {"status": "ok"}
 
-        # ── OPEN (FIX: unified smart-open handles all aliases) ───
+        # â”€â”€ OPEN (FIX: unified smart-open handles all aliases) â”€â”€â”€
         elif action in ("open", "launch", "start", "open_browser"):
             target = (cmd.get("url", "") or cmd.get("app", "") or
                       cmd.get("text", "") or cmd.get("name", "") or
@@ -3046,13 +3047,13 @@ def execute_command(cmd: dict, token: str = None,
             ok = open_app(app)
             return {"status": "ok" if ok else "error", "opened": app}
 
-        # ── MOUSE ────────────────────────────────────────────────
+        # â”€â”€ MOUSE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "click":
             x = int(cmd.get("x", 0) or 0)
             y = int(cmd.get("y", 0) or 0)
             if x == 0 and y == 0:
-                log.warning("click called with (0,0) — skipping (planner bug)")
-                return {"status": "skipped", "reason": "no coordinates — planner did not provide real pixel coords"}
+                log.warning("click called with (0,0) â€” skipping (planner bug)")
+                return {"status": "skipped", "reason": "no coordinates â€” planner did not provide real pixel coords"}
             human_click(x, y, cmd.get("button", "left"))
             return {"status": "ok", "clicked": f"({x},{y})"}
         elif action == "right_click":
@@ -3072,7 +3073,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "get_mouse_pos":
             x, y = pyautogui.position(); return {"status": "ok", "x": x, "y": y}
 
-        # ── KEYBOARD ─────────────────────────────────────────────
+        # â”€â”€ KEYBOARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action in ("type", "type_text", "write"):
             smart_type(cmd.get("text", ""), cmd.get("clear_first", False),
                        cmd.get("human_speed", False)); return {"status": "ok"}
@@ -3094,7 +3095,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "set_clipboard":
             set_clipboard(cmd.get("text", "")); return {"status": "ok"}
 
-        # ── VISION ───────────────────────────────────────────────
+        # â”€â”€ VISION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "screenshot":
             ss = vi.capture()
             if ss:
@@ -3134,7 +3135,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "start_vision_monitor":
             vi.start_monitoring(float(cmd.get("interval", 2.0))); return {"status": "ok"}
 
-        # ── WINDOW / APP ─────────────────────────────────────────
+        # â”€â”€ WINDOW / APP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "focus_window":
             return {"status": "ok" if focus_window(cmd.get("title", "")) else "not_found"}
         elif action == "minimize_window":
@@ -3161,7 +3162,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "open_terminal":
             open_app("cmd.exe"); return {"status": "ok"}
 
-        # ── FILES ────────────────────────────────────────────────
+        # â”€â”€ FILES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "list_files":
             files = fe.list_files(cmd.get("folder"), cmd.get("pattern", "*"))
             for f in files[:10]:
@@ -3206,7 +3207,7 @@ def execute_command(cmd: dict, token: str = None,
             speak(f"Disk: {usage.get('used_gb','?')} GB used, {usage.get('free_gb','?')} GB free.")
             return {"status": "ok", "usage": usage}
 
-        # ── EMAIL ────────────────────────────────────────────────
+        # â”€â”€ EMAIL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "setup_gmail":
             if email_mgr:
                 email_mgr.setup_gmail(cmd.get("email", ""), cmd.get("app_password", ""))
@@ -3277,7 +3278,7 @@ def execute_command(cmd: dict, token: str = None,
                 return {"status": "ok", "dashboard": email_mgr.get_dashboard()}
             return {"status": "error"}
 
-        # ── BROWSER ──────────────────────────────────────────────
+        # â”€â”€ BROWSER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "browser_start":
             if not browser:
                 browser = EnterpriseBrowserAgent()
@@ -3336,7 +3337,7 @@ def execute_command(cmd: dict, token: str = None,
                 cmd.get("topic", "") or cmd.get("query", ""),
                 int(cmd.get("max_pages", 3)))}
 
-        # ── SOCIAL MEDIA ─────────────────────────────────────────
+        # â”€â”€ SOCIAL MEDIA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "whatsapp_bulk":
             if not browser:
                 browser = EnterpriseBrowserAgent()
@@ -3421,18 +3422,19 @@ def execute_command(cmd: dict, token: str = None,
                         cred["username"], cred["password"], cred["image_path"], text)
             return {"status": "ok", "results": results}
 
-        # ── AI SWARM ─────────────────────────────────────────────
+        # â”€â”€ AI SWARM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "swarm_task":
             if swarm:
                 task_str = (cmd.get("task", "") or cmd.get("goal", "") or
                             cmd.get("description", "") or "").strip()
                 if not task_str:
                     return {"status": "error", "message": "No task specified"}
-                return {"status": "ok",
-                        "result": swarm.plan_and_execute(task_str, _sub)}
+                swarm_result = swarm.plan_and_execute(task_str, _sub)
+                return {"status": "ok" if swarm_result.get("status") == "ok" else "error",
+                        "result": swarm_result}
             return {"status": "error", "message": "Swarm not available"}
 
-        # ── MEMORY ───────────────────────────────────────────────
+        # â”€â”€ MEMORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "remember":
             get_mem().store(cmd.get("fact", ""), cmd.get("category", "fact"),
                             importance=float(cmd.get("importance", 1.0)))
@@ -3480,7 +3482,7 @@ def execute_command(cmd: dict, token: str = None,
                                        cmd.get("description", ""), cmd.get("tags", []))
             return {"status": "ok", "skill_id": sid}
 
-        # ── MACROS ───────────────────────────────────────────────
+        # â”€â”€ MACROS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "create_macro":
             create_macro(cmd.get("name", ""), cmd.get("steps", []))
             return {"status": "ok"}
@@ -3489,7 +3491,7 @@ def execute_command(cmd: dict, token: str = None,
         elif action == "list_macros":
             return {"status": "ok", "macros": list_macros()}
 
-        # ── SCHEDULER ────────────────────────────────────────────
+        # â”€â”€ SCHEDULER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "schedule_job":
             if scheduler:
                 jid = scheduler.add_job(cmd.get("name", ""), cmd.get("command", {}),
@@ -3507,7 +3509,7 @@ def execute_command(cmd: dict, token: str = None,
                 scheduler.remove_job(cmd.get("job_id", ""))
             return {"status": "ok"}
 
-        # ── SYSTEM ───────────────────────────────────────────────
+        # â”€â”€ SYSTEM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         elif action == "system_info":
             info = get_system_info()
             batt = info.get("battery")
@@ -3570,7 +3572,7 @@ def execute_command(cmd: dict, token: str = None,
             emergency_stop()
             return {"status": "ok"}
 
-        # ── UNKNOWN ACTION FALLBACK ───────────────────────────────
+        # â”€â”€ UNKNOWN ACTION FALLBACK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # FIX: instead of returning error, try to be smart about it
         else:
             # Maybe it's a direct URL?
@@ -3581,11 +3583,12 @@ def execute_command(cmd: dict, token: str = None,
             # Try as swarm task with the full command description
             task_str = (cmd.get("task", "") or cmd.get("description", "") or
                         cmd.get("text", "") or action).strip()
-            log.warning("Unknown action '%s' — routing to swarm_task: %s", action, task_str)
+            log.warning("Unknown action '%s' â€” routing to swarm_task: %s", action, task_str)
 
             if swarm and task_str:
-                return {"status": "ok",
-                        "result": swarm.plan_and_execute(task_str, _sub)}
+                swarm_result = swarm.plan_and_execute(task_str, _sub)
+                return {"status": "ok" if swarm_result.get("status") == "ok" else "error",
+                        "result": swarm_result}
 
             return {"status": "error",
                     "message": f"Unknown action: '{action}'. "
@@ -3602,17 +3605,17 @@ def execute_command(cmd: dict, token: str = None,
 
 # ============================================================
 # BLOCK 28 - WEBSOCKET
-# (FIX 1: correct two-step auth — send token first, then init message
+# (FIX 1: correct two-step auth â€” send token first, then init message
 #  FIX 2: handle task_result format backend expects
 #  FIX 3: handle both "command" and "task" message types correctly)
 # ============================================================
 async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
     """
     FIX: Backend protocol is:
-      RECV: {"type":"ping"} → SEND: {"type":"pong"}
-      RECV: {"type":"task","task":"...","task_id":"..."} → execute → SEND task_result
-      RECV: {"type":"command","action":"...","task_id":"..."} → execute → SEND task_result
-      RECV: {"type":"init_ack"} → logged only
+      RECV: {"type":"ping"} â†’ SEND: {"type":"pong"}
+      RECV: {"type":"task","task":"...","task_id":"..."} â†’ execute â†’ SEND task_result
+      RECV: {"type":"command","action":"...","task_id":"..."} â†’ execute â†’ SEND task_result
+      RECV: {"type":"init_ack"} â†’ logged only
     """
     while _agent_running:
         try:
@@ -3656,12 +3659,18 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
                     lambda cd=cmd_data: execute_command(cd, token, browser, email_mgr, swarm, scheduler))
 
                 # FIX: send result in format backend pending_task_results future expects
-                ok_val  = 1 if (isinstance(result, dict) and result.get("status") == "ok") else 0
+                nested = result.get("result", {}) if isinstance(result, dict) else {}
+                if isinstance(nested, dict) and "ok" in nested and "total" in nested:
+                    ok_val = int(nested.get("ok", 0) or 0)
+                    total_val = int(nested.get("total", 1) or 1)
+                else:
+                    ok_val = 1 if (isinstance(result, dict) and result.get("status") == "ok") else 0
+                    total_val = 1
                 payload = {
                     "type":    "task_result",
                     "task_id": task_id,
                     "ok":      ok_val,
-                    "total":   1,
+                    "total":   total_val,
                     "result":  result,
                     "status":  result.get("status", "ok") if isinstance(result, dict) else "ok",
                 }
@@ -3709,8 +3718,8 @@ async def ws_recv_loop(ws, token, browser, email_mgr, swarm, scheduler):
 async def ws_connect_loop(token, browser, email_mgr, swarm, scheduler):
     """
     FIX: Correct two-step WebSocket auth protocol:
-      Step 1 → send raw token string (backend waits for this first)
-      Step 2 → send {"type":"init", ...metadata...}
+      Step 1 â†’ send raw token string (backend waits for this first)
+      Step 2 â†’ send {"type":"init", ...metadata...}
     """
     retry_delay = 2
     max_delay   = 120
@@ -4030,7 +4039,7 @@ def interactive_shell(token, browser, email_mgr, swarm, scheduler):
                     result   = _exec(cmd_json)
                     print(f"  Result: {result}")
                 except json.JSONDecodeError:
-                    # Natural language → swarm handles it
+                    # Natural language â†’ swarm handles it
                     _task(f"Processing: {inp}")
                     swarm.plan_and_execute(inp, _exec)
         except KeyboardInterrupt:
@@ -4195,3 +4204,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
