@@ -5,12 +5,12 @@ color 0A
 
 echo.
 echo  ================================
-echo   DACEXY Desktop Agent v15.0
+echo   DACEXY Desktop Agent v16.0
 echo   Installer for Windows
 echo  ================================
 echo.
 
-:: ── Step 1: Check Python ─────────────────────────────────────────────────────
+:: ── Step 1: Check Python ─────────────────────────────────────────────
 echo [1/5] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 goto :NOPYTHON
@@ -18,108 +18,104 @@ for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo  OK: %%i
 goto :HASPYTHON
 
 :NOPYTHON
-echo.
-echo  Python not found. Downloading Python 3.11 automatically...
-echo  Please wait, this takes 2-3 minutes on first run...
-echo.
-powershell -Command "try { Write-Host '  Downloading Python 3.11.9...'; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\python_installer.exe' -UseBasicParsing; Write-Host '  Download complete.' } catch { Write-Host '  ERROR:' $_.Exception.Message; exit 1 }"
+echo  Python not found. Downloading Python 3.11...
+powershell -Command "try { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\py_installer.exe' -UseBasicParsing; Write-Host '  Downloaded.' } catch { Write-Host '  FAILED:' $_.Exception.Message; exit 1 }"
 if errorlevel 1 goto :PYDOWNLOADFAIL
-echo  Installing Python silently (1-2 minutes)...
-"%TEMP%\python_installer.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
+echo  Installing Python silently...
+"%TEMP%\py_installer.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
 timeout /t 20 /nobreak >nul
-if exist "%TEMP%\python_installer.exe" del "%TEMP%\python_installer.exe"
+if exist "%TEMP%\py_installer.exe" del "%TEMP%\py_installer.exe" >nul 2>&1
 for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "SYSPATH=%%b"
 for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USERPATH=%%b"
 set "PATH=%SYSPATH%;%USERPATH%;%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts"
 python --version >nul 2>&1
 if errorlevel 1 goto :PYINSTALLFAIL
-echo  Python installed successfully!
+echo  Python installed!
 goto :HASPYTHON
 
 :PYDOWNLOADFAIL
-echo.
-echo  ERROR: Could not download Python automatically.
-echo  Please install Python manually from https://python.org/downloads
-echo  Make sure to check "Add Python to PATH" during install.
-echo.
-start https://python.org/downloads
+echo  ERROR: Could not download Python.
+echo  Please install from: https://python.org/downloads
+echo  Check "Add Python to PATH" during install, then run this again.
 pause
 exit /b 1
 
 :PYINSTALLFAIL
-echo.
-echo  Python installed but PATH needs terminal restart.
-echo  Please close this window and run the installer again.
-echo.
+echo  Python installed but PATH needs refresh.
+echo  Close this window and run the installer again.
 pause
 exit /b 1
 
 :HASPYTHON
 
-:: ── Step 2: Create folder ────────────────────────────────────────────────────
+:: ── Step 2: Create folders ────────────────────────────────────────────
 echo.
-echo [2/5] Creating agent folder...
-if not exist "%USERPROFILE%\DacexyAgent" mkdir "%USERPROFILE%\DacexyAgent"
-if not exist "%USERPROFILE%\DacexyAgent\logs" mkdir "%USERPROFILE%\DacexyAgent\logs"
-if not exist "%USERPROFILE%\DacexyAgent\data" mkdir "%USERPROFILE%\DacexyAgent\data"
-if not exist "%USERPROFILE%\DacexyAgent\plugins" mkdir "%USERPROFILE%\DacexyAgent\plugins"
+echo [2/5] Creating folders...
+if not exist "%USERPROFILE%\DacexyAgent"          mkdir "%USERPROFILE%\DacexyAgent"
+if not exist "%USERPROFILE%\DacexyAgent\logs"     mkdir "%USERPROFILE%\DacexyAgent\logs"
+if not exist "%USERPROFILE%\DacexyAgent\data"     mkdir "%USERPROFILE%\DacexyAgent\data"
+if not exist "%USERPROFILE%\DacexyAgent\plugins"  mkdir "%USERPROFILE%\DacexyAgent\plugins"
 echo  OK: %USERPROFILE%\DacexyAgent
 
-:: ── Step 3: Install packages ─────────────────────────────────────────────────
+:: ── Step 3: Install packages ──────────────────────────────────────────
 echo.
-echo [3/5] Installing packages (first run may take 5-10 minutes)...
-python -m pip install --upgrade pip --quiet
-python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard selenium webdriver-manager opencv-python pytesseract schedule aiohttp aiofiles rich colorama python-docx openpyxl pandas cryptography packaging --quiet
+echo [3/5] Installing packages (5-10 min first time)...
+python -m pip install --upgrade pip --quiet --no-warn-script-location >nul 2>&1
+python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard --quiet --no-warn-script-location
 if errorlevel 1 (
-    echo  WARNING: Some packages had issues. Retrying key packages...
-    python -m pip install pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard --quiet
+    echo  Some packages failed. Retrying individually...
+    for %%p in (pyautogui pillow websockets requests speechrecognition pyttsx3 numpy psutil pyperclip plyer pygetwindow keyboard) do (
+        python -m pip install %%p --quiet --no-warn-script-location >nul 2>&1
+    )
 )
-echo  OK: All packages installed
+echo  OK: Core packages installed
 
-echo  Installing PyAudio for voice support...
-python -m pip install PyAudio --quiet >nul 2>&1
+echo  Installing PyAudio for voice...
+python -m pip install PyAudio --quiet --no-warn-script-location >nul 2>&1
 python -c "import pyaudio" >nul 2>&1
 if errorlevel 1 (
-    python -m pip install pipwin --quiet >nul 2>&1
+    python -m pip install pipwin --quiet --no-warn-script-location >nul 2>&1
     python -m pipwin install pyaudio >nul 2>&1
 )
 python -c "import pyaudio" >nul 2>&1
 if errorlevel 1 (
-    echo  NOTE: PyAudio not installed - voice disabled. Agent works fully via text.
+    echo  NOTE: PyAudio failed - voice will be disabled. Text commands still work.
 ) else (
     echo  OK: PyAudio installed - voice enabled
 )
 
-:: ── Step 4: Download agent script ────────────────────────────────────────────
+:: ── Step 4: Setup agent file ─────────────────────────────────────────
 echo.
-echo [4/5] Setting up Dacexy Agent script...
+echo [4/5] Setting up agent...
 
 if exist "%~dp0dacexy_agent.py" (
     copy /y "%~dp0dacexy_agent.py" "%USERPROFILE%\DacexyAgent\dacexy_agent.py" >nul
-    echo  OK: Agent copied from installer package
+    echo  OK: Agent copied from installer folder
     goto :AGENT_READY
 )
-
 if exist "%USERPROFILE%\DacexyAgent\dacexy_agent.py" (
     echo  OK: Agent already present
     goto :AGENT_READY
 )
 
-powershell -Command "try { Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%USERPROFILE%\DacexyAgent\dacexy_agent.py' -UseBasicParsing; Write-Host ' OK: Agent downloaded' } catch { Write-Host ' WARN: Download failed -' $_.Exception.Message; exit 1 }"
+echo  Downloading agent from server...
+powershell -Command "try { $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%USERPROFILE%\DacexyAgent\dacexy_agent.py' -UseBasicParsing; Write-Host '  OK: Agent downloaded' } catch { Write-Host '  WARN: Could not download - ' $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
     echo.
-    echo  WARNING: Could not download agent script.
-    echo  Please place dacexy_agent.py in: %USERPROFILE%\DacexyAgent\
-    echo  Then run this installer again.
-    echo.
+    echo  Agent file not found. Please:
+    echo  1. Go to dacexy.vercel.app/settings
+    echo  2. Download dacexy_agent.py
+    echo  3. Put it in: %USERPROFILE%\DacexyAgent\
+    echo  4. Run this installer again
     pause
     exit /b 1
 )
 
 :AGENT_READY
 copy /y "%~f0" "%USERPROFILE%\DacexyAgent\install_dacexy_agent.bat" >nul 2>&1
+echo  OK: Agent ready
 
-:: Clear old token using temp py file
+:: Clear old token so fresh login happens
 echo import json > "%TEMP%\dx_clear.py"
 echo from pathlib import Path >> "%TEMP%\dx_clear.py"
 echo f = Path.home() / '.dacexy_agent.json' >> "%TEMP%\dx_clear.py"
@@ -132,29 +128,28 @@ echo     except: pass >> "%TEMP%\dx_clear.py"
 python "%TEMP%\dx_clear.py" >nul 2>&1
 del "%TEMP%\dx_clear.py" >nul 2>&1
 
-:: ── Step 5: Shortcut + autostart ─────────────────────────────────────────────
+:: ── Step 5: Shortcuts + autostart ────────────────────────────────────
 echo.
-echo [5/5] Creating desktop shortcut and autostart...
+echo [5/5] Creating shortcuts and autostart...
 
-set "BAT_PATH=%USERPROFILE%\DacexyAgent\install_dacexy_agent.bat"
-set "SC_PATH=%USERPROFILE%\Desktop\Dacexy Agent.lnk"
-set "SCRIPT=%TEMP%\dacexy_shortcut.vbs"
+set "BAT=%USERPROFILE%\DacexyAgent\install_dacexy_agent.bat"
 
-echo Set oWS = WScript.CreateObject("WScript.Shell") > "%SCRIPT%"
-echo Set oLink = oWS.CreateShortcut("%SC_PATH%") >> "%SCRIPT%"
-echo oLink.TargetPath = "%BAT_PATH%" >> "%SCRIPT%"
-echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> "%SCRIPT%"
-echo oLink.Description = "Dacexy Desktop Agent v15.0" >> "%SCRIPT%"
-echo oLink.IconLocation = "shell32.dll,15" >> "%SCRIPT%"
-echo oLink.Save >> "%SCRIPT%"
-cscript /nologo "%SCRIPT%"
-del "%SCRIPT%"
-echo  OK: Shortcut created on Desktop
+set "VBS=%TEMP%\dx_sc.vbs"
+echo Set oWS = WScript.CreateObject("WScript.Shell") > "%VBS%"
+echo Set oLink = oWS.CreateShortcut("%USERPROFILE%\Desktop\Dacexy Agent.lnk") >> "%VBS%"
+echo oLink.TargetPath = "%BAT%" >> "%VBS%"
+echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> "%VBS%"
+echo oLink.Description = "Dacexy AI Desktop Agent v16.0" >> "%VBS%"
+echo oLink.IconLocation = "shell32.dll,15" >> "%VBS%"
+echo oLink.Save >> "%VBS%"
+cscript /nologo "%VBS%" >nul 2>&1
+del "%VBS%" >nul 2>&1
+echo  OK: Desktop shortcut created
 
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /t REG_SZ /d "\"%BAT_PATH%\"" /f >nul 2>&1
-echo  OK: Autostart registered
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /t REG_SZ /d "\"%BAT%\"" /f >nul 2>&1
+echo  OK: Autostart registered - runs on Windows startup
 
-:: ── Done ─────────────────────────────────────────────────────────────────────
+:: ── Done ─────────────────────────────────────────────────────────────
 echo.
 echo  ================================
 echo   Installation Complete!
@@ -164,14 +159,21 @@ echo  Launching Dacexy Agent now...
 echo.
 echo  LOGIN: Enter your Dacexy email and password.
 echo.
-echo  VOICE CONTROL (Hey Dacexy):
-echo   - Say "Hey Dacexy" anytime to activate
-echo   - Examples:
-echo     "Hey Dacexy, open Chrome"
-echo     "Hey Dacexy, take a screenshot"
-echo     "Hey Dacexy, what time is it"
+echo  VOICE COMMANDS - say any of these to wake:
+echo    "Dacexy"         - simplest
+echo    "Hey Dacexy"     - classic
+echo    "Computer"       - short
+echo    "Hey Computer"   - alternative
 echo.
-echo  The agent runs 24/7. Control from: dacexy.vercel.app/dashboard
+echo  Then say your command, for example:
+echo    "Open YouTube"
+echo    "Open Chrome"
+echo    "Send email to friend@gmail.com"
+echo    "Search for weather today"
+echo    "Take a screenshot"
+echo    "What time is it"
+echo.
+echo  Control remotely: dacexy.vercel.app/dashboard
 echo.
 pause
 
@@ -184,21 +186,21 @@ set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE% EQU 0 (
     echo.
-    echo  Dacexy Agent stopped cleanly.
+    echo  Agent stopped cleanly.
     pause
     exit /b 0
 )
 
-if %EXIT_CODE% EQU 2 goto :CLEAR_TOKEN
+if %EXIT_CODE% EQU 2 goto :CLEAR_AND_RESTART
 
 echo.
-echo  Agent stopped (code: %EXIT_CODE%). Restarting in 5 seconds...
+echo  Agent stopped (code %EXIT_CODE%). Restarting in 5 seconds...
 echo  Press Ctrl+C to cancel.
 timeout /t 5 /nobreak >nul
 goto :AGENT_LOOP
 
-:CLEAR_TOKEN
-echo  Session expired. Clearing login and restarting...
+:CLEAR_AND_RESTART
+echo  Session expired. Clearing login...
 echo import json > "%TEMP%\dx_clear2.py"
 echo from pathlib import Path >> "%TEMP%\dx_clear2.py"
 echo f = Path.home() / '.dacexy_agent.json' >> "%TEMP%\dx_clear2.py"
