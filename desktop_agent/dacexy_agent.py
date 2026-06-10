@@ -1,5 +1,5 @@
 """
-DACEXY DESKTOP AGENT v18.0 - JARVIS EDITION
+DACEXY DESKTOP AGENT 
 Upgraded from v17.0 - NO breaking changes, only additions:
 + JARVIS-grade AI brain: plans multi-step complex tasks like a human
 + Bulk email engine with CSV contact discovery
