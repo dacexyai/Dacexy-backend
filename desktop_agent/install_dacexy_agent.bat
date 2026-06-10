@@ -1,17 +1,17 @@
 @echo off
 setlocal enabledelayedexpansion
-title Dacexy Desktop Agent v18.0 Installer
+title Dacexy Desktop Agent v17.0 Installer
 color 0A
 
 echo.
 echo  ===================================================
-echo   DACEXY Desktop Agent v18.0 - WORLD'S BEST AI
+echo   DACEXY Desktop Agent v17.0 - FULLY WORKING
 echo   Installer for Windows
 echo  ===================================================
 echo.
 
 :: ── Step 1: Check Python ─────────────────────────────────────────────
-echo [1/7] Checking Python...
+echo [1/6] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 goto :NOPYTHON
 for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo  OK: %%i
@@ -44,15 +44,15 @@ pause & exit /b 1
 
 :: ── Step 2: Create folders ────────────────────────────────────────────
 echo.
-echo [2/7] Creating folders...
-if not exist "%USERPROFILE%\DacexyAgent"              mkdir "%USERPROFILE%\DacexyAgent"
-if not exist "%USERPROFILE%\DacexyAgent\logs"         mkdir "%USERPROFILE%\DacexyAgent\logs"
-if not exist "%USERPROFILE%\DacexyAgent\data"         mkdir "%USERPROFILE%\DacexyAgent\data"
+echo [2/6] Creating folders...
+if not exist "%USERPROFILE%\DacexyAgent"         mkdir "%USERPROFILE%\DacexyAgent"
+if not exist "%USERPROFILE%\DacexyAgent\logs"    mkdir "%USERPROFILE%\DacexyAgent\logs"
+if not exist "%USERPROFILE%\DacexyAgent\data"    mkdir "%USERPROFILE%\DacexyAgent\data"
 echo  OK: %USERPROFILE%\DacexyAgent
 
 :: ── Step 3: Install packages ──────────────────────────────────────────
 echo.
-echo [3/7] Installing packages (5-10 minutes first time)...
+echo [3/6] Installing packages (5-10 minutes first time)...
 python -m pip install --upgrade pip --quiet --no-warn-script-location >nul 2>&1
 
 echo  Installing core packages...
@@ -65,21 +65,6 @@ if errorlevel 1 (
 )
 echo  OK: Core packages
 
-echo  Installing NEW v18 packages (brain, web scraping, data)...
-python -m pip install beautifulsoup4 lxml schedule pandas openpyxl --quiet --no-warn-script-location >nul 2>&1
-python -c "from bs4 import BeautifulSoup" >nul 2>&1
-if errorlevel 1 (
-    echo  NOTE: BeautifulSoup failed - basic web scraping will still work
-) else (
-    echo  OK: Web scraping (BeautifulSoup) ready
-)
-python -c "import pandas" >nul 2>&1
-if errorlevel 1 (
-    echo  NOTE: Pandas failed - CSV handling uses built-in module instead
-) else (
-    echo  OK: Data processing (Pandas) ready
-)
-
 echo  Installing Selenium for browser automation...
 python -m pip install selenium webdriver-manager --quiet --no-warn-script-location >nul 2>&1
 python -c "from selenium import webdriver" >nul 2>&1
@@ -89,7 +74,7 @@ if errorlevel 1 (
     echo  OK: Selenium installed - social media auto-posting ready
 )
 
-echo  Installing PyAudio for Jarvis voice control...
+echo  Installing PyAudio for voice control...
 python -m pip install PyAudio --quiet --no-warn-script-location >nul 2>&1
 python -c "import pyaudio" >nul 2>&1
 if errorlevel 1 (
@@ -103,12 +88,12 @@ if errorlevel 1 (
     echo  To fix: download PyAudio wheel from https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio
     echo  Then run: pip install PyAudio-0.2.14-cp311-cp311-win_amd64.whl
 ) else (
-    echo  OK: PyAudio installed - JARVIS voice control enabled!
+    echo  OK: PyAudio installed - voice control enabled
 )
 
 :: ── Step 4: Setup agent file ─────────────────────────────────────────
 echo.
-echo [4/7] Setting up agent...
+echo [4/6] Setting up agent...
 
 if exist "%~dp0dacexy_agent.py" (
     copy /y "%~dp0dacexy_agent.py" "%USERPROFILE%\DacexyAgent\dacexy_agent.py" >nul
@@ -142,7 +127,7 @@ echo  OK: Agent ready at %USERPROFILE%\DacexyAgent\dacexy_agent.py
 
 :: ── Step 5: Shortcuts + autostart ────────────────────────────────────
 echo.
-echo [5/7] Creating shortcuts...
+echo [5/6] Creating shortcuts...
 
 set "BAT=%USERPROFILE%\DacexyAgent\install_dacexy_agent.bat"
 
@@ -151,7 +136,7 @@ echo Set oWS = WScript.CreateObject("WScript.Shell") > "%VBS%"
 echo Set oLink = oWS.CreateShortcut("%USERPROFILE%\Desktop\Dacexy Agent.lnk") >> "%VBS%"
 echo oLink.TargetPath = "%BAT%" >> "%VBS%"
 echo oLink.WorkingDirectory = "%USERPROFILE%\DacexyAgent" >> "%VBS%"
-echo oLink.Description = "Dacexy AI Desktop Agent v18.0" >> "%VBS%"
+echo oLink.Description = "Dacexy AI Desktop Agent v17.0" >> "%VBS%"
 echo oLink.IconLocation = "shell32.dll,15" >> "%VBS%"
 echo oLink.Save >> "%VBS%"
 cscript /nologo "%VBS%" >nul 2>&1
@@ -161,59 +146,39 @@ echo  OK: Desktop shortcut created
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /t REG_SZ /d "\"%BAT%\"" /f >nul 2>&1
 echo  OK: Autostart on Windows startup
 
-:: ── Step 6: Capability check ─────────────────────────────────────────
+:: ── Step 6: Summary ──────────────────────────────────────────────────
 echo.
-echo [6/7] Checking capabilities...
-python -c "import pyautogui; print('  [+] Mouse/keyboard control')" 2>nul
-python -c "from PIL import ImageGrab; print('  [+] Screenshot')" 2>nul
-python -c "import pyaudio; print('  [+] JARVIS voice control')" 2>nul
-python -c "from selenium import webdriver; print('  [+] Browser automation (Instagram/LinkedIn/Facebook)')" 2>nul
-python -c "from bs4 import BeautifulSoup; print('  [+] Web scraping + Lead finding')" 2>nul
-python -c "import pandas; print('  [+] Data processing (CSV/Excel contacts)')" 2>nul
-python -c "import smtplib; print('  [+] Bulk email engine')" 2>nul
-python -c "import schedule; print('  [+] Task scheduler')" 2>nul
+echo [6/6] Checking capabilities...
+python -c "import pyautogui; print('  OK: Mouse/keyboard control')" 2>nul
+python -c "from PIL import ImageGrab; print('  OK: Screenshot')" 2>nul
+python -c "import pyaudio; print('  OK: Voice control')" 2>nul
+python -c "from selenium import webdriver; print('  OK: Browser automation (Instagram/LinkedIn/Facebook)')" 2>nul
+python -c "import smtplib; print('  OK: Email sending')" 2>nul
 
-:: ── Step 7: Summary ──────────────────────────────────────────────────
-echo.
-echo [7/7] Done!
 echo.
 echo  ===================================================
-echo   DACEXY v18.0 - Installation Complete!
+echo   Installation Complete!
 echo  ===================================================
 echo.
-echo  WHAT'S NEW IN v18.0:
-echo    [brain]  Planner Brain - thinks step-by-step like a human
-echo    [email]  Smart email setup - auto-detects Gmail/Outlook/Yahoo
-echo    [email]  Bulk email engine - send 100s of personalised emails
-echo    [leads]  Lead finder - finds interested customers from web
-echo    [voice]  Jarvis voice - natural conversation like Iron Man
-echo    [sched]  Task scheduler - "every day at 9am do X"
-echo    [web]    Web research - searches and reads pages for you
-echo    [zip]    Zip/compress files
-echo.
-echo  EXISTING FEATURES (all still work):
+echo  WHAT THIS AGENT CAN DO:
 echo    - Open any website or app
 echo    - Search Google and YouTube
+echo    - Send emails (configure SMTP for auto-send)
 echo    - Post to Instagram, LinkedIn, Facebook
 echo    - Send WhatsApp messages (via Web)
 echo    - Take screenshots
 echo    - Control volume, windows, keyboard
 echo    - Write and read files
+echo    - Voice control (say 'Dacexy' or 'Computer')
 echo    - Everything controlled from dacexy.vercel.app
 echo.
-echo  FIRST TIME SETUP:
-echo    After login, say or type: configure email
-echo    I will guide you through it in plain English!
+echo  LOGIN: Enter your Dacexy email and password below.
 echo.
-echo  VOICE WAKE WORDS: "Dacexy" / "Computer" / "Jarvis" / "Hey Dacexy"
+echo  VOICE WAKE WORDS: "Dacexy" / "Computer" / "Hey Dacexy"
 echo.
-echo  EXAMPLE COMMANDS:
-echo    "send email to john@gmail.com saying hello"
-echo    "send 50 emails to people interested in my Python course"
-echo    "research best marketing strategies and write a report"
-echo    "post on LinkedIn every day at 9am saying good morning"
-echo    "find leads for my software product"
-echo    "open youtube and search lofi music"
+echo  FOR REAL EMAIL SENDING: After login, say or type:
+echo    configure smtp
+echo  Then enter your Gmail + App Password.
 echo.
 pause
 
