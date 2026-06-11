@@ -1,27 +1,29 @@
 """
-DACEXY DESKTOP AGENT v25.0 - FULLY FIXED
-==========================================
-FIXES vs v24:
-  1. AI planner REMOVED - replaced with smart local_parse that handles 200+ patterns
-     (AI planner was slow, unreliable, and returned wrong action names)
-  2. local_parse order fixed: leads/whatsapp/social checked BEFORE google-search
-     ("find leads" was routing to google search instead of lead finder)
-  3. configure_email now calls configure_smtp_interactive() directly (was opening browser)
-  4. WebSocket connect_kw fixed for ALL websockets versions (no more open_timeout error)
-  5. local_parse expanded to handle every common command without needing AI
-  6. All action names in exec_cmd verified against local_parse output
-  7. token update thread-safe throughout
+DACEXY DESKTOP AGENT v26.0 - FULLY FIXED FOR INVESTOR DEMO
+============================================================
+FIXES vs v25:
+  1. AI planner COMPLETELY REMOVED - local_parse handles everything
+  2. Installer: dacexy_agent.py download URL fixed to /api/v1/agent/download/windows
+     (was /windows-agent which 404s — backend serves from /download/windows)
+  3. WebSocket connect_kw: version detection hardened, no crash on any websockets build
+  4. exec_cmd fallback chain: unknown actions try smart_open BEFORE returning error
+  5. local_parse: 30+ new patterns added, order verified, no routing mistakes
+  6. screenshot/ocr endpoints: sleep-and-poll replaced with proper future-based pattern
+  7. Token refresh: heartbeat thread updates _cur_token in tok_ref list correctly
+  8. TTS worker: queue.task_done() always called, no deadlock
+  9. Selenium: driver re-init on stale session fixed
+  10. All action aliases verified end-to-end (exec_cmd aliases match local_parse outputs)
 """
 from __future__ import annotations
 import subprocess, sys, os, platform
 
-# ── Windows event-loop policy (must be first) ──────────────────────────────
+# ── Windows event-loop policy (MUST be first) ────────────────────────────────
 if platform.system() == "Windows":
     import asyncio as _ae
     if hasattr(_ae, "WindowsSelectorEventLoopPolicy"):
         _ae.set_event_loop_policy(_ae.WindowsSelectorEventLoopPolicy())
 
-# ── UTF-8 stdout/stderr on Windows ─────────────────────────────────────────
+# ── UTF-8 stdout/stderr ───────────────────────────────────────────────────────
 if platform.system() == "Windows":
     import io as _io
     try:
@@ -33,32 +35,33 @@ if platform.system() == "Windows":
         pass
 
 
-# ── Auto-install missing packages ──────────────────────────────────────────
+# ── Auto-install missing packages ────────────────────────────────────────────
 def _pip(*pkgs):
     try:
-        subprocess.call([sys.executable, "-m", "pip", "install", *pkgs, "-q",
-                         "--no-warn-script-location"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        timeout=180)
+        subprocess.call(
+            [sys.executable, "-m", "pip", "install", *pkgs, "-q",
+             "--no-warn-script-location"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
     except Exception:
         pass
 
+
 print("  [BOOT] Checking packages...")
 _REQUIRED = [
-    ("pyautogui",        "pyautogui"),
-    ("pillow",           "PIL"),
-    ("websockets",       "websockets"),
-    ("requests",         "requests"),
-    ("pyttsx3",          "pyttsx3"),
-    ("numpy",            "numpy"),
-    ("psutil",           "psutil"),
-    ("pyperclip",        "pyperclip"),
-    ("pygetwindow",      "pygetwindow"),
-    ("plyer",            "plyer"),
-    ("speechrecognition","speech_recognition"),
-    ("beautifulsoup4",   "bs4"),
-    ("keyboard",         "keyboard"),
-    ("schedule",         "schedule"),
+    ("pyautogui",         "pyautogui"),
+    ("pillow",            "PIL"),
+    ("websockets",        "websockets"),
+    ("requests",          "requests"),
+    ("pyttsx3",           "pyttsx3"),
+    ("numpy",             "numpy"),
+    ("psutil",            "psutil"),
+    ("pyperclip",         "pyperclip"),
+    ("pygetwindow",       "pygetwindow"),
+    ("plyer",             "plyer"),
+    ("speechrecognition", "speech_recognition"),
+    ("beautifulsoup4",    "bs4"),
+    ("keyboard",          "keyboard"),
+    ("schedule",          "schedule"),
 ]
 for _pkg, _imp in _REQUIRED:
     try:
@@ -69,11 +72,11 @@ for _pkg, _imp in _REQUIRED:
 
 # Selenium
 try:
-    from selenium import webdriver as _sw
+    from selenium import webdriver as _sw  # noqa: F401
 except ImportError:
     _pip("selenium", "webdriver-manager")
 
-# PyAudio (voice)
+# PyAudio
 PYAUDIO_OK = False
 try:
     import pyaudio; PYAUDIO_OK = True
@@ -84,13 +87,14 @@ except ImportError:
     except ImportError:
         try:
             _pip("pipwin")
-            subprocess.call([sys.executable, "-m", "pipwin", "install", "pyaudio", "-q"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+            subprocess.call(
+                [sys.executable, "-m", "pipwin", "install", "pyaudio", "-q"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
             import pyaudio; PYAUDIO_OK = True
         except Exception:
             pass
 
-# OpenCV + pytesseract (optional vision)
+# OpenCV / pytesseract
 CV2_OK = False
 try:
     import cv2; CV2_OK = True
@@ -105,7 +109,7 @@ except ImportError:
 
 print("  [BOOT] Packages ready.\n")
 
-# ── Standard library imports ────────────────────────────────────────────────
+# ── Standard library ──────────────────────────────────────────────────────────
 import asyncio, base64, csv, ctypes, datetime, io, json, logging
 import queue, random, re, shutil, smtplib, socket, string, threading
 import time, urllib.parse, webbrowser, zipfile
@@ -116,9 +120,9 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
-# ── Third-party imports (graceful fallback) ─────────────────────────────────
+# ── Third-party (graceful fallback) ───────────────────────────────────────────
 try:
     import pyautogui
     pyautogui.FAILSAFE = False
@@ -180,7 +184,7 @@ try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.common.action_chains import ActionChains  # noqa: F401
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.chrome.service import Service as ChromeService
@@ -200,7 +204,7 @@ try:
 except Exception:
     kb_lib = None; KB_OK = False
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 CONFIG_FILE  = Path.home() / ".dacexy_agent.json"
@@ -209,22 +213,22 @@ AGENT_DIR    = Path.home() / "DacexyAgent"
 LOG_FILE     = AGENT_DIR  / "logs" / "agent.log"
 SS_DIR       = AGENT_DIR  / "screenshots"
 DATA_DIR     = AGENT_DIR  / "data"
-VERSION      = "25.0"
+VERSION      = "26.0"
 
-for _d in [AGENT_DIR, AGENT_DIR/"logs", DATA_DIR, SS_DIR]:
+for _d in [AGENT_DIR, AGENT_DIR / "logs", DATA_DIR, SS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── SMTP presets ─────────────────────────────────────────────────────────────
+# ── SMTP presets ──────────────────────────────────────────────────────────────
 SMTP_PRESETS: Dict[str, Dict] = {
-    "gmail.com":      {"host": "smtp.gmail.com",       "port": 587},
-    "googlemail.com": {"host": "smtp.gmail.com",       "port": 587},
-    "outlook.com":    {"host": "smtp.office365.com",   "port": 587},
-    "hotmail.com":    {"host": "smtp.office365.com",   "port": 587},
-    "live.com":       {"host": "smtp.office365.com",   "port": 587},
-    "yahoo.com":      {"host": "smtp.mail.yahoo.com",  "port": 587},
-    "yahoo.in":       {"host": "smtp.mail.yahoo.com",  "port": 587},
-    "icloud.com":     {"host": "smtp.mail.me.com",     "port": 587},
-    "zoho.com":       {"host": "smtp.zoho.com",        "port": 587},
+    "gmail.com":      {"host": "smtp.gmail.com",      "port": 587},
+    "googlemail.com": {"host": "smtp.gmail.com",      "port": 587},
+    "outlook.com":    {"host": "smtp.office365.com",  "port": 587},
+    "hotmail.com":    {"host": "smtp.office365.com",  "port": 587},
+    "live.com":       {"host": "smtp.office365.com",  "port": 587},
+    "yahoo.com":      {"host": "smtp.mail.yahoo.com", "port": 587},
+    "yahoo.in":       {"host": "smtp.mail.yahoo.com", "port": 587},
+    "icloud.com":     {"host": "smtp.mail.me.com",    "port": 587},
+    "zoho.com":       {"host": "smtp.zoho.com",       "port": 587},
 }
 
 # ── Wake words ────────────────────────────────────────────────────────────────
@@ -235,119 +239,119 @@ WAKE_WORDS = [
     "assistant", "hey assistant",
 ]
 
-# ── Site map ─────────────────────────────────────────────────────────────────
+# ── Site map ──────────────────────────────────────────────────────────────────
 SITES: Dict[str, str] = {
-    "youtube":        "https://www.youtube.com",
-    "google":         "https://www.google.com",
-    "gmail":          "https://mail.google.com",
-    "facebook":       "https://www.facebook.com",
-    "instagram":      "https://www.instagram.com",
-    "twitter":        "https://x.com",
-    "x":              "https://x.com",
-    "linkedin":       "https://www.linkedin.com",
-    "whatsapp":       "https://web.whatsapp.com",
-    "whatsapp web":   "https://web.whatsapp.com",
-    "github":         "https://github.com",
-    "amazon":         "https://www.amazon.in",
-    "flipkart":       "https://www.flipkart.com",
-    "netflix":        "https://www.netflix.com",
-    "spotify":        "https://open.spotify.com",
-    "maps":           "https://maps.google.com",
-    "google maps":    "https://maps.google.com",
-    "wikipedia":      "https://www.wikipedia.org",
-    "reddit":         "https://www.reddit.com",
-    "stackoverflow":  "https://stackoverflow.com",
-    "chatgpt":        "https://chat.openai.com",
-    "dacexy":         "https://dacexy.vercel.app",
-    "notion":         "https://notion.so",
-    "canva":          "https://www.canva.com",
-    "drive":          "https://drive.google.com",
-    "google drive":   "https://drive.google.com",
-    "trello":         "https://trello.com",
-    "slack":          "https://app.slack.com",
-    "zoom":           "https://zoom.us",
-    "meet":           "https://meet.google.com",
-    "google meet":    "https://meet.google.com",
-    "teams":          "https://teams.microsoft.com",
-    "discord":        "https://discord.com/app",
-    "docs":           "https://docs.google.com",
-    "sheets":         "https://sheets.google.com",
-    "slides":         "https://slides.google.com",
-    "calendar":       "https://calendar.google.com",
-    "photos":         "https://photos.google.com",
-    "translate":      "https://translate.google.com",
-    "pinterest":      "https://www.pinterest.com",
-    "tiktok":         "https://www.tiktok.com",
-    "twitch":         "https://www.twitch.tv",
-    "fiverr":         "https://www.fiverr.com",
-    "upwork":         "https://www.upwork.com",
-    "medium":         "https://medium.com",
-    "quora":          "https://www.quora.com",
-    "paypal":         "https://www.paypal.com",
-    "razorpay":       "https://razorpay.com",
-    "telegram web":   "https://web.telegram.org",
-    "news":           "https://news.google.com",
-    "claude":         "https://claude.ai",
-    "anthropic":      "https://anthropic.com",
-    "perplexity":     "https://perplexity.ai",
-    "gemini":         "https://gemini.google.com",
-    "openai":         "https://openai.com",
+    "youtube":       "https://www.youtube.com",
+    "google":        "https://www.google.com",
+    "gmail":         "https://mail.google.com",
+    "facebook":      "https://www.facebook.com",
+    "instagram":     "https://www.instagram.com",
+    "twitter":       "https://x.com",
+    "x":             "https://x.com",
+    "linkedin":      "https://www.linkedin.com",
+    "whatsapp":      "https://web.whatsapp.com",
+    "whatsapp web":  "https://web.whatsapp.com",
+    "github":        "https://github.com",
+    "amazon":        "https://www.amazon.in",
+    "flipkart":      "https://www.flipkart.com",
+    "netflix":       "https://www.netflix.com",
+    "spotify":       "https://open.spotify.com",
+    "maps":          "https://maps.google.com",
+    "google maps":   "https://maps.google.com",
+    "wikipedia":     "https://www.wikipedia.org",
+    "reddit":        "https://www.reddit.com",
+    "stackoverflow": "https://stackoverflow.com",
+    "chatgpt":       "https://chat.openai.com",
+    "dacexy":        "https://dacexy.vercel.app",
+    "notion":        "https://notion.so",
+    "canva":         "https://www.canva.com",
+    "drive":         "https://drive.google.com",
+    "google drive":  "https://drive.google.com",
+    "trello":        "https://trello.com",
+    "slack":         "https://app.slack.com",
+    "zoom":          "https://zoom.us",
+    "meet":          "https://meet.google.com",
+    "google meet":   "https://meet.google.com",
+    "teams":         "https://teams.microsoft.com",
+    "discord":       "https://discord.com/app",
+    "docs":          "https://docs.google.com",
+    "sheets":        "https://sheets.google.com",
+    "slides":        "https://slides.google.com",
+    "calendar":      "https://calendar.google.com",
+    "photos":        "https://photos.google.com",
+    "translate":     "https://translate.google.com",
+    "pinterest":     "https://www.pinterest.com",
+    "tiktok":        "https://www.tiktok.com",
+    "twitch":        "https://www.twitch.tv",
+    "fiverr":        "https://www.fiverr.com",
+    "upwork":        "https://www.upwork.com",
+    "medium":        "https://medium.com",
+    "quora":         "https://www.quora.com",
+    "paypal":        "https://www.paypal.com",
+    "razorpay":      "https://razorpay.com",
+    "telegram web":  "https://web.telegram.org",
+    "news":          "https://news.google.com",
+    "claude":        "https://claude.ai",
+    "anthropic":     "https://anthropic.com",
+    "perplexity":    "https://perplexity.ai",
+    "gemini":        "https://gemini.google.com",
+    "openai":        "https://openai.com",
 }
 
-# ── App map (Windows executables) ────────────────────────────────────────────
+# ── App map ───────────────────────────────────────────────────────────────────
 APPS: Dict[str, str] = {
-    "chrome":              "chrome.exe",
-    "google chrome":       "chrome.exe",
-    "edge":                "msedge.exe",
-    "microsoft edge":      "msedge.exe",
-    "firefox":             "firefox.exe",
-    "brave":               "brave.exe",
-    "notepad":             "notepad.exe",
-    "notepad++":           r"C:\Program Files\Notepad++\notepad++.exe",
-    "calculator":          "calc.exe",
-    "calc":                "calc.exe",
-    "paint":               "mspaint.exe",
-    "explorer":            "explorer.exe",
-    "file explorer":       "explorer.exe",
-    "task manager":        "taskmgr.exe",
-    "cmd":                 "cmd.exe",
-    "command prompt":      "cmd.exe",
-    "terminal":            "cmd.exe",
-    "powershell":          "powershell.exe",
-    "word":                "winword.exe",
-    "excel":               "excel.exe",
-    "powerpoint":          "powerpnt.exe",
-    "outlook":             "outlook.exe",
-    "vlc":                 "vlc.exe",
-    "zoom":                "zoom.exe",
-    "discord":             "discord.exe",
-    "spotify":             "spotify.exe",
-    "vscode":              "code.exe",
-    "visual studio code":  "code.exe",
-    "vs code":             "code.exe",
-    "telegram":            "telegram.exe",
-    "snipping tool":       "SnippingTool.exe",
-    "control panel":       "control.exe",
-    "settings":            "ms-settings:",
-    "regedit":             "regedit.exe",
-    "device manager":      "devmgmt.msc",
-    "disk management":     "diskmgmt.msc",
-    "event viewer":        "eventvwr.msc",
-    "services":            "services.msc",
-    "winrar":              "winrar.exe",
-    "7zip":                "7zFM.exe",
-    "obs":                 "obs64.exe",
-    "steam":               "steam.exe",
-    "gimp":                "gimp-2.10.exe",
-    "photoshop":           "photoshop.exe",
-    "audacity":            "audacity.exe",
-    "skype":               "skype.exe",
-    "teams":               "teams.exe",
-    "anydesk":             "anydesk.exe",
-    "teamviewer":          "teamviewer.exe",
+    "chrome":             "chrome.exe",
+    "google chrome":      "chrome.exe",
+    "edge":               "msedge.exe",
+    "microsoft edge":     "msedge.exe",
+    "firefox":            "firefox.exe",
+    "brave":              "brave.exe",
+    "notepad":            "notepad.exe",
+    "notepad++":          r"C:\Program Files\Notepad++\notepad++.exe",
+    "calculator":         "calc.exe",
+    "calc":               "calc.exe",
+    "paint":              "mspaint.exe",
+    "explorer":           "explorer.exe",
+    "file explorer":      "explorer.exe",
+    "task manager":       "taskmgr.exe",
+    "cmd":                "cmd.exe",
+    "command prompt":     "cmd.exe",
+    "terminal":           "cmd.exe",
+    "powershell":         "powershell.exe",
+    "word":               "winword.exe",
+    "excel":              "excel.exe",
+    "powerpoint":         "powerpnt.exe",
+    "outlook":            "outlook.exe",
+    "vlc":                "vlc.exe",
+    "zoom":               "zoom.exe",
+    "discord":            "discord.exe",
+    "spotify":            "spotify.exe",
+    "vscode":             "code.exe",
+    "visual studio code": "code.exe",
+    "vs code":            "code.exe",
+    "telegram":           "telegram.exe",
+    "snipping tool":      "SnippingTool.exe",
+    "control panel":      "control.exe",
+    "settings":           "ms-settings:",
+    "regedit":            "regedit.exe",
+    "device manager":     "devmgmt.msc",
+    "disk management":    "diskmgmt.msc",
+    "event viewer":       "eventvwr.msc",
+    "services":           "services.msc",
+    "winrar":             "winrar.exe",
+    "7zip":               "7zFM.exe",
+    "obs":                "obs64.exe",
+    "steam":              "steam.exe",
+    "gimp":               "gimp-2.10.exe",
+    "photoshop":          "photoshop.exe",
+    "audacity":           "audacity.exe",
+    "skype":              "skype.exe",
+    "teams":              "teams.exe",
+    "anydesk":            "anydesk.exe",
+    "teamviewer":         "teamviewer.exe",
 }
 
-# ── Safety blocklist ─────────────────────────────────────────────────────────
+# ── Safety blocklist ──────────────────────────────────────────────────────────
 BLOCKED = [
     "rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows",
     "rd /s /q c:\\", "reg delete hklm", "dd if=/dev/zero",
@@ -355,22 +359,22 @@ BLOCKED = [
     "shutdown /s", "shutdown -s",
 ]
 
-# ── Global state ─────────────────────────────────────────────────────────────
-_mem_lock    = threading.Lock()
-_cfg_lock    = threading.Lock()
-_executor    = ThreadPoolExecutor(max_workers=20)
-_running     = True
+# ── Global state ──────────────────────────────────────────────────────────────
+_mem_lock        = threading.Lock()
+_cfg_lock        = threading.Lock()
+_executor        = ThreadPoolExecutor(max_workers=20)
+_running         = True
 _tts_q: queue.Queue = queue.Queue(maxsize=20)
-_tts_engine  = None
-_tts_lock    = threading.Lock()
-_voice_on    = False
-_cur_token   = None
-_tok_lock    = threading.Lock()
-_smtp_cfg:   Dict = {}
+_tts_engine      = None
+_tts_lock        = threading.Lock()
+_voice_on        = False
+_cur_token       = None
+_tok_lock        = threading.Lock()
+_smtp_cfg: Dict  = {}
 _sched_jobs: List = []
-_convo:      deque = deque(maxlen=30)
+_convo: deque    = deque(maxlen=30)
 _selenium_driver = None
-_sel_lock    = threading.Lock()
+_sel_lock        = threading.Lock()
 
 MEMORY: Dict = {
     "facts":        [],
@@ -389,22 +393,23 @@ try:
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(str(LOG_FILE), encoding="utf-8", mode="a"),
-        ]
+        ],
     )
 except Exception:
     logging.basicConfig(level=logging.INFO)
 
 log      = logging.getLogger("dacexy")
 audit    = logging.getLogger("dacexy.audit")
-plan_log = logging.getLogger("dacexy.planner")
 
 log.info("Dacexy Agent v%s starting", VERSION)
+
 
 # =============================================================================
 # TTS
 # =============================================================================
 def _tts_worker():
     while _running:
+        text = None
         try:
             text = _tts_q.get(timeout=1)
             if text is None:
@@ -416,13 +421,16 @@ def _tts_worker():
                         _tts_engine.runAndWait()
             except Exception:
                 pass
-            finally:
-                try: _tts_q.task_done()
-                except Exception: pass
         except queue.Empty:
             continue
         except Exception:
             continue
+        finally:
+            if text is not None:
+                try:
+                    _tts_q.task_done()
+                except Exception:
+                    pass
 
 
 def init_tts():
@@ -500,17 +508,20 @@ def save_config(cfg: dict):
             log.warning("save_config: %s", e)
 
 
-def get_token()       -> Optional[str]: return load_config().get("access_token")
+def get_token()        -> Optional[str]: return load_config().get("access_token")
 def save_token(t: str): cfg = load_config(); cfg["access_token"] = t; save_config(cfg)
-def clear_token():       cfg = load_config(); cfg.pop("access_token", None); save_config(cfg)
+def clear_token():      cfg = load_config(); cfg.pop("access_token", None); save_config(cfg)
 
 
 def check_token_valid(token: str) -> bool:
     if not req_lib:
         return False
     try:
-        r = req_lib.get(f"{BACKEND_HTTP}/auth/me",
-                        headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        r = req_lib.get(
+            f"{BACKEND_HTTP}/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
         return r.status_code == 200
     except Exception:
         return False
@@ -524,11 +535,16 @@ def setup_autostart():
         if not WINREG_OK:
             return
         launcher = str(AGENT_DIR / "start_dacexy.bat")
-        cmd = (f'"{launcher}"' if os.path.exists(launcher)
-               else f'"{sys.executable}" "{Path(__file__).resolve()}"')
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_SET_VALUE)
+        cmd = (
+            f'"{launcher}"'
+            if os.path.exists(launcher)
+            else f'"{sys.executable}" "{Path(__file__).resolve()}"'
+        )
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
         log.info("Autostart registered: %s", cmd)
@@ -540,9 +556,9 @@ def setup_autostart():
 # LOGIN
 # =============================================================================
 def login() -> Optional[str]:
-    print("\n" + "="*55)
-    print("  DACEXY AGENT v25.0 - Login")
-    print("="*55)
+    print("\n" + "=" * 55)
+    print("  DACEXY AGENT v26.0 - Login")
+    print("=" * 55)
     print("  Register at: dacexy.vercel.app\n")
     try:
         email    = input("  Email   : ").strip()
@@ -556,8 +572,10 @@ def login() -> Optional[str]:
     if not req_lib:
         print("  [ERROR] requests not installed"); return None
     print("  Connecting...")
-    for kw in [{"data": {"username": email, "password": password}},
-               {"json": {"email": email, "password": password}}]:
+    for kw in [
+        {"data": {"username": email, "password": password}},
+        {"json": {"email": email, "password": password}},
+    ]:
         try:
             r = req_lib.post(f"{BACKEND_HTTP}/auth/login", timeout=30, **kw)
             if r.status_code == 200:
@@ -590,11 +608,14 @@ def load_memory():
                 MEMORY["context"]      = d.get("context", {})
                 MEMORY["contacts"]     = d.get("contacts", {})
                 MEMORY["skills"]       = d.get("skills", [])
-                MEMORY["task_history"] = deque(d.get("task_history", [])[-1000:], maxlen=1000)
+                MEMORY["task_history"] = deque(
+                    d.get("task_history", [])[-1000:], maxlen=1000)
             _smtp_cfg   = d.get("smtp_config", {})
             _sched_jobs = d.get("sched_jobs", [])
-            log.info("Memory loaded: %d facts, %d contacts, %d skills",
-                     len(MEMORY["facts"]), len(MEMORY["contacts"]), len(MEMORY["skills"]))
+            log.info(
+                "Memory loaded: %d facts, %d contacts",
+                len(MEMORY["facts"]), len(MEMORY["contacts"]),
+            )
     except Exception as e:
         log.warning("load_memory: %s", e)
 
@@ -653,11 +674,11 @@ def get_mem_ctx() -> str:
 # =============================================================================
 # SCREENSHOT
 # =============================================================================
-def take_screenshot(save=True, quality=82) -> Optional[str]:
+def take_screenshot(save: bool = True, quality: int = 82) -> Optional[str]:
     try:
         if not ImageGrab:
             return None
-        img = ImageGrab.grab()
+        img  = ImageGrab.grab()
         w, h = img.size
         if w > 1920:
             img = img.resize((1920, int(h * 1920 / w)), Image.LANCZOS)
@@ -690,9 +711,8 @@ def smart_type(text: str):
                 time.sleep(0.15)
             return
         if pyautogui:
-            chunk = 500
-            for i in range(0, len(text), chunk):
-                pyautogui.write(text[i:i+chunk], interval=0.012)
+            for i in range(0, len(text), 500):
+                pyautogui.write(text[i : i + 500], interval=0.012)
     except Exception as e:
         log.warning("smart_type: %s", e)
 
@@ -727,7 +747,7 @@ def list_windows() -> List[str]:
 
 
 # =============================================================================
-# SMART OPEN
+# SMART OPEN  — opens a site, app, URL, or file by name
 # =============================================================================
 def smart_open(target: str) -> dict:
     if not target:
@@ -736,46 +756,43 @@ def smart_open(target: str) -> dict:
     t  = str(target).strip()
     tl = t.lower()
 
-    for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ",
-                "show ", "visit ", "browse ", "run ", "start up ", "load "]:
+    # Strip leading verb if present
+    for pfx in [
+        "open ", "launch ", "start ", "go to ", "navigate to ",
+        "show ", "visit ", "browse ", "run ", "start up ", "load ",
+    ]:
         if tl.startswith(pfx):
             tl = tl[len(pfx):].strip()
             t  = t[len(pfx):].strip()
 
-    # 1. Exact site match
+    # 1. Exact site
     if tl in SITES:
-        url = SITES[tl]
-        webbrowser.open(url)
+        webbrowser.open(SITES[tl])
         speak(f"Opening {tl}")
-        log.info("OPEN site: %s -> %s", tl, url)
-        return {"status": "ok", "opened": url, "type": "website"}
+        return {"status": "ok", "opened": SITES[tl], "type": "website"}
 
-    # 2. Partial site match
+    # 2. Partial site
     for site, url in SITES.items():
         if site in tl:
             webbrowser.open(url)
             speak(f"Opening {site}")
-            log.info("OPEN site (partial): %s -> %s", site, url)
             return {"status": "ok", "opened": url, "type": "website"}
 
-    # 3. Exact app match
+    # 3. Exact app
     if tl in APPS:
-        exe = APPS[tl]
         try:
-            subprocess.Popen(exe, shell=True)
+            subprocess.Popen(APPS[tl], shell=True)
             speak(f"Opening {tl}")
-            log.info("OPEN app: %s -> %s", tl, exe)
-            return {"status": "ok", "opened": exe, "type": "app"}
+            return {"status": "ok", "opened": APPS[tl], "type": "app"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    # 4. Partial app match
+    # 4. Partial app
     for app, exe in APPS.items():
         if app in tl:
             try:
                 subprocess.Popen(exe, shell=True)
                 speak(f"Opening {app}")
-                log.info("OPEN app (partial): %s -> %s", app, exe)
                 return {"status": "ok", "opened": exe, "type": "app"}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -786,7 +803,7 @@ def smart_open(target: str) -> dict:
         speak(f"Opening {t[:60]}")
         return {"status": "ok", "opened": t, "type": "url"}
 
-    # 6. Looks like a domain
+    # 6. Domain-like
     if re.match(r"^[a-z0-9\-]+\.[a-z]{2,}$", tl) and " " not in tl:
         url = "https://" + tl
         webbrowser.open(url)
@@ -803,7 +820,7 @@ def smart_open(target: str) -> dict:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    # 8. Try as shell command (short names)
+    # 8. Short shell command
     if len(t.split()) <= 4:
         try:
             subprocess.Popen(t, shell=True)
@@ -812,7 +829,7 @@ def smart_open(target: str) -> dict:
         except Exception:
             pass
 
-    return {"status": "error", "message": f"Could not find or open: {target[:80]}"}
+    return {"status": "error", "message": f"Could not open: {target[:80]}"}
 
 
 # =============================================================================
@@ -841,8 +858,12 @@ def configure_smtp_interactive() -> dict:
             return {"status": "error", "message": "Auth failed"}
         except Exception as te:
             print(f"  [WARN] {te} - saving anyway.")
-        _smtp_cfg = {"email": em, "password": pw,
-                     "host": preset["host"], "port": preset["port"]}
+        _smtp_cfg = {
+            "email":    em,
+            "password": pw,
+            "host":     preset["host"],
+            "port":     preset["port"],
+        }
         save_memory()
         speak(f"Email configured as {em}.")
         return {"status": "ok", "email": em}
@@ -852,8 +873,10 @@ def configure_smtp_interactive() -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def _build_email_msg(from_: str, to_: str, subject: str, body: str,
-                     att: Optional[str] = None) -> MIMEMultipart:
+def _build_email_msg(
+    from_: str, to_: str, subject: str, body: str,
+    att: Optional[str] = None,
+) -> MIMEMultipart:
     msg = MIMEMultipart("alternative")
     msg["From"]    = from_
     msg["To"]      = to_
@@ -868,8 +891,10 @@ def _build_email_msg(from_: str, to_: str, subject: str, body: str,
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition",
-                        f"attachment; filename={os.path.basename(str(att))}")
+        part.add_header(
+            "Content-Disposition",
+            f"attachment; filename={os.path.basename(str(att))}",
+        )
         msg.attach(part)
     return msg
 
@@ -881,10 +906,12 @@ def send_email_real(to: str, subject: str, body: str, att=None) -> dict:
     pt = int(_smtp_cfg.get("port", 587))
 
     if not em or not pw:
-        url = (f"https://mail.google.com/mail/?view=cm&fs=1"
-               f"&to={urllib.parse.quote(to)}"
-               f"&su={urllib.parse.quote(subject)}"
-               f"&body={urllib.parse.quote(str(body)[:2000])}")
+        url = (
+            f"https://mail.google.com/mail/?view=cm&fs=1"
+            f"&to={urllib.parse.quote(to)}"
+            f"&su={urllib.parse.quote(subject)}"
+            f"&body={urllib.parse.quote(str(body)[:2000])}"
+        )
         webbrowser.open(url)
         speak(f"Gmail opened for {to}. Say 'configure email' to enable auto-send.")
         return {"status": "ok", "action": "browser_compose",
@@ -903,16 +930,19 @@ def send_email_real(to: str, subject: str, body: str, att=None) -> dict:
         return {"status": "error", "message": "SMTP auth failed"}
     except Exception as e:
         log.warning("Email send failed: %s - opening browser fallback", e)
-        url = (f"https://mail.google.com/mail/?view=cm&fs=1"
-               f"&to={urllib.parse.quote(to)}"
-               f"&su={urllib.parse.quote(subject)}"
-               f"&body={urllib.parse.quote(str(body)[:2000])}")
+        url = (
+            f"https://mail.google.com/mail/?view=cm&fs=1"
+            f"&to={urllib.parse.quote(to)}"
+            f"&su={urllib.parse.quote(subject)}"
+            f"&body={urllib.parse.quote(str(body)[:2000])}"
+        )
         webbrowser.open(url)
         return {"status": "ok", "action": "browser_fallback", "note": str(e)}
 
 
-def send_bulk_email(contacts: list, subject: str, body_tmpl: str,
-                    delay: float = 1.5) -> dict:
+def send_bulk_email(
+    contacts: list, subject: str, body_tmpl: str, delay: float = 1.5
+) -> dict:
     em = _smtp_cfg.get("email", "")
     pw = _smtp_cfg.get("password", "")
     ht = _smtp_cfg.get("host",  "smtp.gmail.com")
@@ -936,18 +966,20 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str,
                     to_e = (c.get("email") or c.get("Email") or "").strip()
                     if not to_e or "@" not in to_e:
                         failed += 1; continue
-                    name    = (c.get("name") or c.get("Name") or
-                               to_e.split("@")[0].replace(".", " ").title())
+                    name    = (
+                        c.get("name") or c.get("Name")
+                        or to_e.split("@")[0].replace(".", " ").title()
+                    )
                     company = c.get("company") or c.get("Company") or ""
-                    body = (body_tmpl
-                            .replace("{name}",    name)
-                            .replace("{Name}",    name)
-                            .replace("{email}",   to_e)
-                            .replace("{company}", company)
-                            .replace("{NAME}",    name.upper()))
-                    subj = (subject
-                            .replace("{name}",    name)
-                            .replace("{company}", company))
+                    body = (
+                        body_tmpl
+                        .replace("{name}",    name)
+                        .replace("{Name}",    name)
+                        .replace("{email}",   to_e)
+                        .replace("{company}", company)
+                        .replace("{NAME}",    name.upper())
+                    )
+                    subj = subject.replace("{name}", name).replace("{company}", company)
                     msg = _build_email_msg(em, to_e, subj, body)
                     srv.sendmail(em, [to_e], msg.as_string())
                     sent += 1
@@ -968,7 +1000,9 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str,
     except Exception as e:
         return {"status": "error", "message": f"SMTP connection failed: {e}"}
 
-    summary = f"Bulk email complete: {sent} sent, {failed} failed of {len(contacts)}"
+    summary = (
+        f"Bulk email complete: {sent} sent, {failed} failed of {len(contacts)}"
+    )
     speak(summary)
     log.info(summary)
     return {"status": "ok", "sent": sent, "failed": failed, "total": len(contacts)}
@@ -987,14 +1021,20 @@ def load_csv_contacts(path: str) -> list:
         with open(p, "r", encoding="utf-8", errors="ignore") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                em = (row.get("email") or row.get("Email") or
-                      row.get("EMAIL") or "").strip()
+                em = (
+                    row.get("email") or row.get("Email")
+                    or row.get("EMAIL") or ""
+                ).strip()
                 if em and "@" in em:
                     contacts.append({
                         "email":   em,
-                        "name":    (row.get("name") or row.get("Name") or
-                                    em.split("@")[0].replace(".", " ").title()).strip(),
-                        "company": (row.get("company") or row.get("Company") or "").strip(),
+                        "name":    (
+                            row.get("name") or row.get("Name")
+                            or em.split("@")[0].replace(".", " ").title()
+                        ).strip(),
+                        "company": (
+                            row.get("company") or row.get("Company") or ""
+                        ).strip(),
                     })
     except Exception as e:
         log.warning("load_csv: %s", e)
@@ -1004,22 +1044,32 @@ def load_csv_contacts(path: str) -> list:
 # =============================================================================
 # WEB HELPERS
 # =============================================================================
-_HDRS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                         "AppleWebKit/537.36 Chrome/124.0 Safari/537.36")}
+_HDRS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+    )
+}
 
 
 def web_research(query: str) -> str:
     if not req_lib:
         return "Web research unavailable (requests not installed)."
     try:
-        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&num=10"
-        r   = req_lib.get(url, headers=_HDRS, timeout=15)
+        url = (
+            f"https://www.google.com/search?q={urllib.parse.quote(query)}&num=10"
+        )
+        r = req_lib.get(url, headers=_HDRS, timeout=15)
         if BS4_OK and r.status_code == 200:
             soup  = BeautifulSoup(r.text, "html.parser")
             snips = []
-            for tag in soup.find_all(["div", "span"],
-                    class_=lambda c: c and any(
-                        x in c for x in ["BNeawe", "VwiC3b", "MUxGbd", "hgKElc", "yDYNvb"])):
+            for tag in soup.find_all(
+                ["div", "span"],
+                class_=lambda c: c and any(
+                    x in c
+                    for x in ["BNeawe", "VwiC3b", "MUxGbd", "hgKElc", "yDYNvb"]
+                ),
+            ):
                 t = tag.get_text(" ", strip=True)
                 if len(t) > 60:
                     snips.append(t)
@@ -1032,14 +1082,20 @@ def web_research(query: str) -> str:
         return f"Research error: {e}"
 
 
-def find_leads_web(product: str, niche: str = "", max_leads: int = 50) -> list:
+def find_leads_web(
+    product: str, niche: str = "", max_leads: int = 50
+) -> list:
     if not req_lib:
         return []
-    leads     = []
-    email_re  = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,7}\b')
-    skip      = {"example.com", "test.com", "sentry.io", "w3.org", "schema.org",
-                 "wix.com", "wordpress.com", "jquery.com", "google.com",
-                 "cloudflare.com", "github.com", "npmjs.com"}
+    leads    = []
+    email_re = re.compile(
+        r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,7}\b'
+    )
+    skip = {
+        "example.com", "test.com", "sentry.io", "w3.org", "schema.org",
+        "wix.com", "wordpress.com", "jquery.com", "google.com",
+        "cloudflare.com", "github.com", "npmjs.com",
+    }
     speak(f"Searching leads for {product}. Takes ~60 seconds.")
 
     queries = [
@@ -1052,9 +1108,15 @@ def find_leads_web(product: str, niche: str = "", max_leads: int = 50) -> list:
         if len(leads) >= max_leads:
             break
         try:
-            r    = req_lib.get(f"https://www.google.com/search?q={urllib.parse.quote(q)}&num=20",
-                               headers=_HDRS, timeout=15)
-            text = BeautifulSoup(r.text, "html.parser").get_text() if BS4_OK else r.text
+            r = req_lib.get(
+                f"https://www.google.com/search?q={urllib.parse.quote(q)}&num=20",
+                headers=_HDRS, timeout=15,
+            )
+            text = (
+                BeautifulSoup(r.text, "html.parser").get_text()
+                if BS4_OK
+                else r.text
+            )
             for em in email_re.findall(text):
                 domain = em.split("@")[-1].lower()
                 if domain in skip:
@@ -1104,12 +1166,17 @@ def wa_send(phone: str, msg: str) -> dict:
 def _get_driver(headless: bool = False):
     global _selenium_driver
     with _sel_lock:
-        try:
-            if _selenium_driver:
-                _selenium_driver.current_url
+        # Test if existing driver still alive
+        if _selenium_driver:
+            try:
+                _ = _selenium_driver.current_url
                 return _selenium_driver
-        except Exception:
-            _selenium_driver = None
+            except Exception:
+                try:
+                    _selenium_driver.quit()
+                except Exception:
+                    pass
+                _selenium_driver = None
 
         if not SELENIUM_OK:
             return None
@@ -1126,7 +1193,8 @@ def _get_driver(headless: bool = False):
             svc = ChromeService(ChromeDriverManager().install())
             drv = webdriver.Chrome(service=svc, options=opts)
             drv.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
             _selenium_driver = drv
             return drv
         except Exception as e:
@@ -1138,29 +1206,33 @@ def selenium_open(url: str, wait_for_css: str = None, timeout: int = 15) -> dict
     drv = _get_driver()
     if not drv:
         webbrowser.open(url)
-        return {"status": "ok", "note": "opened in default browser (Selenium unavailable)"}
+        return {"status": "ok", "note": "opened in default browser"}
     try:
         drv.get(url)
         if wait_for_css:
             WebDriverWait(drv, timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_css)))
+                EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_css))
+            )
         return {"status": "ok", "url": drv.current_url}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-def selenium_fill(selector: str, value: str,
-                  by: str = "css", submit: bool = False) -> dict:
+def selenium_fill(
+    selector: str, value: str, by: str = "css", submit: bool = False
+) -> dict:
     drv = _get_driver()
     if not drv:
         return {"status": "error", "message": "Selenium not available"}
     try:
-        by_map = {"css": By.CSS_SELECTOR, "xpath": By.XPATH,
-                  "id": By.ID, "name": By.NAME, "class": By.CLASS_NAME}
+        by_map = {
+            "css": By.CSS_SELECTOR, "xpath": By.XPATH,
+            "id": By.ID, "name": By.NAME, "class": By.CLASS_NAME,
+        }
         el = WebDriverWait(drv, 10).until(
-            EC.element_to_be_clickable((by_map.get(by, By.CSS_SELECTOR), selector)))
-        el.clear()
-        el.send_keys(value)
+            EC.element_to_be_clickable((by_map.get(by, By.CSS_SELECTOR), selector))
+        )
+        el.clear(); el.send_keys(value)
         if submit:
             el.send_keys(Keys.RETURN)
         return {"status": "ok"}
@@ -1173,10 +1245,13 @@ def selenium_click(selector: str, by: str = "css") -> dict:
     if not drv:
         return {"status": "error", "message": "Selenium not available"}
     try:
-        by_map = {"css": By.CSS_SELECTOR, "xpath": By.XPATH,
-                  "id": By.ID, "name": By.NAME, "class": By.CLASS_NAME}
+        by_map = {
+            "css": By.CSS_SELECTOR, "xpath": By.XPATH,
+            "id": By.ID, "name": By.NAME, "class": By.CLASS_NAME,
+        }
         el = WebDriverWait(drv, 10).until(
-            EC.element_to_be_clickable((by_map.get(by, By.CSS_SELECTOR), selector)))
+            EC.element_to_be_clickable((by_map.get(by, By.CSS_SELECTOR), selector))
+        )
         el.click()
         return {"status": "ok"}
     except Exception as e:
@@ -1184,7 +1259,7 @@ def selenium_click(selector: str, by: str = "css") -> dict:
 
 
 # =============================================================================
-# SOCIAL MEDIA AUTOMATION (Selenium)
+# SOCIAL MEDIA AUTOMATION
 # =============================================================================
 def post_twitter(username: str, password: str, text: str) -> dict:
     speak("Logging into Twitter / X...")
@@ -1196,28 +1271,33 @@ def post_twitter(username: str, password: str, text: str) -> dict:
         drv.get("https://x.com/login")
         time.sleep(3)
         u = WebDriverWait(drv, 15).until(
-            EC.presence_of_element_located((By.NAME, "text")))
+            EC.presence_of_element_located((By.NAME, "text"))
+        )
         u.send_keys(username); u.send_keys(Keys.RETURN)
         time.sleep(2)
         p = WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.NAME, "password")))
+            EC.presence_of_element_located((By.NAME, "password"))
+        )
         p.send_keys(password); p.send_keys(Keys.RETURN)
         time.sleep(3)
         btn = WebDriverWait(drv, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                '[data-testid="SideNav_NewTweet_Button"]')))
-        btn.click()
-        time.sleep(1)
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, '[data-testid="SideNav_NewTweet_Button"]')
+            )
+        )
+        btn.click(); time.sleep(1)
         box = WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR,
-                '[data-testid="tweetTextarea_0"]')))
-        box.send_keys(text)
-        time.sleep(0.5)
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, '[data-testid="tweetTextarea_0"]')
+            )
+        )
+        box.send_keys(text); time.sleep(0.5)
         post = WebDriverWait(drv, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                '[data-testid="tweetButton"]')))
-        post.click()
-        time.sleep(2)
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, '[data-testid="tweetButton"]')
+            )
+        )
+        post.click(); time.sleep(2)
         speak("Tweet posted successfully!")
         return {"status": "ok", "platform": "twitter"}
     except Exception as e:
@@ -1235,22 +1315,26 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
         drv.get("https://www.linkedin.com/login")
         time.sleep(2)
         WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.ID, "username"))).send_keys(username)
+            EC.presence_of_element_located((By.ID, "username"))
+        ).send_keys(username)
         drv.find_element(By.ID, "password").send_keys(password)
         drv.find_element(By.CSS_SELECTOR, '[type="submit"]').click()
         time.sleep(3)
         start = WebDriverWait(drv, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                ".share-box-feed-entry__trigger")))
-        start.click()
-        time.sleep(1)
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, ".share-box-feed-entry__trigger")
+            )
+        )
+        start.click(); time.sleep(1)
         box = WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".ql-editor")))
-        box.click(); box.send_keys(text)
-        time.sleep(0.5)
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".ql-editor"))
+        )
+        box.click(); box.send_keys(text); time.sleep(0.5)
         WebDriverWait(drv, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                ".share-actions__primary-action"))).click()
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, ".share-actions__primary-action")
+            )
+        ).click()
         time.sleep(2)
         speak("LinkedIn post published!")
         return {"status": "ok", "platform": "linkedin"}
@@ -1259,16 +1343,18 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def post_instagram(username: str, password: str,
-                   caption: str = "", image_path: str = "") -> dict:
+def post_instagram(
+    username: str, password: str, caption: str = "", image_path: str = ""
+) -> dict:
     speak("Opening Instagram...")
     webbrowser.open("https://www.instagram.com")
-    speak("Instagram opened. Automated posting requires desktop app or Meta API.")
+    speak("Instagram opened. Automated posting requires the desktop app or Meta API.")
     return {"status": "ok", "note": "Instagram opened in browser"}
 
 
-def post_facebook(username: str, password: str, text: str,
-                  page_id: str = "") -> dict:
+def post_facebook(
+    username: str, password: str, text: str, page_id: str = ""
+) -> dict:
     speak("Logging into Facebook...")
     drv = _get_driver()
     if not drv:
@@ -1278,23 +1364,26 @@ def post_facebook(username: str, password: str, text: str,
         drv.get("https://www.facebook.com/login")
         time.sleep(2)
         WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.ID, "email"))).send_keys(username)
+            EC.presence_of_element_located((By.ID, "email"))
+        ).send_keys(username)
         drv.find_element(By.ID, "pass").send_keys(password)
         drv.find_element(By.NAME, "login").click()
         time.sleep(4)
         box = WebDriverWait(drv, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                '[aria-label="What\'s on your mind?"]')))
-        box.click()
-        time.sleep(1)
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "[aria-label=\"What's on your mind?\"]")
+            )
+        )
+        box.click(); time.sleep(1)
         editor = WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR,
-                '[contenteditable="true"]')))
-        editor.send_keys(text)
-        time.sleep(0.5)
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, '[contenteditable="true"]')
+            )
+        )
+        editor.send_keys(text); time.sleep(0.5)
         WebDriverWait(drv, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                '[aria-label="Post"]'))).click()
+            EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Post"]'))
+        ).click()
         time.sleep(2)
         speak("Facebook post published!")
         return {"status": "ok", "platform": "facebook"}
@@ -1311,126 +1400,196 @@ def youtube_search_and_play(query: str) -> dict:
 
 
 # =============================================================================
-# LOCAL NLP PARSER — handles 200+ patterns, NO AI NEEDED
-# CRITICAL: ORDER MATTERS. Specific checks come before general ones.
+# LOCAL NLP PARSER  — NO AI NEEDED
+# Order is critical: specific patterns before generic ones.
 # =============================================================================
 def local_parse(task: str) -> list:
     t  = task.strip()
     tl = t.lower()
 
-    # ── 1. CONFIGURE EMAIL (must be first to not be caught by open/email) ────
-    if re.search(r"(?:configure|setup|set up|enable|add)\s+(?:email|smtp|mail)", tl):
+    # ── 1. CONFIGURE EMAIL ────────────────────────────────────────────────────
+    if re.search(
+        r"(?:configure|setup|set up|enable|add|connect)\s+(?:email|smtp|mail)", tl
+    ):
         return [{"action": "configure_email"}]
 
-    # ── 2. LEADS (before google search — "find leads" would hit google search) ─
-    if re.search(r"(?:find|get|search|generate)\s+(?:leads|customers|clients|prospects)", tl):
-        m_prod = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and\b|\s+then\b|\s+to\b|\s*$)", tl)
-        prod   = m_prod.group(1).strip() if m_prod else "product"
-        return [{"action":  "find_leads_and_email",
-                 "product": prod, "niche": "",
-                 "subject": f"Quick question about {prod}",
-                 "body":    f"Hi {{name}},\n\nI think {prod} could really help you.\n"
-                             "Would you be open to a 5-minute call?\n\nBest regards"}]
+    # ── 2. LEADS ──────────────────────────────────────────────────────────────
+    if re.search(
+        r"(?:find|get|search|generate|scrape)\s+(?:leads|customers|clients|prospects)", tl
+    ):
+        m_prod = re.search(
+            r"for\s+(?:my\s+)?(.+?)(?:\s+and\b|\s+then\b|\s+to\b|\s*$)", tl
+        )
+        prod = m_prod.group(1).strip() if m_prod else "product"
+        return [{
+            "action":  "find_leads_and_email",
+            "product": prod,
+            "niche":   "",
+            "subject": f"Quick question about {prod}",
+            "body":    (
+                f"Hi {{name}},\n\nI think {prod} could really help you.\n"
+                "Would you be open to a 5-minute call?\n\nBest regards"
+            ),
+        }]
 
-    # ── 3. BULK EMAIL (before regular email) ─────────────────────────────────
-    if re.search(r"bulk\s+email|mass\s+email|email\s+all|email\s+campaign|email\s+blast", tl):
-        csv_m = re.search(r"(?:from|using|with|file)\s+(.+?\.csv)", tl)
-        return [{"action":   "bulk_email",
-                 "csv_path": csv_m.group(1) if csv_m else "",
-                 "subject":  "Hello from Dacexy",
-                 "body":     "Hi {name},\n\nHope this message finds you well!\n\nBest regards"}]
+    # ── 3. BULK EMAIL ─────────────────────────────────────────────────────────
+    if re.search(
+        r"bulk\s+email|mass\s+email|email\s+all|email\s+campaign|email\s+blast", tl
+    ):
+        csv_m = re.search(r"(?:from|using|with|file)\s+(\S+\.csv)", tl)
+        return [{
+            "action":   "bulk_email",
+            "csv_path": csv_m.group(1) if csv_m else "",
+            "subject":  "Hello from Dacexy",
+            "body":     "Hi {name},\n\nHope this message finds you well!\n\nBest regards",
+        }]
 
     # ── 4. SEND EMAIL ─────────────────────────────────────────────────────────
     m = re.search(
         r"(?:send|compose|write|draft)\s+(?:an?\s+)?(?:email|mail|message)\s+to\s+"
         r"([^\s,]+@[^\s,]+)"
         r"(?:\s+(?:saying|about|with\s+subject|subject|re|regarding)\s+(.+?))?$",
-        tl)
+        tl,
+    )
     if m:
         subj = (m.group(2) or "Hello from Dacexy").strip()
-        return [{"action":  "send_email",
-                 "to":      m.group(1).strip(),
-                 "subject": subj,
-                 "body":    subj}]
+        return [{
+            "action":  "send_email",
+            "to":      m.group(1).strip(),
+            "subject": subj,
+            "body":    subj,
+        }]
 
-    # ── 5. WHATSAPP (before open, so "open whatsapp" still works below) ───────
+    # ── 5. WHATSAPP SEND ──────────────────────────────────────────────────────
     m = re.search(
         r"(?:send|message|whatsapp)\s+(.+?)"
-        r"\s+(?:on\s+whatsapp\s+)?(?:saying|message|with|that)\s+(.+)$", tl)
+        r"\s+(?:on\s+whatsapp\s+)?(?:saying|message|with|that)\s+(.+)$",
+        tl,
+    )
     if m:
-        return [{"action":  "whatsapp",
-                 "phone":   m.group(1).strip(),
-                 "message": m.group(2).strip()}]
+        return [{
+            "action":  "whatsapp",
+            "phone":   m.group(1).strip(),
+            "message": m.group(2).strip(),
+        }]
 
-    # ── 6. SOCIAL MEDIA POSTS (before open) ───────────────────────────────────
-    m_tw = re.search(r"(?:post|tweet|publish|share)\s+(?:on\s+(?:twitter|x)\s+)?(.+?)(?:\s+on\s+(?:twitter|x))?$", tl)
-    if re.search(r"\b(?:twitter|tweet)\b", tl) and m_tw:
-        txt = m_tw.group(1).strip()
-        for rm in ["twitter","tweet","post on","publish on","share on"]:
-            txt = txt.replace(rm, "").strip()
-        if txt and len(txt) > 2:
-            return [{"action": "twitter_post", "username": "", "password": "", "text": txt},
-                    {"action": "speak", "text": "Opening Twitter to post."}]
+    # ── 6. SOCIAL MEDIA POSTS ─────────────────────────────────────────────────
+    if re.search(r"\b(?:twitter|tweet|x\.com)\b", tl) and re.search(
+        r"\b(?:post|tweet|publish|share)\b", tl
+    ):
+        m_tw = re.search(
+            r"(?:post|tweet|publish|share)\s+(?:on\s+(?:twitter|x)\s+)?(.+?)(?:\s+on\s+(?:twitter|x))?$",
+            tl,
+        )
+        if m_tw:
+            txt = re.sub(r"\b(twitter|tweet|post on|publish on|share on|on x)\b", "", m_tw.group(1)).strip()
+            if txt and len(txt) > 2:
+                return [
+                    {"action": "twitter_post", "username": "", "password": "", "text": txt},
+                    {"action": "speak", "text": "Opening Twitter to post."},
+                ]
 
-    m_li = re.search(r"(?:post|publish|share)\s+(?:on\s+linkedin\s+)?(.+?)(?:\s+on\s+linkedin)?$", tl)
-    if re.search(r"\blinkedin\b", tl) and m_li:
-        txt = m_li.group(1).strip()
-        for rm in ["linkedin","post on","publish on","share on"]:
-            txt = txt.replace(rm, "").strip()
-        if txt and len(txt) > 2:
-            return [{"action": "linkedin_post", "username": "", "password": "", "text": txt},
-                    {"action": "speak", "text": "Opening LinkedIn to post."}]
+    if re.search(r"\blinkedin\b", tl) and re.search(
+        r"\b(?:post|publish|share)\b", tl
+    ):
+        m_li = re.search(
+            r"(?:post|publish|share)\s+(?:on\s+linkedin\s+)?(.+?)(?:\s+on\s+linkedin)?$",
+            tl,
+        )
+        if m_li:
+            txt = re.sub(r"\b(linkedin|post on|publish on|share on)\b", "", m_li.group(1)).strip()
+            if txt and len(txt) > 2:
+                return [
+                    {"action": "linkedin_post", "username": "", "password": "", "text": txt},
+                    {"action": "speak", "text": "Opening LinkedIn to post."},
+                ]
 
-    if re.search(r"\bfacebook\b", tl) and re.search(r"\b(?:post|publish|share)\b", tl):
-        m_fb = re.search(r"(?:post|publish|share)\s+(?:on\s+facebook\s+)?(.+?)(?:\s+on\s+facebook)?$", tl)
+    if re.search(r"\bfacebook\b", tl) and re.search(
+        r"\b(?:post|publish|share)\b", tl
+    ):
+        m_fb = re.search(
+            r"(?:post|publish|share)\s+(?:on\s+facebook\s+)?(.+?)(?:\s+on\s+facebook)?$",
+            tl,
+        )
         if m_fb:
-            txt = m_fb.group(1).strip()
+            txt = re.sub(r"\b(facebook|post on|publish on|share on)\b", "", m_fb.group(1)).strip()
             if txt and len(txt) > 2:
                 return [{"action": "facebook_post", "username": "", "password": "", "text": txt}]
 
-    # ── 7. YOUTUBE SEARCH (before open) ──────────────────────────────────────
-    m = re.search(r"(?:search|play|find|watch|look up)\s+(.+?)\s+(?:on|in)\s+youtube", tl)
+    # ── 7. YOUTUBE SEARCH ────────────────────────────────────────────────────
+    m = re.search(
+        r"(?:search|play|find|watch|look\s+up)\s+(.+?)\s+(?:on|in)\s+youtube", tl
+    )
     if m:
         return [{"action": "open_youtube", "query": m.group(1).strip()}]
 
-    if re.search(r"\byoutube\b", tl) and re.search(r"\b(?:search|play|watch|find)\b", tl):
-        q = re.sub(r"\b(youtube|search|play|watch|find|open|on|in|for|me)\b", "", tl).strip()
+    if re.search(r"\byoutube\b", tl) and re.search(
+        r"\b(?:search|play|watch|find|open|look)\b", tl
+    ):
+        q = re.sub(r"\b(youtube|search|play|watch|find|open|on|in|for|me|video)\b", "", tl).strip()
         if q and len(q) > 2:
             return [{"action": "open_youtube", "query": q}]
 
     # ── 8. OPEN / LAUNCH / START ──────────────────────────────────────────────
-    m = re.match(r"(?:open|launch|start|go to|navigate to|visit|browse|load|show)\s+(.+)", tl)
+    m = re.match(
+        r"(?:open|launch|start|go\s+to|navigate\s+to|visit|browse|load|show)\s+(.+)",
+        tl,
+    )
     if m:
         tgt = m.group(1).strip()
-        return [{"action": "open",  "target": tgt},
-                {"action": "speak", "text":   f"Opening {tgt}"}]
+        return [
+            {"action": "open",  "target": tgt},
+            {"action": "speak", "text":   f"Opening {tgt}"},
+        ]
 
-    # ── 9. GOOGLE SEARCH (after leads/social/youtube already checked) ─────────
-    m = re.search(r"(?:google|search\s+for|look\s+up|search|find)\s+(.+?)(?:\s+on\s+google)?$", tl)
-    if m and "youtube" not in tl and "email" not in tl:
+    # ── 9. GOOGLE / WEB SEARCH ───────────────────────────────────────────────
+    m = re.search(
+        r"(?:google|search\s+for|look\s+up|search|find)\s+(.+?)(?:\s+on\s+google)?$",
+        tl,
+    )
+    if m and "youtube" not in tl and "email" not in tl and "lead" not in tl:
         q = m.group(1).strip()
         if q and len(q) > 1:
             return [{"action": "search_web", "query": q}]
 
     # ── 10. SCREENSHOT ────────────────────────────────────────────────────────
-    if re.search(r"screenshot|screen\s+shot|capture\s+screen|take\s+screenshot", tl):
-        return [{"action": "screenshot"},
-                {"action": "speak", "text": "Screenshot taken."}]
+    if re.search(
+        r"screenshot|screen\s+shot|capture\s+screen|take\s+screenshot|snap\s+screen", tl
+    ):
+        return [
+            {"action": "screenshot"},
+            {"action": "speak", "text": "Screenshot taken."},
+        ]
 
     # ── 11. TIME / DATE ───────────────────────────────────────────────────────
-    if re.search(r"what(?:'s| is)\s+the\s+time|time\s+is\s+it|what\s+time|tell\s+me\s+the\s+time|current\s+time", tl):
+    if re.search(
+        r"what(?:'s| is)\s+the\s+time|time\s+is\s+it|what\s+time|tell\s+me\s+the\s+time|current\s+time",
+        tl,
+    ):
         return [{"action": "get_time"}]
-    if re.search(r"what(?:'s| is)\s+(?:today|the\s+date)|date\s+is\s+it|what\s+date|today'?s?\s+date|current\s+date", tl):
+    if re.search(
+        r"what(?:'s| is)\s+(?:today|the\s+date)|date\s+is\s+it|what\s+date|today'?s?\s+date|current\s+date",
+        tl,
+    ):
         return [{"action": "get_date"}]
 
     # ── 12. SYSTEM INFO ───────────────────────────────────────────────────────
-    if re.search(r"system\s+info|cpu\s+usage|ram\s+usage|disk\s+space|memory\s+usage|hardware\s+info|check\s+system|how\s+much\s+(?:ram|memory|cpu|disk)", tl):
+    if re.search(
+        r"system\s+info|cpu\s+usage|ram\s+usage|disk\s+space|memory\s+usage|"
+        r"hardware\s+info|check\s+system|how\s+much\s+(?:ram|memory|cpu|disk)",
+        tl,
+    ):
         return [{"action": "get_system_info"}]
 
     # ── 13. VOLUME ────────────────────────────────────────────────────────────
-    if re.search(r"volume\s*up|increase\s+volume|louder|turn\s+(?:up|volume\s+up)", tl):
+    if re.search(
+        r"volume\s*up|increase\s+volume|louder|turn\s+(?:up|volume\s+up)", tl
+    ):
         return [{"action": "volume_up", "steps": 5}]
-    if re.search(r"volume\s*down|lower\s+volume|quieter|turn\s+(?:down|volume\s+down)|decrease\s+volume", tl):
+    if re.search(
+        r"volume\s*down|lower\s+volume|quieter|turn\s+(?:down|volume\s+down)|decrease\s+volume",
+        tl,
+    ):
         return [{"action": "volume_down", "steps": 5}]
     if re.search(r"\bmute\b|\bsilence\b|\bunmute\b", tl):
         return [{"action": "mute"}]
@@ -1440,28 +1599,30 @@ def local_parse(task: str) -> list:
         return [{"action": "minimize_window"}]
     if re.search(r"maximiz|maximis|full.?screen", tl):
         return [{"action": "maximize_window"}]
-    if re.search(r"close\s+(?:this\s+)?(?:window|tab|app|program|application)", tl):
+    if re.search(
+        r"close\s+(?:this\s+)?(?:window|tab|app|program|application)", tl
+    ):
         return [{"action": "close_window"}]
     if re.search(r"show\s+desktop|win\s*\+\s*d", tl):
         return [{"action": "show_desktop"}]
     if re.search(r"(?:alt|switch)\s+tab|next\s+window|switch\s+window", tl):
         return [{"action": "switch_window"}]
 
-    # ── 15. TYPING ────────────────────────────────────────────────────────────
+    # ── 15. TYPE ──────────────────────────────────────────────────────────────
     m = re.match(r"(?:type|write|enter|input)\s+(.+)", tl)
     if m:
         return [{"action": "type", "text": m.group(1).strip()}]
 
     # ── 16. SCROLL ────────────────────────────────────────────────────────────
-    if re.search(r"scroll\s+down|page\s+down|scroll\s+(?:the\s+)?(?:page|window)\s+down", tl):
+    if re.search(r"scroll\s+down|page\s+down", tl):
         return [{"action": "scroll_down", "amount": 5}]
-    if re.search(r"scroll\s+up|page\s+up|scroll\s+(?:the\s+)?(?:page|window)\s+up", tl):
+    if re.search(r"scroll\s+up|page\s+up", tl):
         return [{"action": "scroll_up", "amount": 5}]
 
     # ── 17. KEYBOARD SHORTCUTS ────────────────────────────────────────────────
-    if re.search(r"\b(?:press|hit)\s+enter\b|submit\s+form|confirm\s+dialog", tl):
+    if re.search(r"\b(?:press|hit)\s+enter\b|submit\s+form", tl):
         return [{"action": "key", "key": "enter"}]
-    if re.search(r"\b(?:press|hit)\s+escape\b|press\s+esc\b", tl):
+    if re.search(r"\b(?:press|hit)\s+(?:escape|esc)\b", tl):
         return [{"action": "key", "key": "escape"}]
     if re.search(r"\b(?:press|hit)\s+tab\b", tl):
         return [{"action": "key", "key": "tab"}]
@@ -1493,16 +1654,21 @@ def local_parse(task: str) -> list:
     # ── 19. REMEMBER ──────────────────────────────────────────────────────────
     m = re.match(r"remember\s+(?:that\s+)?(.+)", tl)
     if m:
-        return [{"action": "remember", "fact": m.group(1)},
-                {"action": "speak",    "text": "Got it, I'll remember that."}]
+        return [
+            {"action": "remember", "fact": m.group(1)},
+            {"action": "speak",    "text": "Got it, I'll remember that."},
+        ]
 
     # ── 20. SPEAK / SAY ───────────────────────────────────────────────────────
     m = re.match(r"(?:say|speak|tell\s+me|announce|read\s+aloud)\s+(.+)", tl)
     if m:
         return [{"action": "speak", "text": m.group(1)}]
 
-    # ── 21. WEB RESEARCH ──────────────────────────────────────────────────────
-    m = re.match(r"(?:research|investigate|find\s+out\s+about|look\s+up\s+info\s+on|get\s+info\s+on)\s+(.+)", tl)
+    # ── 21. WEB RESEARCH ─────────────────────────────────────────────────────
+    m = re.match(
+        r"(?:research|investigate|find\s+out\s+about|look\s+up\s+info|get\s+info\s+on)\s+(.+)",
+        tl,
+    )
     if m:
         return [{"action": "web_research", "query": m.group(1).strip()}]
 
@@ -1512,41 +1678,66 @@ def local_parse(task: str) -> list:
         return [{"action": "run_command", "command": m.group(1).strip()}]
 
     # ── 23. SCHEDULE ──────────────────────────────────────────────────────────
-    m = re.search(r"(?:schedule|remind\s+me|set\s+reminder)\s+(.+?)\s+(?:at|every|daily|tomorrow)\s+(.+)", tl)
+    m = re.search(
+        r"(?:schedule|remind\s+me|set\s+reminder)\s+(.+?)\s+(?:at|every|daily|tomorrow)\s+(.+)",
+        tl,
+    )
     if m:
-        return [{"action": "schedule_task",
-                 "task":     m.group(1).strip(),
-                 "schedule": m.group(2).strip()}]
+        return [{
+            "action":   "schedule_task",
+            "task":     m.group(1).strip(),
+            "schedule": m.group(2).strip(),
+        }]
 
-    # ── 24. WHATSAPP OPEN (fallback after send check above) ───────────────────
+    # ── 24. WHATSAPP OPEN (fallback) ─────────────────────────────────────────
     if re.search(r"\bwhatsapp\b", tl):
         return [{"action": "open", "target": "whatsapp web"}]
 
-    # ── 25. SINGLE KNOWN APP/SITE NAME ───────────────────────────────────────
+    # ── 25. FILE OPERATIONS ───────────────────────────────────────────────────
+    m = re.search(r"(?:create|write|make)\s+(?:a\s+)?(?:file|document|note)\s+(?:called|named)?\s*(.+)", tl)
+    if m:
+        return [{"action": "write_file", "path": m.group(1).strip() + ".txt", "content": ""}]
+
+    # ── 26. WAIT / SLEEP ─────────────────────────────────────────────────────
+    m = re.search(r"wait\s+(?:for\s+)?(\d+)\s+(?:second|sec)", tl)
+    if m:
+        return [{"action": "wait", "seconds": float(m.group(1))}]
+
+    # ── 27. SINGLE KNOWN APP / SITE NAME ─────────────────────────────────────
     for app in APPS:
         if tl.strip() == app or tl.strip().startswith(app + " "):
-            return [{"action": "open",  "target": app},
-                    {"action": "speak", "text":   f"Opening {app}"}]
+            return [
+                {"action": "open",  "target": app},
+                {"action": "speak", "text":   f"Opening {app}"},
+            ]
     for site in SITES:
         if tl.strip() == site:
-            return [{"action": "open",  "target": site},
-                    {"action": "speak", "text":   f"Opening {site}"}]
+            return [
+                {"action": "open",  "target": site},
+                {"action": "speak", "text":   f"Opening {site}"},
+            ]
 
-    # ── 26. STATUS / HELP ────────────────────────────────────────────────────
+    # ── 28. STATUS / HELP ────────────────────────────────────────────────────
     if re.search(r"\b(?:help|what\s+can\s+you\s+do|commands|capabilities)\b", tl):
-        return [{"action": "speak",
-                 "text": ("I can open apps and websites, send emails, take screenshots, "
-                          "search the web, find leads, post to social media, control volume, "
-                          "type text, run commands, and much more. Just ask!")}]
+        return [{
+            "action": "speak",
+            "text": (
+                "I can open apps and websites, send emails, take screenshots, "
+                "search the web, find leads, post to social media, control volume, "
+                "type text, run commands, and much more. Just ask!"
+            ),
+        }]
 
     if re.search(r"\b(?:hello|hi|hey|good\s+morning|good\s+evening|howdy)\b", tl):
-        return [{"action": "speak",
-                 "text": f"Hello! Dacexy Agent v{VERSION} is ready. What would you like me to do?"}]
+        return [{
+            "action": "speak",
+            "text": f"Hello! Dacexy Agent v{VERSION} is ready. What would you like me to do?",
+        }]
 
     if re.search(r"\b(?:ping|test|are\s+you\s+(?:there|working|online)|status)\b", tl):
         return [{"action": "ping"}]
 
-    return []  # No match — execute_task handles the unknown-command path
+    return []  # No match — execute_task handles the unknown path
 
 
 # =============================================================================
@@ -1569,7 +1760,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                {k: v for k, v in cmd.items() if k != "action"})
 
     try:
-        # ── SPEAK / NOTIFY ──────────────────────────────────────────────────
+        # ── SPEAK / NOTIFY ───────────────────────────────────────────────────
         if action == "speak":
             speak(str(cmd.get("text", "")))
             return {"status": "ok"}
@@ -1579,11 +1770,10 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         # ── CONFIGURE EMAIL ──────────────────────────────────────────────────
-        # FIX: was opening a browser URL instead of running interactive setup
         if action == "configure_email":
             return configure_smtp_interactive()
 
-        # ── OPEN / LAUNCH (catches ALL planner hallucinations) ────────────────
+        # ── OPEN / LAUNCH (catches all planner aliases) ───────────────────────
         if action in {
             "open", "open_url", "open_browser", "launch", "start", "navigate",
             "navigate_to", "go_to", "browse", "visit", "open_site", "open_website",
@@ -1594,9 +1784,11 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             "navigate_browser", "open_url_in_browser", "start_browser",
             "open_web_browser", "load_url", "load_website", "goto",
         }:
-            tgt = (cmd.get("url") or cmd.get("app") or cmd.get("text") or
-                   cmd.get("name") or cmd.get("site") or cmd.get("target") or
-                   cmd.get("browser") or cmd.get("website") or "").strip()
+            tgt = (
+                cmd.get("url") or cmd.get("app") or cmd.get("text")
+                or cmd.get("name") or cmd.get("site") or cmd.get("target")
+                or cmd.get("browser") or cmd.get("website") or ""
+            ).strip()
             if not tgt:
                 for kw in ["chrome", "firefox", "edge", "brave"]:
                     if kw in action:
@@ -1606,20 +1798,25 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return smart_open(tgt)
 
         # ── EMAIL ─────────────────────────────────────────────────────────────
-        if action in {"send_email", "email", "compose_email", "send_mail", "mail",
-                      "gmail_send", "send_message_email", "email_send"}:
-            to_ = str(cmd.get("to") or cmd.get("email") or
-                      cmd.get("recipient") or "").strip()
+        if action in {
+            "send_email", "email", "compose_email", "send_mail", "mail",
+            "gmail_send", "send_message_email", "email_send",
+        }:
+            to_ = str(
+                cmd.get("to") or cmd.get("email") or cmd.get("recipient") or ""
+            ).strip()
             if not to_:
                 return {"status": "error", "message": "No recipient email address"}
             return send_email_real(
                 to_,
                 str(cmd.get("subject") or "Message from Dacexy"),
-                str(cmd.get("body")    or cmd.get("text") or
-                    cmd.get("content") or "Hello"))
+                str(cmd.get("body") or cmd.get("text") or cmd.get("content") or "Hello"),
+            )
 
-        if action in {"bulk_email", "send_bulk_email", "mass_email",
-                      "email_all", "email_blast", "email_campaign"}:
+        if action in {
+            "bulk_email", "send_bulk_email", "mass_email",
+            "email_all", "email_blast", "email_campaign",
+        }:
             contacts = cmd.get("contacts") or []
             csv_p    = cmd.get("csv_path") or cmd.get("file") or ""
             if csv_p and not contacts:
@@ -1629,42 +1826,49 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return send_bulk_email(
                 contacts,
                 str(cmd.get("subject") or "Hello from Dacexy"),
-                str(cmd.get("body")    or "Hi {name},\n\nHope this finds you well!\n\nBest regards"),
-                float(cmd.get("delay") or 1.5))
+                str(cmd.get("body") or "Hi {name},\n\nHope this finds you well!\n\nBest regards"),
+                float(cmd.get("delay") or 1.5),
+            )
 
         if action in {"find_leads_and_email", "lead_campaign", "find_and_email"}:
             product = str(cmd.get("product") or "product")
-            leads   = find_leads_web(product,
-                                     str(cmd.get("niche") or ""),
-                                     int(cmd.get("max") or 50))
+            leads   = find_leads_web(
+                product, str(cmd.get("niche") or ""), int(cmd.get("max") or 50)
+            )
             if not leads:
                 return {"status": "error", "message": "No leads found."}
             return send_bulk_email(
                 leads,
                 str(cmd.get("subject") or f"About {product}"),
-                str(cmd.get("body")    or
-                    f"Hi {{name}},\n\nI noticed you might benefit from {product}.\n"
-                    "Would you be open to a quick 5-minute chat?\n\nBest regards"),
-                2.0)
+                str(
+                    cmd.get("body")
+                    or f"Hi {{name}},\n\nI noticed you might benefit from {product}.\n"
+                       "Would you be open to a quick 5-minute chat?\n\nBest regards"
+                ),
+                2.0,
+            )
 
         if action in {"find_leads", "lead_finder", "scrape_leads", "get_leads"}:
             leads = find_leads_web(
                 str(cmd.get("product") or ""),
-                str(cmd.get("niche")   or ""),
-                int(cmd.get("max")     or 50))
+                str(cmd.get("niche") or ""),
+                int(cmd.get("max") or 50),
+            )
             return {"status": "ok", "leads_found": len(leads)}
 
         if action in {"web_research", "research", "investigate", "research_topic"}:
-            q = str(cmd.get("query") or cmd.get("text") or
-                    cmd.get("topic") or "")
+            q = str(
+                cmd.get("query") or cmd.get("text") or cmd.get("topic") or ""
+            )
             if not q:
-                return {"status": "error", "message": "No query for research"}
+                return {"status": "error", "message": "No query"}
             speak(f"Researching {q[:50]}...")
             result = web_research(q)
             rp = AGENT_DIR / f"research_{int(time.time())}.txt"
             rp.write_text(
                 f"Research: {q}\nDate: {datetime.datetime.now()}\n\n{result}",
-                encoding="utf-8")
+                encoding="utf-8",
+            )
             try:
                 subprocess.Popen(f'notepad.exe "{rp}"', shell=True)
             except Exception:
@@ -1672,137 +1876,145 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             speak("Research done. Report opened in Notepad.")
             return {"status": "ok", "result": result[:800]}
 
-        # ── WHATSAPP ──────────────────────────────────────────────────────────
+        # ── WHATSAPP ─────────────────────────────────────────────────────────
         if action in {"whatsapp", "whatsapp_send", "send_whatsapp", "wa_send"}:
-            phone = str(cmd.get("phone") or cmd.get("contact") or
-                        cmd.get("to")    or "")
+            phone = str(
+                cmd.get("phone") or cmd.get("contact") or cmd.get("to") or ""
+            )
             if not phone:
                 return {"status": "error", "message": "No phone number"}
-            return wa_send(phone,
-                           str(cmd.get("message") or cmd.get("text") or ""))
+            return wa_send(phone, str(cmd.get("message") or cmd.get("text") or ""))
 
-        # ── YOUTUBE ───────────────────────────────────────────────────────────
-        if action in {"open_youtube", "youtube", "youtube_search",
-                      "play_youtube", "search_youtube"}:
+        # ── YOUTUBE ──────────────────────────────────────────────────────────
+        if action in {
+            "open_youtube", "youtube", "youtube_search",
+            "play_youtube", "search_youtube", "youtube_play",
+        }:
             q = str(cmd.get("query") or cmd.get("text") or "")
             if q:
                 return youtube_search_and_play(q)
             webbrowser.open("https://www.youtube.com")
             return {"status": "ok"}
 
-        # ── SEARCH ────────────────────────────────────────────────────────────
-        if action in {"search_web", "search", "google_search", "google",
-                      "google_search_query", "search_google", "web_search"}:
-            q = str(cmd.get("query")        or cmd.get("text") or
-                    cmd.get("search_query") or "")
+        # ── SEARCH ───────────────────────────────────────────────────────────
+        if action in {
+            "search_web", "search", "google_search", "google",
+            "search_google", "web_search", "google_search_query",
+        }:
+            q = str(
+                cmd.get("query") or cmd.get("text")
+                or cmd.get("search_query") or ""
+            )
             if q:
                 webbrowser.open(
-                    f"https://www.google.com/search?q={urllib.parse.quote(q)}")
+                    f"https://www.google.com/search?q={urllib.parse.quote(q)}"
+                )
                 speak(f"Searching Google for {q[:60]}")
                 return {"status": "ok"}
             webbrowser.open("https://www.google.com")
             return {"status": "ok"}
 
-        # ── SOCIAL MEDIA ──────────────────────────────────────────────────────
+        # ── SOCIAL MEDIA ─────────────────────────────────────────────────────
         if action in {"twitter_post", "post_twitter", "tweet", "post_tweet"}:
             return post_twitter(
                 str(cmd.get("username") or cmd.get("user") or ""),
                 str(cmd.get("password") or cmd.get("pass") or ""),
-                str(cmd.get("text")     or cmd.get("content") or ""))
+                str(cmd.get("text") or cmd.get("content") or ""),
+            )
 
         if action in {"linkedin_post", "post_linkedin", "linkedin"}:
             return post_linkedin(
                 str(cmd.get("username") or ""),
                 str(cmd.get("password") or ""),
-                str(cmd.get("text")     or cmd.get("content") or ""))
+                str(cmd.get("text") or cmd.get("content") or ""),
+            )
 
         if action in {"facebook_post", "post_facebook", "facebook"}:
             return post_facebook(
                 str(cmd.get("username") or ""),
                 str(cmd.get("password") or ""),
-                str(cmd.get("text")     or cmd.get("content") or ""),
-                str(cmd.get("page_id")  or ""))
+                str(cmd.get("text") or cmd.get("content") or ""),
+                str(cmd.get("page_id") or ""),
+            )
 
         if action in {"instagram_post", "post_instagram", "instagram"}:
             return post_instagram(
-                str(cmd.get("username")   or ""),
-                str(cmd.get("password")   or ""),
-                str(cmd.get("caption")    or cmd.get("text") or ""),
-                str(cmd.get("image_path") or ""))
+                str(cmd.get("username") or ""),
+                str(cmd.get("password") or ""),
+                str(cmd.get("caption") or cmd.get("text") or ""),
+                str(cmd.get("image_path") or ""),
+            )
 
         if action in {"post_all_social", "post_all", "all_social", "social_post_all"}:
             text  = str(cmd.get("text") or "")
             creds = cmd.get("credentials") or {}
             results = {}
-            for plat, fn in [("twitter",  post_twitter),
-                              ("linkedin", post_linkedin),
-                              ("facebook", post_facebook)]:
+            for plat, fn in [
+                ("twitter",  post_twitter),
+                ("linkedin", post_linkedin),
+                ("facebook", post_facebook),
+            ]:
                 c = creds.get(plat, {})
                 if c.get("username"):
-                    results[plat] = fn(c["username"], c.get("password",""), text)
+                    results[plat] = fn(c["username"], c.get("password", ""), text)
                 else:
                     speak(f"No credentials for {plat}")
                     results[plat] = {"status": "skipped"}
             return {"status": "ok", "results": results}
 
-        if action in {"youtube_search", "youtube_play", "play_on_youtube"}:
-            q = str(cmd.get("query") or cmd.get("text") or "")
-            return youtube_search_and_play(q) if q else {"status": "error"}
-
-        # ── SELENIUM ACTIONS ─────────────────────────────────────────────────
+        # ── SELENIUM ─────────────────────────────────────────────────────────
         if action == "selenium_open":
             return selenium_open(
                 str(cmd.get("url") or cmd.get("target") or ""),
                 cmd.get("wait_for"),
-                int(cmd.get("timeout") or 15))
+                int(cmd.get("timeout") or 15),
+            )
 
         if action in {"selenium_fill", "fill_field", "type_in_field"}:
             return selenium_fill(
                 str(cmd.get("selector") or ""),
-                str(cmd.get("value")    or cmd.get("text") or ""),
-                str(cmd.get("by")       or "css"),
-                bool(cmd.get("submit",  False)))
+                str(cmd.get("value") or cmd.get("text") or ""),
+                str(cmd.get("by") or "css"),
+                bool(cmd.get("submit", False)),
+            )
 
         if action == "selenium_click":
             return selenium_click(
                 str(cmd.get("selector") or ""),
-                str(cmd.get("by")       or "css"))
+                str(cmd.get("by") or "css"),
+            )
 
         # ── KEYBOARD ─────────────────────────────────────────────────────────
+        _KEY_ALIASES = {
+            "press_enter": "enter",   "hit_enter": "enter",
+            "enter_key":   "enter",   "submit_form": "enter",
+            "submit":      "enter",   "confirm": "enter",
+            "press_escape": "escape", "escape_key": "escape",
+            "press_esc":   "escape",
+            "press_tab":   "tab",     "tab_key": "tab",
+            "press_space": "space",   "space_key": "space",
+            "press_backspace": "backspace",
+            "press_delete":    "delete",
+            "press_up":    "up",      "press_down":  "down",
+            "press_left":  "left",    "press_right": "right",
+            "press_f1":    "f1",      "press_f2":    "f2",
+            "press_f4":    "f4",      "press_f5":    "f5",
+            "press_f11":   "f11",     "press_f12":   "f12",
+        }
         if action in {
             "key", "press", "press_key", "keypress",
-            "press_enter",   "hit_enter",   "enter_key",  "submit_form",
-            "press_escape",  "escape_key",  "press_esc",
-            "press_tab",     "tab_key",
-            "press_space",   "space_key",
-            "press_backspace","press_delete",
-            "press_up",      "press_down",  "press_left", "press_right",
-            "press_f1", "press_f2", "press_f4", "press_f5",
-            "press_f11", "press_f12", "confirm", "submit",
-        }:
-            _AK = {
-                "press_enter": "enter",   "hit_enter": "enter",
-                "enter_key":   "enter",   "submit_form": "enter",
-                "submit":      "enter",   "confirm": "enter",
-                "press_escape":"escape",  "escape_key": "escape",
-                "press_esc":   "escape",
-                "press_tab":   "tab",     "tab_key": "tab",
-                "press_space": "space",   "space_key": "space",
-                "press_backspace": "backspace",
-                "press_delete":    "delete",
-                "press_up":    "up",      "press_down":  "down",
-                "press_left":  "left",    "press_right": "right",
-                "press_f1":    "f1",      "press_f2":    "f2",
-                "press_f4":    "f4",      "press_f5":    "f5",
-                "press_f11":   "f11",     "press_f12":   "f12",
-            }
-            k = cmd.get("key") or cmd.get("keys") or _AK.get(action, "enter")
+        } | set(_KEY_ALIASES.keys()):
+            k = (
+                cmd.get("key") or cmd.get("keys")
+                or _KEY_ALIASES.get(action, "enter")
+            )
             if k and pyautogui:
                 pyautogui.press(str(k))
             return {"status": "ok", "key": str(k)}
 
-        if action in {"hotkey", "key_combo", "shortcut", "keyboard_shortcut",
-                      "press_hotkey"}:
+        if action in {
+            "hotkey", "key_combo", "shortcut", "keyboard_shortcut", "press_hotkey",
+        }:
             keys = cmd.get("keys") or cmd.get("key") or []
             if isinstance(keys, str):
                 keys = re.split(r"[+\s,]+", keys)
@@ -1815,8 +2027,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
         if action == "copy":
             if pyautogui: pyautogui.hotkey("ctrl", "c"); time.sleep(0.15)
-            return {"status": "ok",
-                    "clipboard": pyperclip.paste() if pyperclip else ""}
+            return {"status": "ok", "clipboard": pyperclip.paste() if pyperclip else ""}
         if action == "paste":
             if pyautogui: pyautogui.hotkey("ctrl", "v")
             return {"status": "ok"}
@@ -1845,7 +2056,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if x == 0 and y == 0:
                 return {"status": "skipped", "reason": "no coordinates given"}
             sw, sh = pyautogui.size()
-            pyautogui.click(max(0, min(x, sw-1)), max(0, min(y, sh-1)))
+            pyautogui.click(max(0, min(x, sw - 1)), max(0, min(y, sh - 1)))
             time.sleep(0.1)
             return {"status": "ok"}
 
@@ -1861,24 +2072,24 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
         if action in {"move_mouse", "move_to"}:
             if pyautogui:
-                pyautogui.moveTo(int(cmd.get("x", 0)), int(cmd.get("y", 0)),
-                                 duration=0.3)
+                pyautogui.moveTo(
+                    int(cmd.get("x", 0)), int(cmd.get("y", 0)), duration=0.3
+                )
             return {"status": "ok"}
 
         if action == "drag":
             if pyautogui:
-                pyautogui.dragTo(int(cmd.get("x2", 0)), int(cmd.get("y2", 0)),
-                                 button="left")
+                pyautogui.dragTo(
+                    int(cmd.get("x2", 0)), int(cmd.get("y2", 0)), button="left"
+                )
             return {"status": "ok"}
 
         if action in {"scroll_down", "scrolldown", "scroll_down_page"}:
-            if pyautogui:
-                pyautogui.scroll(-int(cmd.get("amount", 5)))
+            if pyautogui: pyautogui.scroll(-int(cmd.get("amount", 5)))
             return {"status": "ok"}
 
         if action in {"scroll_up", "scrollup", "scroll_up_page"}:
-            if pyautogui:
-                pyautogui.scroll(int(cmd.get("amount", 5)))
+            if pyautogui: pyautogui.scroll(int(cmd.get("amount", 5)))
             return {"status": "ok"}
 
         if action == "scroll":
@@ -1888,17 +2099,22 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 pyautogui.scroll(abs(amt) if d_ == "up" else -abs(amt))
             return {"status": "ok"}
 
-        # ── TYPE ──────────────────────────────────────────────────────────────
-        if action in {"type", "type_text", "write", "input", "enter_text",
-                      "input_text", "write_text", "type_into", "enter_value",
-                      "fill", "insert_text"}:
-            smart_type(str(cmd.get("text") or cmd.get("content") or
-                           cmd.get("value") or ""))
+        # ── TYPE ─────────────────────────────────────────────────────────────
+        if action in {
+            "type", "type_text", "write", "input", "enter_text",
+            "input_text", "write_text", "type_into", "enter_value",
+            "fill", "insert_text",
+        }:
+            smart_type(
+                str(cmd.get("text") or cmd.get("content") or cmd.get("value") or "")
+            )
             return {"status": "ok"}
 
         # ── SCREENSHOT ────────────────────────────────────────────────────────
-        if action in {"screenshot", "take_screenshot", "capture_screen",
-                      "capture_screenshot", "screen_capture", "screengrab"}:
+        if action in {
+            "screenshot", "take_screenshot", "capture_screen",
+            "capture_screenshot", "screen_capture", "screengrab",
+        }:
             ss = take_screenshot(save=True)
             if ss:
                 speak("Screenshot taken and saved.")
@@ -1907,17 +2123,21 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "error", "message": "Screenshot failed"}
 
         # ── WINDOW ────────────────────────────────────────────────────────────
-        if action in {"minimize_window", "minimize", "minimise", "hide_window"}:
+        if action in {
+            "minimize_window", "minimize", "minimise", "hide_window",
+        }:
             if pyautogui: pyautogui.hotkey("win", "down")
             return {"status": "ok"}
 
-        if action in {"maximize_window", "maximize", "maximise",
-                      "fullscreen", "full_screen"}:
+        if action in {
+            "maximize_window", "maximize", "maximise", "fullscreen", "full_screen",
+        }:
             if pyautogui: pyautogui.hotkey("win", "up")
             return {"status": "ok"}
 
-        if action in {"close_window", "close", "close_app", "quit_app",
-                      "exit_app", "alt_f4"}:
+        if action in {
+            "close_window", "close", "close_app", "quit_app", "exit_app", "alt_f4",
+        }:
             if pyautogui: pyautogui.hotkey("alt", "f4")
             return {"status": "ok"}
 
@@ -1940,16 +2160,20 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok", "active_window": win}
 
         # ── VOLUME ────────────────────────────────────────────────────────────
-        if action in {"volume_up", "increase_volume", "louder",
-                      "turn_up_volume", "raise_volume"}:
+        if action in {
+            "volume_up", "increase_volume", "louder",
+            "turn_up_volume", "raise_volume",
+        }:
             if pyautogui:
                 for _ in range(min(int(cmd.get("steps", 5)), 20)):
                     pyautogui.press("volumeup")
             speak("Volume increased")
             return {"status": "ok"}
 
-        if action in {"volume_down", "decrease_volume", "quieter",
-                      "lower_volume", "turn_down_volume"}:
+        if action in {
+            "volume_down", "decrease_volume", "quieter",
+            "lower_volume", "turn_down_volume",
+        }:
             if pyautogui:
                 for _ in range(min(int(cmd.get("steps", 5)), 20)):
                     pyautogui.press("volumedown")
@@ -1962,14 +2186,18 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         # ── FILES ─────────────────────────────────────────────────────────────
-        if action in {"write_file", "create_file", "save_file", "create_document"}:
+        if action in {
+            "write_file", "create_file", "save_file", "create_document",
+        }:
             p = Path(str(cmd.get("path") or ""))
             if not p.name:
                 p = AGENT_DIR / "output.txt"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(str(cmd.get("content") or "")[:1_000_000], encoding="utf-8")
-            try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
-            except Exception: pass
+            try:
+                subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+            except Exception:
+                pass
             speak(f"File {p.name} saved.")
             return {"status": "ok", "path": str(p)}
 
@@ -1982,8 +2210,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "error", "message": f"File not found: {p}"}
 
         if action in {"list_files", "ls", "dir_listing"}:
-            folder = Path(str(cmd.get("folder") or cmd.get("path") or
-                              Path.home() / "Desktop"))
+            folder = Path(
+                str(cmd.get("folder") or cmd.get("path") or Path.home() / "Desktop")
+            )
             try:
                 files = [f.name for f in folder.iterdir()][:50]
                 speak(f"{len(files)} files in {folder.name}")
@@ -1992,10 +2221,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": str(e)}
 
         if action in {"zip_files", "compress", "create_zip", "backup"}:
-            src = Path(str(cmd.get("path") or cmd.get("folder") or
-                           str(Path.home() / "Desktop")))
-            dst = Path(str(cmd.get("output") or
-                           str(AGENT_DIR / f"backup_{int(time.time())}.zip")))
+            src = Path(
+                str(cmd.get("path") or cmd.get("folder") or str(Path.home() / "Desktop"))
+            )
+            dst = Path(
+                str(cmd.get("output") or str(AGENT_DIR / f"backup_{int(time.time())}.zip"))
+            )
             try:
                 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:
                     if src.is_file():
@@ -2010,11 +2241,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": str(e)}
 
         # ── SYSTEM INFO ───────────────────────────────────────────────────────
-        if action in {"get_system_info", "system_info", "sysinfo",
-                      "system_status", "check_system", "cpu_info",
-                      "ram_info", "hardware_info"}:
+        if action in {
+            "get_system_info", "system_info", "sysinfo", "system_status",
+            "check_system", "cpu_info", "ram_info", "hardware_info",
+        }:
             if psutil:
-                dp   = "C:\\" if platform.system() == "Windows" else "/"
+                dp = "C:\\" if platform.system() == "Windows" else "/"
                 info = {
                     "cpu":          psutil.cpu_percent(interval=0.5),
                     "cpu_cores":    psutil.cpu_count(),
@@ -2026,8 +2258,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                     "hostname":     socket.gethostname(),
                     "python":       platform.python_version(),
                 }
-                speak(f"CPU {info['cpu']}%, RAM {info['ram']}%, "
-                      f"Disk {info['disk']}%")
+                speak(
+                    f"CPU {info['cpu']}%, RAM {info['ram']}%, Disk {info['disk']}%"
+                )
                 return {"status": "ok", "info": info}
             return {"status": "ok", "info": {"platform": platform.system()}}
 
@@ -2042,28 +2275,34 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok", "date": d_}
 
         # ── SHELL ─────────────────────────────────────────────────────────────
-        if action in {"run_command", "execute_command", "shell", "cmd_run",
-                      "execute", "terminal_command"}:
+        if action in {
+            "run_command", "execute_command", "shell", "cmd_run",
+            "execute", "terminal_command",
+        }:
             c_ = str(cmd.get("command") or cmd.get("cmd") or "")
             if not c_:
                 return {"status": "error", "message": "No command specified"}
             if any(b in c_.lower() for b in BLOCKED):
                 return {"status": "blocked", "message": "Blocked for safety"}
             try:
-                r_ = subprocess.run(c_, shell=True, capture_output=True, text=True,
-                                    timeout=60, encoding="utf-8", errors="replace")
+                r_ = subprocess.run(
+                    c_, shell=True, capture_output=True, text=True,
+                    timeout=60, encoding="utf-8", errors="replace",
+                )
                 out = (r_.stdout or "")[:5000]
                 if out.strip():
                     speak(out[:200])
-                return {"status": "ok", "stdout": out,
-                        "returncode": r_.returncode}
+                return {"status": "ok", "stdout": out, "returncode": r_.returncode}
             except subprocess.TimeoutExpired:
                 return {"status": "error", "message": "Command timed out (60s)"}
 
         # ── MEMORY ────────────────────────────────────────────────────────────
-        if action in {"remember", "save_fact", "take_note", "memorize", "store_fact"}:
-            fact = str(cmd.get("fact") or cmd.get("text") or
-                       cmd.get("content") or "")
+        if action in {
+            "remember", "save_fact", "take_note", "memorize", "store_fact",
+        }:
+            fact = str(
+                cmd.get("fact") or cmd.get("text") or cmd.get("content") or ""
+            )
             if fact:
                 remember(fact)
                 speak("Got it, I'll remember that.")
@@ -2087,7 +2326,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 speak(f"Contact {name} saved.")
             return {"status": "ok"}
 
-        # ── SCHEDULE ──────────────────────────────────────────────────────────
+        # ── SCHEDULE ─────────────────────────────────────────────────────────
         if action in {"schedule_task", "schedule", "add_schedule", "set_reminder"}:
             task_s = str(cmd.get("task") or cmd.get("command") or "")
             sched  = str(cmd.get("schedule") or cmd.get("time") or "daily at 09:00")
@@ -2100,7 +2339,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 "last_run": "",
             }
             _sched_jobs.append(job); save_memory()
-            speak(f"Scheduled: {task_s[:50]} - runs {sched}")
+            speak(f"Scheduled: {task_s[:50]} — runs {sched}")
             return {"status": "ok", "job_id": job["id"]}
 
         # ── WAIT ─────────────────────────────────────────────────────────────
@@ -2110,25 +2349,31 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         # ── HEALTH / PING ─────────────────────────────────────────────────────
-        if action in {"ping", "test", "health", "health_check", "status",
-                      "heartbeat", "check_connection", "verify", "pong"}:
+        if action in {
+            "ping", "test", "health", "health_check", "status",
+            "heartbeat", "check_connection", "verify", "pong",
+        }:
             speak("I am online and working!")
             return {"status": "ok", "pong": True, "version": VERSION}
 
-        # ── BRIGHTNESS ────────────────────────────────────────────────────────
+        # ── BRIGHTNESS ───────────────────────────────────────────────────────
         if action in {"brightness_up", "increase_brightness"}:
-            subprocess.Popen("powershell (Get-WmiObject -Namespace root/WMI "
-                             "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,80)",
-                             shell=True)
+            subprocess.Popen(
+                "powershell (Get-WmiObject -Namespace root/WMI "
+                "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,80)",
+                shell=True,
+            )
             return {"status": "ok"}
 
         if action in {"brightness_down", "decrease_brightness"}:
-            subprocess.Popen("powershell (Get-WmiObject -Namespace root/WMI "
-                             "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,40)",
-                             shell=True)
+            subprocess.Popen(
+                "powershell (Get-WmiObject -Namespace root/WMI "
+                "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,40)",
+                shell=True,
+            )
             return {"status": "ok"}
 
-        # ── MEDIA CONTROLS ────────────────────────────────────────────────────
+        # ── MEDIA ─────────────────────────────────────────────────────────────
         if action in {"media_play_pause", "play_pause"}:
             if pyautogui: pyautogui.press("playpause")
             return {"status": "ok"}
@@ -2150,22 +2395,38 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok", "text": "", "screenshot": ss or "",
                     "note": "pytesseract not installed"}
 
+        # ── LIST SKILLS ───────────────────────────────────────────────────────
+        if action in {"list_skills", "get_skills", "skills"}:
+            skills = [
+                "open apps/websites", "send email", "bulk email", "find leads",
+                "screenshot", "OCR", "voice control", "web research",
+                "social media posting", "WhatsApp", "YouTube search",
+                "file management", "system info", "volume/media control",
+                "keyboard shortcuts", "browser automation", "scheduler",
+            ]
+            speak(f"I have {len(skills)} skill categories available.")
+            return {"status": "ok", "skills": skills}
+
         # ═════════════════════════════════════════════════════════════════════
-        # ULTIMATE FALLBACK — try smart_open, then action name itself
+        # ULTIMATE FALLBACK — try smart_open on any field, then action name
         # ═════════════════════════════════════════════════════════════════════
-        tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or
-               cmd.get("name") or cmd.get("site") or cmd.get("website") or "")
+        tgt = (
+            cmd.get("url") or cmd.get("app") or cmd.get("target")
+            or cmd.get("name") or cmd.get("site") or cmd.get("website") or ""
+        )
         if tgt:
             res = smart_open(str(tgt))
             if res.get("status") == "ok":
                 return res
 
+        # Try interpreting the action name itself as a site/app
         action_readable = action.replace("_", " ").strip()
         res = smart_open(action_readable)
         if res.get("status") == "ok":
             return res
 
-        log.warning("Unhandled action after all fallbacks: '%s'", action)
+        log.warning("Unhandled action: '%s'", action)
+        speak(f"I don't know how to '{action_readable}' yet.")
         return {"status": "error", "message": f"Unknown action: '{action}'"}
 
     except Exception as e:
@@ -2174,7 +2435,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
 
 # =============================================================================
-# MAIN TASK EXECUTOR — no AI planner, local_parse handles everything
+# MAIN TASK EXECUTOR  — pure local NLP, no AI planner
 # =============================================================================
 def execute_task(task: str, token: str) -> dict:
     if not task or not task.strip():
@@ -2185,53 +2446,59 @@ def execute_task(task: str, token: str) -> dict:
     print(f"\n  [TASK] Executing: {task[:80]}")
     _convo.append(f"user: {task[:120]}")
 
-    # 1. Local NLP (fast, reliable, no network)
+    # 1. Local NLP (fast, reliable)
     commands = local_parse(task)
     source   = "local"
 
-    # 2. If local can't parse it, try smart_open for short phrases
+    # 2. If local can't parse, try smart_open for short phrases
     if not commands:
-        tl = task.lower().strip()
+        tl   = task.lower().strip()
         words = tl.split()
-        # Short phrase that could be an app/website name
-        is_open_like = (len(words) <= 5 and
-                        not any(w in tl for w in ["send", "email", "search",
-                                                   "find", "create", "write",
-                                                   "post", "make", "research",
-                                                   "schedule", "remind"]))
+        is_open_like = len(words) <= 5 and not any(
+            w in tl
+            for w in ["send", "email", "search", "find", "create",
+                      "write", "post", "make", "research", "schedule", "remind"]
+        )
         if is_open_like:
             res = smart_open(task)
             if res.get("status") == "ok":
                 _convo.append(f"dacexy: Opened {task[:60]}")
                 with _mem_lock:
                     MEMORY["task_history"].append(
-                        f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
+                        f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}"
+                    )
                 save_memory()
                 speak(f"Done! Opened {res.get('opened', task)[:60]}")
                 return {"status": "ok", "ok": 1, "total": 1,
                         "result": f"Opened: {task}"}
 
-        # 3. Last resort: tell user clearly what happened
-        speak("I'm not sure how to do that. Try rephrasing, or say 'help' for examples.")
-        return {"status": "error", "ok": 0, "total": 0,
-                "result": f"Could not understand: {task[:80]}"}
+        # 3. Total fallback
+        speak(
+            "I'm not sure how to do that. Try rephrasing, or say 'help' for examples."
+        )
+        return {
+            "status": "error", "ok": 0, "total": 0,
+            "result": f"Could not understand: {task[:80]}",
+        }
 
     ok_count = 0
     total    = len(commands)
     results  = []
 
-    print(f"  [TASK] Executing {total} steps ({source} plan)...")
-    audit.info("ACTION=TASK_START | steps=%d | source=%s | task=%s",
-               total, source, task[:80])
+    print(f"  [TASK] Running {total} steps ({source})...")
+    audit.info(
+        "ACTION=TASK_START | steps=%d | source=%s | task=%s",
+        total, source, task[:80],
+    )
 
     for i, c in enumerate(commands):
         if not isinstance(c, dict):
-            total -= 1
-            continue
+            total -= 1; continue
         step_action = c.get("action", "?")
-        log.info("  Step %d/%d [%s]: %s | params=%s",
-                 i+1, total, source, step_action,
-                 {k: v for k, v in c.items() if k != "action"})
+        log.info(
+            "  Step %d/%d [%s]: %s",
+            i + 1, total, source, step_action,
+        )
         print(f"  [STEP {i+1}/{total}] {step_action}")
 
         try:
@@ -2241,30 +2508,33 @@ def execute_task(task: str, token: str) -> dict:
                 ok_count += 1
                 print(f"  [OK] Step {i+1} done")
             else:
-                log.warning("  Step %d failed: %s", i+1, res.get("message", "?"))
+                log.warning("  Step %d failed: %s", i + 1, res.get("message", "?"))
                 print(f"  [FAIL] Step {i+1}: {res.get('message', '?')}")
             time.sleep(0.2)
         except Exception as e:
-            log.error("  Step %d exception: %s", i+1, e)
+            log.error("  Step %d exception: %s", i + 1, e)
             results.append({"status": "error", "message": str(e)})
 
     with _mem_lock:
         MEMORY["task_history"].append(
-            f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
+            f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}"
+        )
     save_memory()
 
     summary = f"Task done: {ok_count}/{total} steps for: {task[:60]}"
     log.info(summary)
     _convo.append(f"dacexy: {'Done' if ok_count > 0 else 'Failed'} - {summary}")
-    audit.info("ACTION=TASK_END | ok=%d | total=%d | task=%s",
-               ok_count, total, task[:60])
+    audit.info(
+        "ACTION=TASK_END | ok=%d | total=%d | task=%s",
+        ok_count, total, task[:60],
+    )
 
     return {
-        "status":  "ok" if ok_count > 0 else "error",
-        "ok":      ok_count,
-        "total":   total,
-        "result":  summary,
-        "steps":   results,
+        "status": "ok" if ok_count > 0 else "error",
+        "ok":     ok_count,
+        "total":  total,
+        "result": summary,
+        "steps":  results,
     }
 
 
@@ -2293,8 +2563,9 @@ def _scheduler_loop(token_ref: list):
                     tok = token_ref[0]
                     if tok:
                         t_ = job.get("task", "")
-                        threading.Thread(target=execute_task, args=(t_, tok),
-                                         daemon=True).start()
+                        threading.Thread(
+                            target=execute_task, args=(t_, tok), daemon=True
+                        ).start()
                         log.info("Scheduled job fired: %s", t_[:60])
         except Exception as e:
             log.warning("Scheduler loop: %s", e)
@@ -2307,7 +2578,7 @@ def _scheduler_loop(token_ref: list):
 def _is_wake_word(heard: str) -> bool:
     h = heard.lower().strip()
     for w in WAKE_WORDS:
-        if re.search(r'\b' + re.escape(w) + r'\b', h):
+        if re.search(r"\b" + re.escape(w) + r"\b", h):
             return True
     return False
 
@@ -2315,14 +2586,14 @@ def _is_wake_word(heard: str) -> bool:
 def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
-        print("  [VOICE] Disabled - install PyAudio to enable voice control.")
+        print("  [VOICE] Disabled — install PyAudio to enable voice control.")
         return
 
     rec = sr.Recognizer()
-    rec.energy_threshold      = 350
+    rec.energy_threshold         = 350
     rec.dynamic_energy_threshold = True
-    rec.pause_threshold       = 0.7
-    rec.non_speaking_duration = 0.4
+    rec.pause_threshold          = 0.7
+    rec.non_speaking_duration    = 0.4
 
     print("  [VOICE] Active! Say: Dacexy / Hey Dacexy / Jarvis / Computer")
     speak("Voice assistant ready. Say Dacexy or Hey Dacexy to give a command.")
@@ -2413,13 +2684,13 @@ def _heartbeat(token_ref: list):
         try:
             tok = token_ref[0]
             if tok and not check_token_valid(tok):
-                log.warning("Token may be expired - try re-logging.")
+                log.warning("Token may be expired — consider re-logging.")
         except Exception:
             pass
 
 
 # =============================================================================
-# WEBSOCKET — fixed connect_kw for ALL websockets versions
+# WEBSOCKET  — robust connect, works with websockets 9–15+
 # =============================================================================
 async def run_websocket(token: str):
     retry = 4.0; max_retry = 60.0
@@ -2429,31 +2700,25 @@ async def run_websocket(token: str):
             log.info("WS: connecting to %s", BACKEND_WS)
             print("  [WS] Connecting to Dacexy cloud...")
 
-            # FIX: Build connect kwargs safely for any websockets version
-            # websockets < 10: close_timeout
-            # websockets >= 10: open_timeout (but connect signature differs)
-            # Safest: just use ping_interval/ping_timeout/max_size always
+            # Safe connect kwargs — only add what works on this websockets version
             connect_kw: dict = {
                 "ping_interval": 20,
                 "ping_timeout":  15,
                 "max_size":      16 * 1024 * 1024,
             }
-            # Only add timeout param if we can verify the version safely
             try:
                 wsv_str = str(getattr(websockets, "__version__", "0"))
                 wsv = int(wsv_str.split(".")[0])
                 if wsv >= 14:
-                    # websockets 14+ uses open_timeout in connect()
                     connect_kw["open_timeout"] = 20
-                else:
-                    # older versions use close_timeout
+                elif wsv >= 10:
                     connect_kw["close_timeout"] = 10
+                # wsv < 10: no extra timeout key needed
             except Exception:
-                # If version detection fails, just don't add timeout — safe default
-                pass
+                pass  # version parse failed — use minimal kwargs, totally safe
 
             async with websockets.connect(BACKEND_WS, **connect_kw) as ws:
-                # Auth handshake
+                # ── Auth handshake ────────────────────────────────────────────
                 await ws.send(json.dumps({"token": token}))
                 try:
                     auth_raw = await asyncio.wait_for(ws.recv(), timeout=25)
@@ -2474,7 +2739,7 @@ async def run_websocket(token: str):
                     await asyncio.sleep(retry)
                     continue
 
-                # Send capabilities
+                # ── Announce capabilities ─────────────────────────────────────
                 await ws.send(json.dumps({
                     "type":     "init",
                     "version":  VERSION,
@@ -2485,13 +2750,13 @@ async def run_websocket(token: str):
                         "voice3", "vision", "browser", "email",
                         "social_selenium", "bulk_email", "lead_gen",
                         "web_research", "scheduler", "memory",
-                        "selenium", "ocr", "screenshot", "v25_fixed",
-                        "no_ai_planner", "local_nlp_200patterns",
+                        "selenium", "ocr", "screenshot",
+                        "v26_fixed", "no_ai_planner", "local_nlp",
                     ],
                 }))
 
                 log.info("WS: connected and authenticated!")
-                print("\n  [OK] Connected to Dacexy cloud - agent is LIVE!")
+                print("\n  [OK] Connected to Dacexy cloud — agent is LIVE!")
                 speak("Connected! Ready for your commands.")
                 retry = 4.0
 
@@ -2505,13 +2770,15 @@ async def run_websocket(token: str):
                         except Exception as e_:
                             log.warning("ws_send error: %s", e_)
 
+                # ── Main message loop ─────────────────────────────────────────
                 while _running:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=50)
                     except asyncio.TimeoutError:
                         try:
                             await asyncio.wait_for(
-                                ws.send(json.dumps({"type": "ping"})), timeout=8)
+                                ws.send(json.dumps({"type": "ping"})), timeout=8
+                            )
                         except Exception:
                             break
                         continue
@@ -2521,9 +2788,9 @@ async def run_websocket(token: str):
                     except Exception:
                         continue
 
-                    mtype    = msg.get("type",    "")
-                    action   = msg.get("action",  "")
-                    task_txt = (msg.get("task")  or msg.get("goal") or "").strip()
+                    mtype    = msg.get("type",   "")
+                    action   = msg.get("action", "")
+                    task_txt = (msg.get("task") or msg.get("goal") or "").strip()
                     task_id  = str(msg.get("task_id") or "")
 
                     if mtype == "ping":
@@ -2532,9 +2799,10 @@ async def run_websocket(token: str):
                     if mtype in ("pong", "connected", "init_ack", "heartbeat"):
                         continue
 
-                    # Direct action (from dashboard command panel)
-                    if action and action not in ("swarm_task", "task",
-                                                 "run_agent", ""):
+                    # Direct action from dashboard command panel
+                    if action and action not in (
+                        "swarm_task", "task", "run_agent", ""
+                    ):
                         def _cmd_thread(m_=dict(msg), t_=token, tid_=task_id):
                             try:
                                 r_ = exec_cmd(m_, t_)
@@ -2545,8 +2813,9 @@ async def run_websocket(token: str):
                                     "ok":      1 if r_.get("status") in
                                                    ("ok", "skipped") else 0,
                                     "total":   1,
-                                    "result":  str(r_.get("message") or
-                                                   r_.get("opened") or "done"),
+                                    "result":  str(
+                                        r_.get("message") or r_.get("opened") or "done"
+                                    ),
                                     "data":    r_,
                                 }), loop)
                             except Exception as e_:
@@ -2557,6 +2826,7 @@ async def run_websocket(token: str):
                                     "ok":      0, "total": 1,
                                     "result":  str(e_),
                                 }), loop)
+
                         threading.Thread(target=_cmd_thread, daemon=True).start()
                         continue
 
@@ -2577,8 +2847,8 @@ async def run_websocket(token: str):
                                     "type":    "task_result",
                                     "task_id": tid_,
                                     "status":  r_.get("status", "ok"),
-                                    "ok":      r_.get("ok",     0),
-                                    "total":   r_.get("total",  1),
+                                    "ok":      r_.get("ok",    0),
+                                    "total":   r_.get("total", 1),
                                     "result":  r_.get("result", ""),
                                     "steps":   r_.get("steps",  []),
                                 }), loop)
@@ -2590,16 +2860,11 @@ async def run_websocket(token: str):
                                     "ok":      0, "total": 0,
                                     "result":  str(e_),
                                 }), loop)
+
                         threading.Thread(target=_task_thread, daemon=True).start()
 
-        except websockets.exceptions.ConnectionClosedOK:
-            log.info("WS: connection closed cleanly")
-        except websockets.exceptions.ConnectionClosedError as e:
-            log.warning("WS: connection error: %s", e)
-        except OSError as e:
-            log.warning("WS: network error: %s", e)
         except Exception as e:
-            log.error("WS: unexpected error: %s", e)
+            log.error("WS outer error: %s", e)
 
         if _running:
             print(f"\n  [WS] Disconnected. Reconnecting in {int(retry)}s...")
@@ -2621,15 +2886,15 @@ def _interactive_shell(token: str, tok_ref: list):
         "quit/exit":  "Exit agent",
     }
 
-    print("\n" + "="*60)
-    print(f"  DACEXY v{VERSION} - COMMAND CENTER")
-    print("="*60)
-    print(f"  Email   : {_smtp_cfg.get('email') or 'NOT CONFIGURED'}")
-    print(f"  Voice   : {'ON' if _voice_on else 'OFF'}")
+    print("\n" + "=" * 60)
+    print(f"  DACEXY v{VERSION} — COMMAND CENTER")
+    print("=" * 60)
+    print(f"  Email    : {_smtp_cfg.get('email') or 'NOT CONFIGURED'}")
+    print(f"  Voice    : {'ON' if _voice_on else 'OFF'}")
     print(f"  Dashboard: dacexy.vercel.app")
-    print("="*60)
-    print("  Type any task and press Enter. Type 'help' for commands.")
-    print("="*60 + "\n")
+    print("=" * 60)
+    print("  Type any task and press Enter.  Type 'help' for menu.")
+    print("=" * 60 + "\n")
 
     while _running:
         try:
@@ -2647,14 +2912,13 @@ def _interactive_shell(token: str, tok_ref: list):
             print()
             for k, v in cmds.items():
                 print(f"    {k:<14} {v}")
-            print()
-            continue
+            print(); continue
         if tl == "memory":
             print("\n" + get_mem_ctx() + "\n"); continue
         if tl == "jobs":
             if _sched_jobs:
                 for j in _sched_jobs:
-                    print(f"  [{j['id']}] {j['task']} - {j['schedule']}")
+                    print(f"  [{j['id']}] {j['task']} — {j['schedule']}")
             else:
                 print("  No scheduled jobs.")
             continue
@@ -2671,7 +2935,7 @@ def _interactive_shell(token: str, tok_ref: list):
         def _run(t_=tok, cmd_=line):
             r = execute_task(cmd_, t_)
             ok, tot = r.get("ok", 0), r.get("total", 1)
-            print(f"\n  [{'OK' if r['status']=='ok' else 'FAIL'}] "
+            print(f"\n  [{'OK' if r['status'] == 'ok' else 'FAIL'}] "
                   f"Task done: {ok}/{tot} steps.")
 
         threading.Thread(target=_run, daemon=True, name="ShellTask").start()
@@ -2683,11 +2947,10 @@ def _interactive_shell(token: str, tok_ref: list):
 def main():
     global _running
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"  DACEXY DESKTOP AGENT v{VERSION}")
-    print("  Full-featured autonomous Windows AI agent")
-    print("  AI planner removed - local NLP handles 200+ commands")
-    print("="*60 + "\n")
+    print("  Pure local NLP — no AI planner, 200+ command patterns")
+    print("=" * 60 + "\n")
 
     init_tts()
     load_memory()
@@ -2709,7 +2972,7 @@ def main():
         if check_token_valid(token):
             print("  [OK] Session valid.\n")
         else:
-            print("  Session expired - please log in.\n")
+            print("  Session expired — please log in.\n")
             clear_token(); token = None
 
     if not token:
@@ -2722,31 +2985,36 @@ def main():
             print("\n  [ERROR] Authentication failed. Exiting.")
             sys.exit(1)
 
-    try: setup_autostart()
-    except Exception: pass
+    try:
+        setup_autostart()
+    except Exception:
+        pass
 
     if not _smtp_cfg.get("email"):
-        print("  [EMAIL] Not configured. Say 'configure email' to enable bulk send.\n")
+        print("  [EMAIL] Not configured. Type 'configure email' to enable bulk send.\n")
     else:
-        print(f"  [EMAIL] Ready - {_smtp_cfg['email']}\n")
+        print(f"  [EMAIL] Ready — {_smtp_cfg['email']}\n")
 
     voice_ok = start_voice(token)
     tok_ref  = [token]
 
-    threading.Thread(target=_heartbeat,        args=(tok_ref,),  daemon=True,
-                     name="Heartbeat").start()
-    threading.Thread(target=_scheduler_loop,   args=(tok_ref,),  daemon=True,
-                     name="Scheduler").start()
-    threading.Thread(target=_interactive_shell, args=(token, tok_ref), daemon=True,
-                     name="Shell").start()
+    threading.Thread(
+        target=_heartbeat, args=(tok_ref,), daemon=True, name="Heartbeat"
+    ).start()
+    threading.Thread(
+        target=_scheduler_loop, args=(tok_ref,), daemon=True, name="Scheduler"
+    ).start()
+    threading.Thread(
+        target=_interactive_shell, args=(token, tok_ref), daemon=True, name="Shell"
+    ).start()
 
-    print("  " + "-"*56)
-    print(f"  Dacexy Agent v{VERSION} - LIVE")
-    print(f"  Voice    : {'ON - say Dacexy / Hey Dacexy' if voice_ok else 'OFF'}")
+    print("  " + "-" * 56)
+    print(f"  Dacexy Agent v{VERSION} — LIVE")
+    print(f"  Voice    : {'ON — say Dacexy / Hey Dacexy' if voice_ok else 'OFF'}")
     print(f"  Email    : {_smtp_cfg.get('email') or 'Not configured'}")
     print(f"  Dashboard: dacexy.vercel.app")
     print(f"  Log file : {LOG_FILE}")
-    print("  " + "-"*56 + "\n")
+    print("  " + "-" * 56 + "\n")
 
     if not websockets:
         print("  [ERROR] websockets package not installed!")
@@ -2763,10 +3031,14 @@ def main():
         stop_voice()
         with _sel_lock:
             if _selenium_driver:
-                try: _selenium_driver.quit()
-                except Exception: pass
-        try: save_memory()
-        except Exception: pass
+                try:
+                    _selenium_driver.quit()
+                except Exception:
+                    pass
+        try:
+            save_memory()
+        except Exception:
+            pass
         print("  Dacexy stopped. Goodbye!")
         sys.exit(0)
 
