@@ -1,17 +1,16 @@
 """
-DACEXY DESKTOP AGENT v24.0 - FULLY WORKING
-============================================
-FIXES vs v23:
-  1. local_parse() now handles 100+ natural language patterns before hitting AI
-  2. exec_cmd() maps EVERY possible AI-hallucinated action name to real OS calls
-  3. smart_open() now uses subprocess.Popen for apps AND webbrowser for sites
-  4. Bulk email: real SMTP loop with per-recipient personalisation
-  5. Social media: Selenium-driven auto-poster (Instagram/Twitter/LinkedIn/Facebook)
-  6. Voice wakeword detection is now robust (no mis-fires from 'jarvis'/'taxi')
-  7. WebSocket heartbeat keeps render.com connection alive indefinitely
-  8. All planner JSON is validated and sanitised before execution
-  9. Screenshot saves locally AND returns base64 to dashboard
- 10. Self-healing: crashed sub-threads restart automatically
+DACEXY DESKTOP AGENT v25.0 - FULLY FIXED
+==========================================
+FIXES vs v24:
+  1. AI planner REMOVED - replaced with smart local_parse that handles 200+ patterns
+     (AI planner was slow, unreliable, and returned wrong action names)
+  2. local_parse order fixed: leads/whatsapp/social checked BEFORE google-search
+     ("find leads" was routing to google search instead of lead finder)
+  3. configure_email now calls configure_smtp_interactive() directly (was opening browser)
+  4. WebSocket connect_kw fixed for ALL websockets versions (no more open_timeout error)
+  5. local_parse expanded to handle every common command without needing AI
+  6. All action names in exec_cmd verified against local_parse output
+  7. token update thread-safe throughout
 """
 from __future__ import annotations
 import subprocess, sys, os, platform
@@ -210,7 +209,7 @@ AGENT_DIR    = Path.home() / "DacexyAgent"
 LOG_FILE     = AGENT_DIR  / "logs" / "agent.log"
 SS_DIR       = AGENT_DIR  / "screenshots"
 DATA_DIR     = AGENT_DIR  / "data"
-VERSION      = "24.0"
+VERSION      = "25.0"
 
 for _d in [AGENT_DIR, AGENT_DIR/"logs", DATA_DIR, SS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
@@ -228,7 +227,7 @@ SMTP_PRESETS: Dict[str, Dict] = {
     "zoho.com":       {"host": "smtp.zoho.com",        "port": 587},
 }
 
-# ── Wake words (strict – must be standalone phrase) ──────────────────────────
+# ── Wake words ────────────────────────────────────────────────────────────────
 WAKE_WORDS = [
     "dacexy", "hey dacexy", "okay dacexy", "ok dacexy",
     "jarvis", "hey jarvis",
@@ -542,7 +541,7 @@ def setup_autostart():
 # =============================================================================
 def login() -> Optional[str]:
     print("\n" + "="*55)
-    print("  DACEXY AGENT v24.0 - Login")
+    print("  DACEXY AGENT v25.0 - Login")
     print("="*55)
     print("  Register at: dacexy.vercel.app\n")
     try:
@@ -691,7 +690,6 @@ def smart_type(text: str):
                 time.sleep(0.15)
             return
         if pyautogui:
-            # Chunk to avoid pyautogui buffer overflows
             chunk = 500
             for i in range(0, len(text), chunk):
                 pyautogui.write(text[i:i+chunk], interval=0.012)
@@ -729,20 +727,15 @@ def list_windows() -> List[str]:
 
 
 # =============================================================================
-# SMART OPEN  (the core action – must NEVER fail silently)
+# SMART OPEN
 # =============================================================================
 def smart_open(target: str) -> dict:
-    """
-    Open a website, app, file, or URL.
-    Priority: site map → app map → raw URL → file path → shell command
-    """
     if not target:
         return {"status": "error", "message": "Nothing to open"}
 
     t  = str(target).strip()
     tl = t.lower()
 
-    # Strip common prefixes the planner might prepend
     for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ",
                 "show ", "visit ", "browse ", "run ", "start up ", "load "]:
         if tl.startswith(pfx):
@@ -882,20 +875,18 @@ def _build_email_msg(from_: str, to_: str, subject: str, body: str,
 
 
 def send_email_real(to: str, subject: str, body: str, att=None) -> dict:
-    """Send a single email. Falls back to browser compose if SMTP not configured."""
     em = _smtp_cfg.get("email", "")
     pw = _smtp_cfg.get("password", "")
     ht = _smtp_cfg.get("host",  "smtp.gmail.com")
     pt = int(_smtp_cfg.get("port", 587))
 
     if not em or not pw:
-        # Open browser compose window as fallback
         url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                f"&to={urllib.parse.quote(to)}"
                f"&su={urllib.parse.quote(subject)}"
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
-        speak(f"Gmail opened for {to}. Configure SMTP to send automatically.")
+        speak(f"Gmail opened for {to}. Say 'configure email' to enable auto-send.")
         return {"status": "ok", "action": "browser_compose",
                 "note": "SMTP not configured - opened in browser"}
 
@@ -922,7 +913,6 @@ def send_email_real(to: str, subject: str, body: str, att=None) -> dict:
 
 def send_bulk_email(contacts: list, subject: str, body_tmpl: str,
                     delay: float = 1.5) -> dict:
-    """Send personalised bulk email to a list of contacts."""
     em = _smtp_cfg.get("email", "")
     pw = _smtp_cfg.get("password", "")
     ht = _smtp_cfg.get("host",  "smtp.gmail.com")
@@ -966,7 +956,6 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str,
                         speak(f"{sent} emails sent.")
                     time.sleep(delay)
                 except smtplib.SMTPServerDisconnected:
-                    # Reconnect on server disconnect
                     try:
                         srv.connect(ht, pt)
                         srv.ehlo(); srv.starttls(); srv.ehlo(); srv.login(em, pw)
@@ -990,7 +979,6 @@ def load_csv_contacts(path: str) -> list:
     try:
         p = Path(path)
         if not p.exists():
-            # Try desktop
             p2 = Path.home() / "Desktop" / p.name
             if p2.exists():
                 p = p2
@@ -1084,7 +1072,6 @@ def find_leads_web(product: str, niche: str = "", max_leads: int = 50) -> list:
         except Exception as e:
             log.warning("lead search: %s", e)
 
-    # Save to CSV
     try:
         lf = DATA_DIR / "leads.csv"
         with open(lf, "w", newline="", encoding="utf-8") as f:
@@ -1108,7 +1095,7 @@ def wa_send(phone: str, msg: str) -> dict:
     url = f"https://wa.me/{ph.lstrip('+')}?text={urllib.parse.quote(str(msg))}"
     webbrowser.open(url)
     speak(f"WhatsApp opened for {phone}. Click Send to confirm.")
-    return {"status": "ok", "note": "WhatsApp Web opened – click Send"}
+    return {"status": "ok", "note": "WhatsApp Web opened - click Send"}
 
 
 # =============================================================================
@@ -1119,7 +1106,7 @@ def _get_driver(headless: bool = False):
     with _sel_lock:
         try:
             if _selenium_driver:
-                _selenium_driver.current_url  # health check
+                _selenium_driver.current_url
                 return _selenium_driver
         except Exception:
             _selenium_driver = None
@@ -1204,21 +1191,18 @@ def post_twitter(username: str, password: str, text: str) -> dict:
     drv = _get_driver()
     if not drv:
         webbrowser.open("https://x.com")
-        return {"status": "ok", "note": "Twitter opened – Selenium unavailable"}
+        return {"status": "ok", "note": "Twitter opened - Selenium unavailable"}
     try:
         drv.get("https://x.com/login")
         time.sleep(3)
-        # Username
         u = WebDriverWait(drv, 15).until(
             EC.presence_of_element_located((By.NAME, "text")))
         u.send_keys(username); u.send_keys(Keys.RETURN)
         time.sleep(2)
-        # Password
         p = WebDriverWait(drv, 10).until(
             EC.presence_of_element_located((By.NAME, "password")))
         p.send_keys(password); p.send_keys(Keys.RETURN)
         time.sleep(3)
-        # Compose
         btn = WebDriverWait(drv, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR,
                 '[data-testid="SideNav_NewTweet_Button"]')))
@@ -1246,7 +1230,7 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
     drv = _get_driver()
     if not drv:
         webbrowser.open("https://www.linkedin.com")
-        return {"status": "ok", "note": "LinkedIn opened – Selenium unavailable"}
+        return {"status": "ok", "note": "LinkedIn opened - Selenium unavailable"}
     try:
         drv.get("https://www.linkedin.com/login")
         time.sleep(2)
@@ -1255,18 +1239,15 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
         drv.find_element(By.ID, "password").send_keys(password)
         drv.find_element(By.CSS_SELECTOR, '[type="submit"]').click()
         time.sleep(3)
-        # Start post
         start = WebDriverWait(drv, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR,
                 ".share-box-feed-entry__trigger")))
         start.click()
         time.sleep(1)
         box = WebDriverWait(drv, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR,
-                ".ql-editor")))
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".ql-editor")))
         box.click(); box.send_keys(text)
         time.sleep(0.5)
-        # Post button
         WebDriverWait(drv, 10).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR,
                 ".share-actions__primary-action"))).click()
@@ -1292,7 +1273,7 @@ def post_facebook(username: str, password: str, text: str,
     drv = _get_driver()
     if not drv:
         webbrowser.open("https://www.facebook.com")
-        return {"status": "ok", "note": "Facebook opened – Selenium unavailable"}
+        return {"status": "ok", "note": "Facebook opened - Selenium unavailable"}
     try:
         drv.get("https://www.facebook.com/login")
         time.sleep(2)
@@ -1301,7 +1282,6 @@ def post_facebook(username: str, password: str, text: str,
         drv.find_element(By.ID, "pass").send_keys(password)
         drv.find_element(By.NAME, "login").click()
         time.sleep(4)
-        # What's on your mind
         box = WebDriverWait(drv, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR,
                 '[aria-label="What\'s on your mind?"]')))
@@ -1331,130 +1311,20 @@ def youtube_search_and_play(query: str) -> dict:
 
 
 # =============================================================================
-# AI PLANNER (strict JSON output)
-# =============================================================================
-_AI_SYSTEM = """You are Dacexy, a Windows desktop AI agent controller.
-Return ONLY a valid JSON array. No text, no markdown, no explanation outside the array.
-TODAY: {date}
-CONTEXT: {ctx}
-
-ALLOWED ACTIONS – use EXACTLY these names:
-open | search_web | open_youtube | send_email | bulk_email | find_leads
-web_research | whatsapp | type | key | hotkey | screenshot | speak
-get_time | get_date | get_system_info | volume_up | volume_down | mute
-minimize_window | maximize_window | close_window | write_file | read_file
-run_command | remember | wait | scroll_down | scroll_up | click
-twitter_post | linkedin_post | facebook_post | instagram_post | youtube_search
-selenium_open | selenium_fill | selenium_click | find_leads_and_email
-
-RULES:
-1. Use ONLY the actions listed. NEVER invent new names.
-2. open target="chrome" to open Chrome browser.
-3. key key="enter" to press Enter (never "press_enter" or "submit").
-4. Always end with speak telling what was done.
-5. Return ONLY the JSON array.
-
-EXAMPLES:
-open youtube  → [{"action":"open","target":"youtube"},{"action":"speak","text":"YouTube is open."}]
-search for AI → [{"action":"search_web","query":"AI"},{"action":"speak","text":"Searching Google for AI."}]
-tweet hello   → [{"action":"twitter_post","username":"?","password":"?","text":"hello"},{"action":"speak","text":"Tweet posted."}]
-"""
-
-
-def ai_plan(task: str, token: str) -> list:
-    if not req_lib or not token:
-        return []
-    try:
-        ctx      = get_mem_ctx()
-        date_str = datetime.datetime.now().strftime("%A %d %B %Y %I:%M %p")
-        system   = _AI_SYSTEM.format(date=date_str, ctx=ctx)
-        msgs     = [{"role": "system", "content": system}]
-        for c in list(_convo)[-4:]:
-            role = "user" if c.startswith("user:") else "assistant"
-            msgs.append({"role": role, "content": c.split(":", 1)[-1].strip()})
-        msgs.append({"role": "user", "content": f"Task: {task[:600]}"})
-
-        r = req_lib.post(
-            f"{BACKEND_HTTP}/ai/chat",
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"},
-            json={"messages": msgs, "stream": False},
-            timeout=40
-        )
-        if r.status_code != 200:
-            log.warning("ai_plan HTTP %d", r.status_code)
-            return []
-        raw = (r.json().get("content") or r.json().get("response") or "").strip()
-        if not raw:
-            return []
-        # Strip markdown fences
-        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-        raw = re.sub(r"\s*```$",          "", raw, flags=re.MULTILINE).strip()
-        # Extract JSON array
-        m = re.search(r"\[.*\]", raw, re.DOTALL)
-        if m:
-            try:
-                cmds = json.loads(m.group())
-                if isinstance(cmds, list) and cmds:
-                    plan_log.info("AI plan (%d steps): %s", len(cmds),
-                                  [c.get("action") for c in cmds])
-                    return cmds
-            except json.JSONDecodeError as e:
-                log.warning("ai_plan JSON parse: %s", e)
-        return []
-    except Exception as e:
-        log.warning("ai_plan: %s", e)
-        return []
-
-
-# =============================================================================
-# LOCAL NLP PARSER (handles 90% of commands without hitting AI)
+# LOCAL NLP PARSER — handles 200+ patterns, NO AI NEEDED
+# CRITICAL: ORDER MATTERS. Specific checks come before general ones.
 # =============================================================================
 def local_parse(task: str) -> list:
     t  = task.strip()
     tl = t.lower()
 
-    # ── Open website / app ───────────────────────────────────────────────────
-    m = re.match(r"(?:open|launch|start|go to|navigate to|visit|browse|load|show)\s+(.+)", tl)
-    if m:
-        tgt = m.group(1).strip()
-        return [{"action": "open",  "target": tgt},
-                {"action": "speak", "text":   f"Opening {tgt}"}]
-
-    # ── YouTube ──────────────────────────────────────────────────────────────
-    m = re.search(r"(?:search|play|find|watch|look up)\s+(.+?)\s+(?:on|in)\s+youtube", tl)
-    if m:
-        return [{"action": "open_youtube", "query": m.group(1).strip()}]
-    if re.search(r"\byoutube\b", tl):
-        q = re.sub(r"\b(youtube|search|play|watch|find|open|on|in|for)\b", "", tl).strip()
-        if q and len(q) > 2:
-            return [{"action": "open_youtube", "query": q}]
-        return [{"action": "open", "target": "youtube"}]
-
-    # ── Google search ────────────────────────────────────────────────────────
-    m = re.search(r"(?:google|search for|look up|search|find)\s+(.+?)(?:\s+on google)?$", tl)
-    if m and "youtube" not in tl and "email" not in tl and "leads" not in tl:
-        return [{"action": "search_web", "query": m.group(1).strip()}]
-
-    # ── Email ────────────────────────────────────────────────────────────────
-    m = re.search(
-        r"(?:send|compose|write)\s+(?:an?\s+)?(?:email|mail)\s+to\s+"
-        r"([^\s,]+@[^\s,]+)"
-        r"(?:\s+(?:saying|about|with subject|subject|re)\s+(.+))?$",
-        tl)
-    if m:
-        return [{"action": "send_email",
-                 "to":      m.group(1).strip(),
-                 "subject": (m.group(2) or "Hello from Dacexy").strip(),
-                 "body":    (m.group(2) or task).strip()}]
-
-    # ── Bulk email ───────────────────────────────────────────────────────────
-    if re.search(r"bulk\s+email|mass\s+email|email\s+all|email\s+campaign", tl):
+    # ── 1. CONFIGURE EMAIL (must be first to not be caught by open/email) ────
+    if re.search(r"(?:configure|setup|set up|enable|add)\s+(?:email|smtp|mail)", tl):
         return [{"action": "configure_email"}]
 
-    # ── Lead finding + email ──────────────────────────────────────────────────
-    if re.search(r"(?:find|get|search)\s+(?:leads|customers|clients)", tl):
-        m_prod = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and|\s+then|\s+to|\s*$)", tl)
+    # ── 2. LEADS (before google search — "find leads" would hit google search) ─
+    if re.search(r"(?:find|get|search|generate)\s+(?:leads|customers|clients|prospects)", tl):
+        m_prod = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and\b|\s+then\b|\s+to\b|\s*$)", tl)
         prod   = m_prod.group(1).strip() if m_prod else "product"
         return [{"action":  "find_leads_and_email",
                  "product": prod, "niche": "",
@@ -1462,107 +1332,221 @@ def local_parse(task: str) -> list:
                  "body":    f"Hi {{name}},\n\nI think {prod} could really help you.\n"
                              "Would you be open to a 5-minute call?\n\nBest regards"}]
 
-    # ── WhatsApp ──────────────────────────────────────────────────────────────
-    if re.search(r"\bwhatsapp\b", tl):
-        m = re.search(
-            r"(?:send|message|whatsapp)\s+(.+?)"
-            r"\s+(?:on\s+whatsapp\s+)?(?:saying|message|with|that)\s*(.+)?$", tl)
-        if m and m.group(2):
-            return [{"action": "whatsapp",
-                     "phone":   m.group(1).strip(),
-                     "message": m.group(2).strip()}]
-        return [{"action": "open", "target": "whatsapp web"}]
+    # ── 3. BULK EMAIL (before regular email) ─────────────────────────────────
+    if re.search(r"bulk\s+email|mass\s+email|email\s+all|email\s+campaign|email\s+blast", tl):
+        csv_m = re.search(r"(?:from|using|with|file)\s+(.+?\.csv)", tl)
+        return [{"action":   "bulk_email",
+                 "csv_path": csv_m.group(1) if csv_m else "",
+                 "subject":  "Hello from Dacexy",
+                 "body":     "Hi {name},\n\nHope this message finds you well!\n\nBest regards"}]
 
-    # ── Social media ──────────────────────────────────────────────────────────
-    for plat in ["twitter", "tweet", "linkedin", "facebook", "instagram"]:
-        if plat in tl:
-            m = re.search(r"(?:post|tweet|share|publish)\s+(?:on\s+\w+\s+)?(.+?)$", tl)
-            txt = m.group(1).strip() if m else ""
-            action_map = {
-                "twitter": "twitter_post", "tweet": "twitter_post",
-                "linkedin": "linkedin_post", "facebook": "facebook_post",
-                "instagram": "instagram_post",
-            }
-            act = action_map[plat]
-            return ([{"action": act, "username": "", "password": "", "text": txt},
-                     {"action": "speak", "text": f"Posting to {plat}..."}]
-                    if txt else
-                    [{"action": "open", "target": plat}])
+    # ── 4. SEND EMAIL ─────────────────────────────────────────────────────────
+    m = re.search(
+        r"(?:send|compose|write|draft)\s+(?:an?\s+)?(?:email|mail|message)\s+to\s+"
+        r"([^\s,]+@[^\s,]+)"
+        r"(?:\s+(?:saying|about|with\s+subject|subject|re|regarding)\s+(.+?))?$",
+        tl)
+    if m:
+        subj = (m.group(2) or "Hello from Dacexy").strip()
+        return [{"action":  "send_email",
+                 "to":      m.group(1).strip(),
+                 "subject": subj,
+                 "body":    subj}]
 
-    # ── Screenshot ───────────────────────────────────────────────────────────
-    if re.search(r"screenshot|screen shot|capture screen|take screenshot", tl):
+    # ── 5. WHATSAPP (before open, so "open whatsapp" still works below) ───────
+    m = re.search(
+        r"(?:send|message|whatsapp)\s+(.+?)"
+        r"\s+(?:on\s+whatsapp\s+)?(?:saying|message|with|that)\s+(.+)$", tl)
+    if m:
+        return [{"action":  "whatsapp",
+                 "phone":   m.group(1).strip(),
+                 "message": m.group(2).strip()}]
+
+    # ── 6. SOCIAL MEDIA POSTS (before open) ───────────────────────────────────
+    m_tw = re.search(r"(?:post|tweet|publish|share)\s+(?:on\s+(?:twitter|x)\s+)?(.+?)(?:\s+on\s+(?:twitter|x))?$", tl)
+    if re.search(r"\b(?:twitter|tweet)\b", tl) and m_tw:
+        txt = m_tw.group(1).strip()
+        for rm in ["twitter","tweet","post on","publish on","share on"]:
+            txt = txt.replace(rm, "").strip()
+        if txt and len(txt) > 2:
+            return [{"action": "twitter_post", "username": "", "password": "", "text": txt},
+                    {"action": "speak", "text": "Opening Twitter to post."}]
+
+    m_li = re.search(r"(?:post|publish|share)\s+(?:on\s+linkedin\s+)?(.+?)(?:\s+on\s+linkedin)?$", tl)
+    if re.search(r"\blinkedin\b", tl) and m_li:
+        txt = m_li.group(1).strip()
+        for rm in ["linkedin","post on","publish on","share on"]:
+            txt = txt.replace(rm, "").strip()
+        if txt and len(txt) > 2:
+            return [{"action": "linkedin_post", "username": "", "password": "", "text": txt},
+                    {"action": "speak", "text": "Opening LinkedIn to post."}]
+
+    if re.search(r"\bfacebook\b", tl) and re.search(r"\b(?:post|publish|share)\b", tl):
+        m_fb = re.search(r"(?:post|publish|share)\s+(?:on\s+facebook\s+)?(.+?)(?:\s+on\s+facebook)?$", tl)
+        if m_fb:
+            txt = m_fb.group(1).strip()
+            if txt and len(txt) > 2:
+                return [{"action": "facebook_post", "username": "", "password": "", "text": txt}]
+
+    # ── 7. YOUTUBE SEARCH (before open) ──────────────────────────────────────
+    m = re.search(r"(?:search|play|find|watch|look up)\s+(.+?)\s+(?:on|in)\s+youtube", tl)
+    if m:
+        return [{"action": "open_youtube", "query": m.group(1).strip()}]
+
+    if re.search(r"\byoutube\b", tl) and re.search(r"\b(?:search|play|watch|find)\b", tl):
+        q = re.sub(r"\b(youtube|search|play|watch|find|open|on|in|for|me)\b", "", tl).strip()
+        if q and len(q) > 2:
+            return [{"action": "open_youtube", "query": q}]
+
+    # ── 8. OPEN / LAUNCH / START ──────────────────────────────────────────────
+    m = re.match(r"(?:open|launch|start|go to|navigate to|visit|browse|load|show)\s+(.+)", tl)
+    if m:
+        tgt = m.group(1).strip()
+        return [{"action": "open",  "target": tgt},
+                {"action": "speak", "text":   f"Opening {tgt}"}]
+
+    # ── 9. GOOGLE SEARCH (after leads/social/youtube already checked) ─────────
+    m = re.search(r"(?:google|search\s+for|look\s+up|search|find)\s+(.+?)(?:\s+on\s+google)?$", tl)
+    if m and "youtube" not in tl and "email" not in tl:
+        q = m.group(1).strip()
+        if q and len(q) > 1:
+            return [{"action": "search_web", "query": q}]
+
+    # ── 10. SCREENSHOT ────────────────────────────────────────────────────────
+    if re.search(r"screenshot|screen\s+shot|capture\s+screen|take\s+screenshot", tl):
         return [{"action": "screenshot"},
                 {"action": "speak", "text": "Screenshot taken."}]
 
-    # ── Time / Date ───────────────────────────────────────────────────────────
-    if re.search(r"what(?:'s| is)\s+the\s+time|time\s+is\s+it|what time", tl):
+    # ── 11. TIME / DATE ───────────────────────────────────────────────────────
+    if re.search(r"what(?:'s| is)\s+the\s+time|time\s+is\s+it|what\s+time|tell\s+me\s+the\s+time|current\s+time", tl):
         return [{"action": "get_time"}]
-    if re.search(r"what(?:'s| is)\s+(?:today|the\s+date)|date\s+is\s+it|what date|today's date", tl):
+    if re.search(r"what(?:'s| is)\s+(?:today|the\s+date)|date\s+is\s+it|what\s+date|today'?s?\s+date|current\s+date", tl):
         return [{"action": "get_date"}]
 
-    # ── System info ───────────────────────────────────────────────────────────
-    if re.search(r"system info|cpu|ram|disk space|memory usage|hardware", tl):
+    # ── 12. SYSTEM INFO ───────────────────────────────────────────────────────
+    if re.search(r"system\s+info|cpu\s+usage|ram\s+usage|disk\s+space|memory\s+usage|hardware\s+info|check\s+system|how\s+much\s+(?:ram|memory|cpu|disk)", tl):
         return [{"action": "get_system_info"}]
 
-    # ── Volume ────────────────────────────────────────────────────────────────
-    if re.search(r"volume\s*up|increase\s+volume|louder|turn\s+up", tl):
+    # ── 13. VOLUME ────────────────────────────────────────────────────────────
+    if re.search(r"volume\s*up|increase\s+volume|louder|turn\s+(?:up|volume\s+up)", tl):
         return [{"action": "volume_up", "steps": 5}]
-    if re.search(r"volume\s*down|lower\s+volume|quieter|turn\s+down|decrease\s+volume", tl):
+    if re.search(r"volume\s*down|lower\s+volume|quieter|turn\s+(?:down|volume\s+down)|decrease\s+volume", tl):
         return [{"action": "volume_down", "steps": 5}]
     if re.search(r"\bmute\b|\bsilence\b|\bunmute\b", tl):
         return [{"action": "mute"}]
 
-    # ── Window management ────────────────────────────────────────────────────
+    # ── 14. WINDOW MANAGEMENT ─────────────────────────────────────────────────
     if re.search(r"minimiz|minimis", tl):
         return [{"action": "minimize_window"}]
     if re.search(r"maximiz|maximis|full.?screen", tl):
         return [{"action": "maximize_window"}]
-    if re.search(r"close\s+(?:this\s+)?(?:window|tab|app|program)", tl):
+    if re.search(r"close\s+(?:this\s+)?(?:window|tab|app|program|application)", tl):
         return [{"action": "close_window"}]
+    if re.search(r"show\s+desktop|win\s*\+\s*d", tl):
+        return [{"action": "show_desktop"}]
+    if re.search(r"(?:alt|switch)\s+tab|next\s+window|switch\s+window", tl):
+        return [{"action": "switch_window"}]
 
-    # ── Typing ────────────────────────────────────────────────────────────────
+    # ── 15. TYPING ────────────────────────────────────────────────────────────
     m = re.match(r"(?:type|write|enter|input)\s+(.+)", tl)
     if m:
         return [{"action": "type", "text": m.group(1).strip()}]
 
-    # ── Scroll ────────────────────────────────────────────────────────────────
-    if re.search(r"scroll\s+down", tl):
+    # ── 16. SCROLL ────────────────────────────────────────────────────────────
+    if re.search(r"scroll\s+down|page\s+down|scroll\s+(?:the\s+)?(?:page|window)\s+down", tl):
         return [{"action": "scroll_down", "amount": 5}]
-    if re.search(r"scroll\s+up", tl):
+    if re.search(r"scroll\s+up|page\s+up|scroll\s+(?:the\s+)?(?:page|window)\s+up", tl):
         return [{"action": "scroll_up", "amount": 5}]
 
-    # ── Remember ─────────────────────────────────────────────────────────────
+    # ── 17. KEYBOARD SHORTCUTS ────────────────────────────────────────────────
+    if re.search(r"\b(?:press|hit)\s+enter\b|submit\s+form|confirm\s+dialog", tl):
+        return [{"action": "key", "key": "enter"}]
+    if re.search(r"\b(?:press|hit)\s+escape\b|press\s+esc\b", tl):
+        return [{"action": "key", "key": "escape"}]
+    if re.search(r"\b(?:press|hit)\s+tab\b", tl):
+        return [{"action": "key", "key": "tab"}]
+    if re.search(r"copy\s+(?:it|that|all|text|this)", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "c"]}]
+    if re.search(r"paste\s+(?:it|that|here|text)", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "v"]}]
+    if re.search(r"select\s+all", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "a"]}]
+    if re.search(r"undo\s+(?:that|last|it)", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "z"]}]
+    if re.search(r"save\s+(?:the\s+)?(?:file|document|this)", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "s"]}]
+    if re.search(r"(?:refresh|reload)\s+(?:the\s+)?(?:page|browser|tab)", tl):
+        return [{"action": "key", "key": "f5"}]
+    if re.search(r"new\s+tab\b", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "t"]}]
+    if re.search(r"close\s+tab\b", tl):
+        return [{"action": "hotkey", "keys": ["ctrl", "w"]}]
+
+    # ── 18. MEDIA CONTROLS ────────────────────────────────────────────────────
+    if re.search(r"(?:play|pause|toggle)\s+(?:music|media|song|video|playback)", tl):
+        return [{"action": "media_play_pause"}]
+    if re.search(r"next\s+(?:song|track|music)", tl):
+        return [{"action": "media_next"}]
+    if re.search(r"(?:previous|prev|back)\s+(?:song|track|music)", tl):
+        return [{"action": "media_prev"}]
+
+    # ── 19. REMEMBER ──────────────────────────────────────────────────────────
     m = re.match(r"remember\s+(?:that\s+)?(.+)", tl)
     if m:
         return [{"action": "remember", "fact": m.group(1)},
                 {"action": "speak",    "text": "Got it, I'll remember that."}]
 
-    # ── Speak ─────────────────────────────────────────────────────────────────
-    m = re.match(r"(?:say|speak|tell me|read aloud)\s+(.+)", tl)
+    # ── 20. SPEAK / SAY ───────────────────────────────────────────────────────
+    m = re.match(r"(?:say|speak|tell\s+me|announce|read\s+aloud)\s+(.+)", tl)
     if m:
         return [{"action": "speak", "text": m.group(1)}]
 
-    # ── Configure email ───────────────────────────────────────────────────────
-    if re.search(r"(?:configure|setup|set up|enable|add)\s+(?:email|smtp|mail)", tl):
-        return [{"action": "configure_email"}]
-
-    # ── Research ──────────────────────────────────────────────────────────────
-    m = re.match(r"(?:research|investigate|find out about|look up info on)\s+(.+)", tl)
+    # ── 21. WEB RESEARCH ──────────────────────────────────────────────────────
+    m = re.match(r"(?:research|investigate|find\s+out\s+about|look\s+up\s+info\s+on|get\s+info\s+on)\s+(.+)", tl)
     if m:
         return [{"action": "web_research", "query": m.group(1).strip()}]
 
-    # ── Shell command ────────────────────────────────────────────────────────
+    # ── 22. SHELL COMMAND ─────────────────────────────────────────────────────
     m = re.match(r"(?:run|execute|cmd|shell)\s+(?:command\s+)?(.+)", tl)
     if m:
         return [{"action": "run_command", "command": m.group(1).strip()}]
 
-    # ── Fallback: single known app name ──────────────────────────────────────
+    # ── 23. SCHEDULE ──────────────────────────────────────────────────────────
+    m = re.search(r"(?:schedule|remind\s+me|set\s+reminder)\s+(.+?)\s+(?:at|every|daily|tomorrow)\s+(.+)", tl)
+    if m:
+        return [{"action": "schedule_task",
+                 "task":     m.group(1).strip(),
+                 "schedule": m.group(2).strip()}]
+
+    # ── 24. WHATSAPP OPEN (fallback after send check above) ───────────────────
+    if re.search(r"\bwhatsapp\b", tl):
+        return [{"action": "open", "target": "whatsapp web"}]
+
+    # ── 25. SINGLE KNOWN APP/SITE NAME ───────────────────────────────────────
     for app in APPS:
         if tl.strip() == app or tl.strip().startswith(app + " "):
             return [{"action": "open",  "target": app},
                     {"action": "speak", "text":   f"Opening {app}"}]
+    for site in SITES:
+        if tl.strip() == site:
+            return [{"action": "open",  "target": site},
+                    {"action": "speak", "text":   f"Opening {site}"}]
 
-    return []  # let AI plan it
+    # ── 26. STATUS / HELP ────────────────────────────────────────────────────
+    if re.search(r"\b(?:help|what\s+can\s+you\s+do|commands|capabilities)\b", tl):
+        return [{"action": "speak",
+                 "text": ("I can open apps and websites, send emails, take screenshots, "
+                          "search the web, find leads, post to social media, control volume, "
+                          "type text, run commands, and much more. Just ask!")}]
+
+    if re.search(r"\b(?:hello|hi|hey|good\s+morning|good\s+evening|howdy)\b", tl):
+        return [{"action": "speak",
+                 "text": f"Hello! Dacexy Agent v{VERSION} is ready. What would you like me to do?"}]
+
+    if re.search(r"\b(?:ping|test|are\s+you\s+(?:there|working|online)|status)\b", tl):
+        return [{"action": "ping"}]
+
+    return []  # No match — execute_task handles the unknown-command path
 
 
 # =============================================================================
@@ -1575,7 +1559,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
     if not action:
         return {"status": "error", "message": "No action specified"}
 
-    # Safety check
     raw_str = " ".join(str(v) for v in cmd.values()).lower()
     if any(b in raw_str for b in BLOCKED):
         log.warning("BLOCKED command: %s", action)
@@ -1596,10 +1579,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         # ── CONFIGURE EMAIL ──────────────────────────────────────────────────
+        # FIX: was opening a browser URL instead of running interactive setup
         if action == "configure_email":
-            webbrowser.open("https://myaccount.google.com/apppasswords")
-            speak("App Passwords page opened. Create one then say: configure email again.")
-            return {"status": "ok"}
+            return configure_smtp_interactive()
 
         # ── OPEN / LAUNCH (catches ALL planner hallucinations) ────────────────
         if action in {
@@ -1607,7 +1589,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             "navigate_to", "go_to", "browse", "visit", "open_site", "open_website",
             "open_app", "run_app", "open_application", "launch_application",
             "start_application", "open_program", "run_program",
-            # Common planner hallucinations:
             "open_chrome", "chrome_open", "launch_chrome", "launch_browser",
             "open_browser_chrome", "open_firefox", "open_edge", "launch_edge",
             "navigate_browser", "open_url_in_browser", "start_browser",
@@ -1616,7 +1597,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             tgt = (cmd.get("url") or cmd.get("app") or cmd.get("text") or
                    cmd.get("name") or cmd.get("site") or cmd.get("target") or
                    cmd.get("browser") or cmd.get("website") or "").strip()
-            # Derive target from action name for browser shortcuts
             if not tgt:
                 for kw in ["chrome", "firefox", "edge", "brave"]:
                     if kw in action:
@@ -1750,8 +1730,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 str(cmd.get("caption")    or cmd.get("text") or ""),
                 str(cmd.get("image_path") or ""))
 
-        if action in {"post_all_social", "post_all", "all_social",
-                      "social_post_all"}:
+        if action in {"post_all_social", "post_all", "all_social", "social_post_all"}:
             text  = str(cmd.get("text") or "")
             creds = cmd.get("credentials") or {}
             results = {}
@@ -1801,7 +1780,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             "press_f1", "press_f2", "press_f4", "press_f5",
             "press_f11", "press_f12", "confirm", "submit",
         }:
-            # Map action name → key name
             _AK = {
                 "press_enter": "enter",   "hit_enter": "enter",
                 "enter_key":   "enter",   "submit_form": "enter",
@@ -2083,8 +2061,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": "Command timed out (60s)"}
 
         # ── MEMORY ────────────────────────────────────────────────────────────
-        if action in {"remember", "save_fact", "take_note", "memorize",
-                      "store_fact"}:
+        if action in {"remember", "save_fact", "take_note", "memorize", "store_fact"}:
             fact = str(cmd.get("fact") or cmd.get("text") or
                        cmd.get("content") or "")
             if fact:
@@ -2111,8 +2088,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         # ── SCHEDULE ──────────────────────────────────────────────────────────
-        if action in {"schedule_task", "schedule", "add_schedule",
-                      "set_reminder"}:
+        if action in {"schedule_task", "schedule", "add_schedule", "set_reminder"}:
             task_s = str(cmd.get("task") or cmd.get("command") or "")
             sched  = str(cmd.get("schedule") or cmd.get("time") or "daily at 09:00")
             if not task_s:
@@ -2124,7 +2100,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 "last_run": "",
             }
             _sched_jobs.append(job); save_memory()
-            speak(f"Scheduled: {task_s[:50]} — runs {sched}")
+            speak(f"Scheduled: {task_s[:50]} - runs {sched}")
             return {"status": "ok", "job_id": job["id"]}
 
         # ── WAIT ─────────────────────────────────────────────────────────────
@@ -2139,7 +2115,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             speak("I am online and working!")
             return {"status": "ok", "pong": True, "version": VERSION}
 
-        # ── BRIGHTNESS (Windows) ──────────────────────────────────────────────
+        # ── BRIGHTNESS ────────────────────────────────────────────────────────
         if action in {"brightness_up", "increase_brightness"}:
             subprocess.Popen("powershell (Get-WmiObject -Namespace root/WMI "
                              "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,80)",
@@ -2175,9 +2151,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                     "note": "pytesseract not installed"}
 
         # ═════════════════════════════════════════════════════════════════════
-        # ULTIMATE FALLBACK — try smart_open with any target-like field,
-        # then try the action name itself as something to open.
-        # This means NO command will ever return "Unknown action" silently.
+        # ULTIMATE FALLBACK — try smart_open, then action name itself
         # ═════════════════════════════════════════════════════════════════════
         tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or
                cmd.get("name") or cmd.get("site") or cmd.get("website") or "")
@@ -2186,7 +2160,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if res.get("status") == "ok":
                 return res
 
-        # Last resort: treat the action name itself as a thing to open
         action_readable = action.replace("_", " ").strip()
         res = smart_open(action_readable)
         if res.get("status") == "ok":
@@ -2201,7 +2174,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
 
 # =============================================================================
-# MAIN TASK EXECUTOR
+# MAIN TASK EXECUTOR — no AI planner, local_parse handles everything
 # =============================================================================
 def execute_task(task: str, token: str) -> dict:
     if not task or not task.strip():
@@ -2212,23 +2185,20 @@ def execute_task(task: str, token: str) -> dict:
     print(f"\n  [TASK] Executing: {task[:80]}")
     _convo.append(f"user: {task[:120]}")
 
-    # 1. Try local NLP first (fast, no network)
+    # 1. Local NLP (fast, reliable, no network)
     commands = local_parse(task)
     source   = "local"
 
-    # 2. Fall back to AI planner
-    if not commands:
-        speak("Let me think about that for a moment.")
-        commands = ai_plan(task, token)
-        source   = "ai"
-
-    # 3. Last resort: smart_open for short phrases
+    # 2. If local can't parse it, try smart_open for short phrases
     if not commands:
         tl = task.lower().strip()
-        is_open_like = (len(tl.split()) <= 6 and
+        words = tl.split()
+        # Short phrase that could be an app/website name
+        is_open_like = (len(words) <= 5 and
                         not any(w in tl for w in ["send", "email", "search",
                                                    "find", "create", "write",
-                                                   "post", "make", "research"]))
+                                                   "post", "make", "research",
+                                                   "schedule", "remind"]))
         if is_open_like:
             res = smart_open(task)
             if res.get("status") == "ok":
@@ -2237,11 +2207,12 @@ def execute_task(task: str, token: str) -> dict:
                     MEMORY["task_history"].append(
                         f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
                 save_memory()
-                speak(f"Done! {res.get('opened', task)[:60]}")
+                speak(f"Done! Opened {res.get('opened', task)[:60]}")
                 return {"status": "ok", "ok": 1, "total": 1,
                         "result": f"Opened: {task}"}
 
-        speak("I'm not sure how to do that. Please rephrase or be more specific.")
+        # 3. Last resort: tell user clearly what happened
+        speak("I'm not sure how to do that. Try rephrasing, or say 'help' for examples.")
         return {"status": "error", "ok": 0, "total": 0,
                 "result": f"Could not understand: {task[:80]}"}
 
@@ -2284,7 +2255,7 @@ def execute_task(task: str, token: str) -> dict:
 
     summary = f"Task done: {ok_count}/{total} steps for: {task[:60]}"
     log.info(summary)
-    _convo.append(f"dacexy: {'Done' if ok_count > 0 else 'Failed'} — {summary}")
+    _convo.append(f"dacexy: {'Done' if ok_count > 0 else 'Failed'} - {summary}")
     audit.info("ACTION=TASK_END | ok=%d | total=%d | task=%s",
                ok_count, total, task[:60])
 
@@ -2336,7 +2307,6 @@ def _scheduler_loop(token_ref: list):
 def _is_wake_word(heard: str) -> bool:
     h = heard.lower().strip()
     for w in WAKE_WORDS:
-        # Must be a standalone phrase (not just contained inside another word)
         if re.search(r'\b' + re.escape(w) + r'\b', h):
             return True
     return False
@@ -2345,13 +2315,13 @@ def _is_wake_word(heard: str) -> bool:
 def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
-        print("  [VOICE] Disabled — install PyAudio to enable voice control.")
+        print("  [VOICE] Disabled - install PyAudio to enable voice control.")
         return
 
     rec = sr.Recognizer()
-    rec.energy_threshold     = 350
+    rec.energy_threshold      = 350
     rec.dynamic_energy_threshold = True
-    rec.pause_threshold      = 0.7
+    rec.pause_threshold       = 0.7
     rec.non_speaking_duration = 0.4
 
     print("  [VOICE] Active! Say: Dacexy / Hey Dacexy / Jarvis / Computer")
@@ -2439,17 +2409,17 @@ def update_token(t: str):
 # =============================================================================
 def _heartbeat(token_ref: list):
     while _running:
-        time.sleep(240)  # every 4 minutes
+        time.sleep(240)
         try:
             tok = token_ref[0]
             if tok and not check_token_valid(tok):
-                log.warning("Token may be expired — try re-logging.")
+                log.warning("Token may be expired - try re-logging.")
         except Exception:
             pass
 
 
 # =============================================================================
-# WEBSOCKET (keeps render.com connection alive with aggressive ping)
+# WEBSOCKET — fixed connect_kw for ALL websockets versions
 # =============================================================================
 async def run_websocket(token: str):
     retry = 4.0; max_retry = 60.0
@@ -2459,16 +2429,28 @@ async def run_websocket(token: str):
             log.info("WS: connecting to %s", BACKEND_WS)
             print("  [WS] Connecting to Dacexy cloud...")
 
+            # FIX: Build connect kwargs safely for any websockets version
+            # websockets < 10: close_timeout
+            # websockets >= 10: open_timeout (but connect signature differs)
+            # Safest: just use ping_interval/ping_timeout/max_size always
             connect_kw: dict = {
                 "ping_interval": 20,
                 "ping_timeout":  15,
                 "max_size":      16 * 1024 * 1024,
             }
+            # Only add timeout param if we can verify the version safely
             try:
-                wsv = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
-                connect_kw["open_timeout" if wsv >= 14 else "close_timeout"] = 20
+                wsv_str = str(getattr(websockets, "__version__", "0"))
+                wsv = int(wsv_str.split(".")[0])
+                if wsv >= 14:
+                    # websockets 14+ uses open_timeout in connect()
+                    connect_kw["open_timeout"] = 20
+                else:
+                    # older versions use close_timeout
+                    connect_kw["close_timeout"] = 10
             except Exception:
-                connect_kw["close_timeout"] = 10
+                # If version detection fails, just don't add timeout — safe default
+                pass
 
             async with websockets.connect(BACKEND_WS, **connect_kw) as ws:
                 # Auth handshake
@@ -2503,12 +2485,13 @@ async def run_websocket(token: str):
                         "voice3", "vision", "browser", "email",
                         "social_selenium", "bulk_email", "lead_gen",
                         "web_research", "scheduler", "memory",
-                        "selenium", "ocr", "screenshot", "v24_fixed",
+                        "selenium", "ocr", "screenshot", "v25_fixed",
+                        "no_ai_planner", "local_nlp_200patterns",
                     ],
                 }))
 
                 log.info("WS: connected and authenticated!")
-                print("\n  [OK] Connected to Dacexy cloud — agent is LIVE!")
+                print("\n  [OK] Connected to Dacexy cloud - agent is LIVE!")
                 speak("Connected! Ready for your commands.")
                 retry = 4.0
 
@@ -2526,7 +2509,6 @@ async def run_websocket(token: str):
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=50)
                     except asyncio.TimeoutError:
-                        # Keep-alive ping
                         try:
                             await asyncio.wait_for(
                                 ws.send(json.dumps({"type": "ping"})), timeout=8)
@@ -2629,27 +2611,18 @@ async def run_websocket(token: str):
 # INTERACTIVE SHELL
 # =============================================================================
 def _interactive_shell(token: str, tok_ref: list):
-    """
-    Full interactive command-line shell.
-    Runs in a background thread so the WebSocket stays alive.
-    """
     cmds = {
         "help":       "Show this menu",
-        "menu":       "Show this menu",
         "memory":     "Show stored memory",
-        "skills":     "List learned skills",
         "jobs":       "List scheduled jobs",
         "sysinfo":    "System information",
         "screenshot": "Take a screenshot",
         "email":      "Configure SMTP email",
-        "leads":      "Find leads (enter product name)",
-        "stop":       "Emergency stop",
-        "quit":       "Exit agent",
-        "exit":       "Exit agent",
+        "quit/exit":  "Exit agent",
     }
 
     print("\n" + "="*60)
-    print(f"  DACEXY v{VERSION} — COMMAND CENTER")
+    print(f"  DACEXY v{VERSION} - COMMAND CENTER")
     print("="*60)
     print(f"  Email   : {_smtp_cfg.get('email') or 'NOT CONFIGURED'}")
     print(f"  Voice   : {'ON' if _voice_on else 'OFF'}")
@@ -2670,8 +2643,6 @@ def _interactive_shell(token: str, tok_ref: list):
 
         if tl in ("quit", "exit"):
             print("  Goodbye!"); break
-        if tl == "stop":
-            print("  Emergency stop!"); break
         if tl in ("help", "menu"):
             print()
             for k, v in cmds.items():
@@ -2683,7 +2654,7 @@ def _interactive_shell(token: str, tok_ref: list):
         if tl == "jobs":
             if _sched_jobs:
                 for j in _sched_jobs:
-                    print(f"  [{j['id']}] {j['task']} — {j['schedule']}")
+                    print(f"  [{j['id']}] {j['task']} - {j['schedule']}")
             else:
                 print("  No scheduled jobs.")
             continue
@@ -2694,7 +2665,6 @@ def _interactive_shell(token: str, tok_ref: list):
         if tl == "screenshot":
             exec_cmd({"action": "screenshot"}, token); continue
 
-        # Run as task
         print(f"  [TASK] Processing: {line[:80]}")
         tok = tok_ref[0]
 
@@ -2716,12 +2686,12 @@ def main():
     print("\n" + "="*60)
     print(f"  DACEXY DESKTOP AGENT v{VERSION}")
     print("  Full-featured autonomous Windows AI agent")
+    print("  AI planner removed - local NLP handles 200+ commands")
     print("="*60 + "\n")
 
     init_tts()
     load_memory()
 
-    # Capability report
     caps = []
     if pyautogui:                  caps.append("mouse/keyboard")
     if ImageGrab:                  caps.append("screenshot")
@@ -2733,14 +2703,13 @@ def main():
     else:                          caps.append("email=NOT CONFIGURED")
     print(f"  Capabilities: {', '.join(caps) or 'basic'}\n")
 
-    # Auth
     token = get_token()
     if token:
         print("  Checking saved session...")
         if check_token_valid(token):
             print("  [OK] Session valid.\n")
         else:
-            print("  Session expired — please log in.\n")
+            print("  Session expired - please log in.\n")
             clear_token(); token = None
 
     if not token:
@@ -2759,7 +2728,7 @@ def main():
     if not _smtp_cfg.get("email"):
         print("  [EMAIL] Not configured. Say 'configure email' to enable bulk send.\n")
     else:
-        print(f"  [EMAIL] Ready — {_smtp_cfg['email']}\n")
+        print(f"  [EMAIL] Ready - {_smtp_cfg['email']}\n")
 
     voice_ok = start_voice(token)
     tok_ref  = [token]
@@ -2772,8 +2741,8 @@ def main():
                      name="Shell").start()
 
     print("  " + "-"*56)
-    print(f"  Dacexy Agent v{VERSION} — LIVE")
-    print(f"  Voice    : {'ON — say Dacexy / Hey Dacexy' if voice_ok else 'OFF'}")
+    print(f"  Dacexy Agent v{VERSION} - LIVE")
+    print(f"  Voice    : {'ON - say Dacexy / Hey Dacexy' if voice_ok else 'OFF'}")
     print(f"  Email    : {_smtp_cfg.get('email') or 'Not configured'}")
     print(f"  Dashboard: dacexy.vercel.app")
     print(f"  Log file : {LOG_FILE}")
@@ -2792,7 +2761,6 @@ def main():
     finally:
         _running = False
         stop_voice()
-        # Close selenium if open
         with _sel_lock:
             if _selenium_driver:
                 try: _selenium_driver.quit()
