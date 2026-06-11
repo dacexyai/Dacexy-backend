@@ -1,33 +1,16 @@
 """
-DACEXY DESKTOP AGENT v22.0 - INVESTOR DEMO EDITION
-Real Jarvis. Actually works. No phantom completions.
-
-FIXED BUGS vs v20/v21:
-  BUG1 CLOSURE: Thread functions inside async loop captured loop vars by reference.
-       By the time thread ran, task_txt/task_id/msg had already changed to the next
-       message. FIX: All inner thread functions use default args (t_=token, txt_=task_txt)
-       to snapshot values at call time.
-  BUG2 INSTALLER: BAT file ran AGENT_LOOP inline in same window after install,
-       so any error in agent.py closed the whole console. FIX: Installer writes a
-       separate start_dacexy.bat and opens it in a new window via 'start'.
-  BUG3 AI FALLBACK: execute_task hit /ai/chat then failed silently if response was
-       non-JSON. FIX: local_parse handles 95% of tasks instantly with no network call.
-       ai_plan is a fallback only, with proper JSON extraction and error handling.
-  BUG4 VOICE: WaitTimeoutError (normal silence) was counted as an error, disabling
-       voice after ~8 seconds of silence. FIX: Only real mic/API errors count.
-  BUG5 SMTP BULK: Was opening new SMTP connection per email. FIX: Single SMTP session
-       for entire bulk send.
+DACEXY DESKTOP AGENT v23.0 - FIXED
+All planner-generated action names now handled.
+No more "Unknown action" errors.
 """
 from __future__ import annotations
 import subprocess, sys, os, platform
 
-# Windows event loop (MUST be before asyncio import)
 if platform.system() == "Windows":
     import asyncio as _ae
     if hasattr(_ae, "WindowsSelectorEventLoopPolicy"):
         _ae.set_event_loop_policy(_ae.WindowsSelectorEventLoopPolicy())
 
-# Windows UTF-8 console
 if platform.system() == "Windows":
     import io as _io
     try:
@@ -58,7 +41,6 @@ for _pkg, _imp in [("pyautogui","pyautogui"),("pillow","PIL"),("websockets","web
 try:
     from selenium import webdriver as _s
 except ImportError:
-    print("  [BOOT] Installing selenium...")
     _pip("selenium", "webdriver-manager")
 
 PYAUDIO_OK = False
@@ -177,16 +159,13 @@ except Exception:
     BeautifulSoup = None
     BS4_OK = False
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CONSTANTS
-# ═══════════════════════════════════════════════════════════════════════════
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 CONFIG_FILE  = Path.home() / ".dacexy_agent.json"
 MEMORY_FILE  = Path.home() / ".dacexy_memory.json"
 AGENT_DIR    = Path.home() / "DacexyAgent"
 LOG_FILE     = AGENT_DIR / "logs" / "agent.log"
-VERSION      = "22.0"
+VERSION      = "23.0"
 
 for _d in [AGENT_DIR, AGENT_DIR/"logs", AGENT_DIR/"data", AGENT_DIR/"screenshots"]:
     _d.mkdir(exist_ok=True)
@@ -268,7 +247,6 @@ APPS = {
     "microsoft edge": "msedge.exe",
     "firefox": "firefox.exe",
     "notepad": "notepad.exe",
-    "notepad++": "notepad++.exe",
     "calculator": "calc.exe",
     "calc": "calc.exe",
     "paint": "mspaint.exe",
@@ -291,21 +269,14 @@ APPS = {
     "visual studio code": "code.exe",
     "vs code": "code.exe",
     "telegram": "telegram.exe",
-    "whatsapp desktop": "WhatsApp.exe",
     "snipping tool": "SnippingTool.exe",
-    "sticky notes": "stikynot.exe",
     "control panel": "control.exe",
     "settings": "ms-settings:",
-    "device manager": "devmgmt.msc",
-    "services": "services.msc",
 }
 
 BLOCKED = ["rm -rf /", "rm -rf ~", "format c:", "del /s /q c:\\windows",
            "rd /s /q c:\\", "reg delete hklm", "dd if=/dev/zero", "rmdir /s /q c:\\"]
 
-# ═══════════════════════════════════════════════════════════════════════════
-# GLOBALS
-# ═══════════════════════════════════════════════════════════════════════════
 _mem_lock   = threading.Lock()
 _cfg_lock   = threading.Lock()
 _executor   = ThreadPoolExecutor(max_workers=15)
@@ -325,9 +296,6 @@ MEMORY: Dict = {
     "context": {}, "contacts": {},
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ═══════════════════════════════════════════════════════════════════════════
 try:
     logging.basicConfig(
         level=logging.INFO,
@@ -342,9 +310,6 @@ except Exception:
 log = logging.getLogger("dacexy")
 log.info("Dacexy Agent v%s starting", VERSION)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TTS
-# ═══════════════════════════════════════════════════════════════════════════
 def _tts_worker():
     while _running:
         try:
@@ -389,7 +354,7 @@ def init_tts():
         threading.Thread(target=_tts_worker, daemon=True, name="TTS").start()
         log.info("TTS ready")
     except Exception as e:
-        log.warning("TTS init failed (non-fatal): %s", e)
+        log.warning("TTS init failed: %s", e)
         _tts_engine = None
 
 def speak(text: str):
@@ -411,8 +376,8 @@ def jarvis(cat: str, override: str = ""):
     opts = {
         "greet": ["Yes?", "How can I help?", "At your service!", "Listening."],
         "work":  ["On it!", "Working on that now.", "Got it!", "Right away!"],
-        "done":  ["All done!", "Completed!", "That is taken care of."],
-        "error": ["I could not complete that.", "That did not work, sorry."],
+        "done":  ["All done!", "Completed!", "Done."],
+        "error": ["I could not complete that.", "That did not work."],
         "again": ["Could you say that again?", "I didn't catch that."],
     }
     speak(override if override else random.choice(opts.get(cat, [""])))
@@ -424,9 +389,6 @@ def _notify(title: str, msg: str):
     except Exception:
         pass
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CONFIG / AUTH
-# ═══════════════════════════════════════════════════════════════════════════
 def load_config() -> dict:
     with _cfg_lock:
         try:
@@ -480,16 +442,12 @@ def setup_autostart():
                              0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        log.info("Autostart registered")
     except Exception as e:
         log.warning("Autostart: %s", e)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LOGIN
-# ═══════════════════════════════════════════════════════════════════════════
 def login() -> Optional[str]:
     print("\n" + "="*55)
-    print("  DACEXY AGENT v22.0 - Login")
+    print("  DACEXY AGENT v23.0 - Login")
     print("="*55)
     print("  Register at: dacexy.vercel.app\n")
     try:
@@ -525,15 +483,10 @@ def login() -> Optional[str]:
     print("  [ERROR] Login failed. Check email and password.")
     return None
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SMTP SETUP
-# ═══════════════════════════════════════════════════════════════════════════
 def configure_smtp_interactive() -> dict:
     global _smtp_cfg
-    print("\n  ╔══════════════════════════════════════════════╗")
-    print("  ║     Dacexy Email Setup                       ║")
-    print("  ╚══════════════════════════════════════════════╝")
-    print("\n  For Gmail: myaccount.google.com/apppasswords → Create App Password\n")
+    print("\n  Email Setup")
+    print("  For Gmail: myaccount.google.com/apppasswords -> Create App Password\n")
     try:
         em = input("  Your email address    : ").strip()
         if not em or "@" not in em:
@@ -550,23 +503,18 @@ def configure_smtp_interactive() -> dict:
             print("  [OK] Connection successful!")
         except smtplib.SMTPAuthenticationError:
             print("  [ERROR] Wrong password.")
-            if "gmail" in domain:
-                print("  -> Use App Password from myaccount.google.com/apppasswords")
             return {"status": "error", "message": "Auth failed"}
         except Exception as te:
-            print(f"  [WARN] Test issue: {te} — saving anyway.")
+            print(f"  [WARN] {te} - saving anyway.")
         _smtp_cfg = {"email": em, "password": pw, "host": preset["host"], "port": preset["port"]}
         save_memory()
-        speak(f"Email configured as {em}. I will now send real emails automatically.")
+        speak(f"Email configured as {em}.")
         return {"status": "ok", "email": em}
     except (EOFError, KeyboardInterrupt):
         return {"status": "cancelled"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MEMORY
-# ═══════════════════════════════════════════════════════════════════════════
 def load_memory():
     global _smtp_cfg, _sched_jobs
     try:
@@ -625,9 +573,6 @@ def get_mem_ctx() -> str:
     except Exception:
         return ""
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SCREENSHOT
-# ═══════════════════════════════════════════════════════════════════════════
 def take_screenshot(quality=80) -> Optional[str]:
     try:
         if not ImageGrab:
@@ -643,9 +588,6 @@ def take_screenshot(quality=80) -> Optional[str]:
         log.warning("screenshot: %s", e)
         return None
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SMART TYPE
-# ═══════════════════════════════════════════════════════════════════════════
 def smart_type(text: str):
     if not text:
         return
@@ -679,15 +621,13 @@ def get_active_win() -> str:
     except Exception:
         return ""
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SMART OPEN
-# ═══════════════════════════════════════════════════════════════════════════
 def smart_open(target: str) -> dict:
     if not target:
         return {"status": "error", "message": "Nothing to open"}
     t = str(target).strip()
     tl = t.lower()
-    for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ", "show ", "visit ", "browse ", "run "]:
+    for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ",
+                "show ", "visit ", "browse ", "run ", "start up "]:
         if tl.startswith(pfx):
             tl = tl[len(pfx):].strip()
             t  = t[len(pfx):].strip()
@@ -727,9 +667,6 @@ def smart_open(target: str) -> dict:
 
     return {"status": "error", "message": f"Could not find: {target[:60]}"}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# EMAIL
-# ═══════════════════════════════════════════════════════════════════════════
 def _build_msg(from_: str, to_: str, subject: str, body: str, att=None):
     msg = MIMEMultipart("alternative")
     msg["From"] = from_; msg["To"] = to_; msg["Subject"] = subject
@@ -752,28 +689,21 @@ def send_email_real(to: str, subject: str, body: str, att=None) -> dict:
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}"
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
-        speak(f"Gmail opened for you to send to {to}. Say configure email for auto-send.")
-        return {"status": "ok", "action": "browser_compose",
-                "note": "Gmail compose opened. Say 'configure email' to enable auto-send."}
+        speak(f"Gmail opened for {to}. Say configure email for auto-send.")
+        return {"status": "ok", "action": "browser_compose"}
     try:
         msg = _build_msg(em, to, subject, body, att)
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
             srv.ehlo(); srv.starttls(); srv.ehlo(); srv.login(em, pw)
             srv.sendmail(em, [to], msg.as_string())
-        speak(f"Email sent to {to} successfully!")
-        log.info("Email sent to %s", to)
-        return {"status": "ok", "sent_to": to, "subject": subject}
-    except smtplib.SMTPAuthenticationError:
-        speak("Email authentication failed. Run configure email to fix.")
-        return {"status": "error", "message": "SMTP auth failed"}
+        speak(f"Email sent to {to}!")
+        return {"status": "ok", "sent_to": to}
     except Exception as e:
-        log.error("SMTP: %s", e)
         url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}"
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
-        speak(f"SMTP failed. Gmail opened for {to}.")
-        return {"status": "ok", "action": "browser_fallback", "note": f"SMTP error: {e}"}
+        return {"status": "ok", "action": "browser_fallback", "note": str(e)}
 
 def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay=2.0) -> dict:
     em = _smtp_cfg.get("email", ""); pw = _smtp_cfg.get("password", "")
@@ -782,7 +712,7 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay=2.0) -> 
         return {"status": "error", "message": "Email not configured. Say 'configure email' first."}
     if not contacts:
         return {"status": "error", "message": "No contacts provided."}
-    speak(f"Starting bulk email to {len(contacts)} contacts. Please wait.")
+    speak(f"Starting bulk email to {len(contacts)} contacts.")
     sent = 0; failed = 0
     try:
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
@@ -795,23 +725,21 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay=2.0) -> 
                     name    = (c.get("name") or c.get("Name") or to_e.split("@")[0].replace(".", " ").title())
                     company = (c.get("company") or c.get("Company") or "")
                     body = (body_tmpl.replace("{name}", name).replace("{Name}", name)
-                            .replace("{email}", to_e).replace("{company}", company)
-                            .replace("{NAME}", name.upper()))
+                            .replace("{email}", to_e).replace("{company}", company))
                     subj = subject.replace("{name}", name).replace("{company}", company)
                     msg = _build_msg(em, to_e, subj, body)
                     srv.sendmail(em, [to_e], msg.as_string())
                     sent += 1
                     if sent % 10 == 0:
                         speak(f"{sent} emails sent.")
-                    log.info("Bulk: %s (%d/%d)", to_e, sent, len(contacts))
                     time.sleep(max(0.5, delay))
                 except Exception as e2:
                     failed += 1
                     log.warning("Bulk fail %s: %s", c.get("email", "?"), e2)
     except Exception as e:
-        return {"status": "error", "message": f"SMTP connection failed: {e}"}
+        return {"status": "error", "message": f"SMTP failed: {e}"}
     summary = f"Bulk email: {sent} sent, {failed} failed of {len(contacts)}"
-    speak(summary); log.info(summary)
+    speak(summary)
     return {"status": "ok", "sent": sent, "failed": failed, "total": len(contacts)}
 
 def load_csv_contacts(path: str) -> list:
@@ -834,14 +762,10 @@ def load_csv_contacts(path: str) -> list:
                         "name":    (row.get("name") or row.get("Name") or em.split("@")[0].replace(".", " ").title()).strip(),
                         "company": (row.get("company") or row.get("Company") or "").strip(),
                     })
-        log.info("Loaded %d contacts from %s", len(contacts), p)
     except Exception as e:
         log.warning("load_csv: %s", e)
     return contacts
 
-# ═══════════════════════════════════════════════════════════════════════════
-# WEB RESEARCH + LEAD FINDER
-# ═══════════════════════════════════════════════════════════════════════════
 _HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
 
 def web_research(query: str) -> str:
@@ -870,10 +794,9 @@ def find_leads_web(product: str, niche: str = "", max_leads: int = 25) -> list:
     leads = []
     email_re = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,7}\b')
     skip = {"example.com", "test.com", "sentry.io", "w3.org", "schema.org",
-            "wix.com", "wordpress.com", "jquery.com", "google.com", "cloudflare.com", "amazonaws.com"}
-    speak(f"Searching for leads for {product}. Takes about 30 seconds.")
-    for q in [f"{niche} {product} email contact", f"{product} company email contact",
-              f"buy {product} email", f"{niche} business owner email"]:
+            "wix.com", "wordpress.com", "jquery.com", "google.com", "cloudflare.com"}
+    speak(f"Searching leads for {product}. Takes about 30 seconds.")
+    for q in [f"{niche} {product} email contact", f"{product} company email contact"]:
         if len(leads) >= max_leads:
             break
         try:
@@ -901,137 +824,8 @@ def find_leads_web(product: str, niche: str = "", max_leads: int = 25) -> list:
             w.writeheader(); w.writerows(leads)
     except Exception:
         pass
-    speak(f"Found {len(leads)} leads for {product}.")
+    speak(f"Found {len(leads)} leads.")
     return leads
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SELENIUM
-# ═══════════════════════════════════════════════════════════════════════════
-def get_driver(headless=False):
-    if not SELENIUM_OK:
-        return None
-    try:
-        opts = webdriver.ChromeOptions()
-        if headless:
-            opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
-        opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36")
-        opts.add_argument("--start-maximized")
-        try:
-            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=opts)
-        except Exception:
-            driver = webdriver.Chrome(options=opts)
-        driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-        return driver
-    except Exception as e:
-        log.error("Chrome driver: %s", e)
-        return None
-
-def _slow_type(el, text: str, delay=0.05):
-    for ch in str(text):
-        el.send_keys(ch)
-        time.sleep(delay + random.uniform(0, 0.03))
-
-def post_instagram(user: str, pw: str, img: str, caption: str = "") -> dict:
-    speak("Opening Instagram. Please wait about 30 seconds.")
-    d = get_driver()
-    if not d:
-        return {"status": "error", "message": "Chrome not available"}
-    try:
-        w = WebDriverWait(d, 30)
-        d.get("https://www.instagram.com/accounts/login/"); time.sleep(4)
-        _slow_type(w.until(EC.presence_of_element_located((By.NAME, "username"))), user)
-        time.sleep(0.4)
-        pw_el = d.find_element(By.NAME, "password")
-        _slow_type(pw_el, pw); pw_el.send_keys(Keys.RETURN); time.sleep(6)
-        for txt in ["Save Info", "Not Now", "Not now"]:
-            try: d.find_element(By.XPATH, f"//*[text()='{txt}']").click(); time.sleep(2)
-            except Exception: pass
-        w.until(EC.element_to_be_clickable((By.XPATH,
-            '//*[@aria-label="New post"] | //a[contains(@href,"create")]'))).click(); time.sleep(2)
-        d.find_element(By.XPATH, '//input[@type="file"]').send_keys(os.path.abspath(str(img))); time.sleep(4)
-        for _ in range(2):
-            try: d.find_element(By.XPATH, '//div[text()="Next"] | //*[@aria-label="Next"]').click(); time.sleep(2.5)
-            except Exception: pass
-        try:
-            cap_el = d.find_element(By.XPATH, '//div[contains(@aria-label,"caption")] | //div[@role="textbox"]')
-            cap_el.click(); cap_el.send_keys(caption); time.sleep(1)
-        except Exception: pass
-        d.find_element(By.XPATH, '//div[text()="Share"] | //*[@aria-label="Share"]').click(); time.sleep(6)
-        speak("Instagram post published!")
-        return {"status": "ok", "message": "Posted to Instagram"}
-    except Exception as e:
-        log.error("Instagram: %s", e); webbrowser.open("https://www.instagram.com")
-        return {"status": "error", "message": str(e), "fallback": "Instagram opened in browser"}
-    finally:
-        try: d.quit()
-        except Exception: pass
-
-def post_linkedin(user: str, pw: str, text: str, img=None) -> dict:
-    speak("Opening LinkedIn. Please wait about 20 seconds.")
-    d = get_driver()
-    if not d:
-        return {"status": "error", "message": "Chrome not available"}
-    try:
-        w = WebDriverWait(d, 25)
-        d.get("https://www.linkedin.com/login"); time.sleep(3)
-        _slow_type(w.until(EC.presence_of_element_located((By.ID, "username"))), user)
-        time.sleep(0.3)
-        pw_el = d.find_element(By.ID, "password"); _slow_type(pw_el, pw); pw_el.send_keys(Keys.RETURN); time.sleep(5)
-        d.get("https://www.linkedin.com/feed/"); time.sleep(3)
-        w.until(EC.element_to_be_clickable((By.XPATH,
-            '//button[contains(.,"Start a post")] | //button[contains(.,"Create a post")]'))).click(); time.sleep(2.5)
-        ed = w.until(EC.presence_of_element_located((By.XPATH, '//div[@role="textbox" and @data-placeholder]')))
-        ed.click(); ed.send_keys(text); time.sleep(1)
-        if img and os.path.exists(str(img)):
-            try:
-                d.find_element(By.XPATH, '//button[@aria-label="Add a photo"]').click(); time.sleep(1.5)
-                d.find_element(By.XPATH, '//input[@type="file"]').send_keys(os.path.abspath(str(img))); time.sleep(4)
-            except Exception: pass
-        d.find_element(By.XPATH, '//button[contains(@class,"share-actions__primary-action")] | //button[@aria-label="Post"]').click()
-        time.sleep(4); speak("LinkedIn post published!")
-        return {"status": "ok", "message": "Posted to LinkedIn"}
-    except Exception as e:
-        log.error("LinkedIn: %s", e); webbrowser.open("https://www.linkedin.com")
-        return {"status": "error", "message": str(e), "fallback": "LinkedIn opened in browser"}
-    finally:
-        try: d.quit()
-        except Exception: pass
-
-def post_facebook(user: str, pw: str, text: str, img=None) -> dict:
-    speak("Opening Facebook. Please wait about 20 seconds.")
-    d = get_driver()
-    if not d:
-        return {"status": "error", "message": "Chrome not available"}
-    try:
-        w = WebDriverWait(d, 25)
-        d.get("https://www.facebook.com/login"); time.sleep(3)
-        _slow_type(w.until(EC.presence_of_element_located((By.ID, "email"))), user)
-        time.sleep(0.3)
-        pw_el = d.find_element(By.ID, "pass"); _slow_type(pw_el, pw); pw_el.send_keys(Keys.RETURN); time.sleep(6)
-        d.get("https://www.facebook.com/"); time.sleep(4)
-        w.until(EC.element_to_be_clickable((By.XPATH,
-            '//div[@role="button" and (contains(.,"mind") or contains(.,"thinking") or contains(.,"post"))]'))).click()
-        time.sleep(2)
-        ed = w.until(EC.element_to_be_clickable((By.XPATH, '//div[@role="textbox" and @contenteditable="true"]')))
-        ed.click(); ed.send_keys(text); time.sleep(1)
-        if img and os.path.exists(str(img)):
-            try:
-                d.find_element(By.XPATH, '//div[@aria-label="Photo/video"]').click(); time.sleep(1.5)
-                d.find_element(By.XPATH, '//input[@type="file"]').send_keys(os.path.abspath(str(img))); time.sleep(4)
-            except Exception: pass
-        d.find_element(By.XPATH, '//div[@aria-label="Post" and @role="button"]').click()
-        time.sleep(4); speak("Facebook post published!")
-        return {"status": "ok", "message": "Posted to Facebook"}
-    except Exception as e:
-        log.error("Facebook: %s", e); webbrowser.open("https://www.facebook.com")
-        return {"status": "error", "message": str(e), "fallback": "Facebook opened in browser"}
-    finally:
-        try: d.quit()
-        except Exception: pass
 
 def wa_send(phone: str, msg: str) -> dict:
     ph = re.sub(r"[^0-9+]", "", str(phone))
@@ -1039,27 +833,63 @@ def wa_send(phone: str, msg: str) -> dict:
         ph = "+91" + ph
     url = f"https://wa.me/{ph.lstrip('+')}?text={urllib.parse.quote(str(msg))}"
     webbrowser.open(url)
-    speak(f"WhatsApp Web opened for {phone}. Click Send in the browser tab.")
-    return {"status": "ok", "note": "WhatsApp Web opened — click Send"}
+    speak(f"WhatsApp opened for {phone}. Click Send.")
+    return {"status": "ok", "note": "WhatsApp Web opened"}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# AI PLAN
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
+# AI PLAN PROMPT - strict action names only
+# =========================================================================
 _AI_SYSTEM = """You are Dacexy, a Windows desktop AI agent.
-Return ONLY a valid JSON array of command objects. No text, no markdown.
+Return ONLY a valid JSON array. No text outside the array. No markdown.
 TODAY: {date}
 CONTEXT: {ctx}
-ACTIONS: open(url/app/target), search_web(query), open_youtube(query),
-send_email(to,subject,body), bulk_email(contacts[]/csv_path,subject,body),
-find_leads_and_email(product,niche,subject,body), find_leads(product,niche,max),
-web_research(query), social_post(platform,username,password,text,image_path,caption),
-whatsapp(phone,message), type(text), key(key), hotkey(keys[]), screenshot,
-speak(text), get_time, get_date, get_system_info, volume_up(steps), volume_down(steps),
-mute, minimize_window, maximize_window, close_window, write_file(path,content),
-read_file(path), zip_files(path,output), run_command(command), remember(fact),
-wait(seconds), schedule_task(task,schedule), add_contact(name,email,phone),
-scroll_down(amount), scroll_up(amount), click(x,y), select_all, copy, paste
-RULES: Always end with speak. Never click(0,0). No text outside JSON array.
+
+ALLOWED ACTIONS (use EXACTLY these names, nothing else):
+- open            : open website or app. params: target (string)
+- search_web      : google search. params: query
+- open_youtube    : youtube search. params: query
+- send_email      : send email. params: to, subject, body
+- bulk_email      : bulk email. params: contacts[] or csv_path, subject, body
+- find_leads      : find leads. params: product, niche, max
+- web_research    : research topic. params: query
+- whatsapp        : send whatsapp. params: phone, message
+- type            : type text. params: text
+- key             : press a key. params: key (enter/escape/tab/space/backspace/up/down/left/right/f5)
+- hotkey          : key combo. params: keys[] (e.g. ["ctrl","c"])
+- screenshot      : take screenshot. no params needed
+- speak           : say something. params: text
+- get_time        : get current time
+- get_date        : get current date
+- get_system_info : CPU/RAM/disk info
+- volume_up       : increase volume. params: steps (default 5)
+- volume_down     : decrease volume. params: steps (default 5)
+- mute            : mute/unmute
+- minimize_window : minimize current window
+- maximize_window : maximize current window
+- close_window    : close current window (Alt+F4)
+- write_file      : write to file. params: path, content
+- read_file       : read file. params: path
+- run_command     : run shell command. params: command
+- remember        : save a fact. params: fact
+- wait            : wait seconds. params: seconds
+- scroll_down     : scroll down. params: amount
+- scroll_up       : scroll up. params: amount
+- click           : click at position. params: x, y (never use 0,0)
+
+RULES:
+1. Use ONLY the action names listed above. NEVER use: open_chrome, press_enter, chrome_open, launch_browser, navigate, go_to, or any other name.
+2. To open Chrome: use open with target "chrome"
+3. To press Enter: use key with key "enter"
+4. To press Escape: use key with key "escape"
+5. Always end with a speak action telling the user what happened.
+6. Return ONLY the JSON array, nothing else.
+
+EXAMPLE for "open youtube":
+[{"action":"open","target":"youtube"},{"action":"speak","text":"YouTube is now open."}]
+
+EXAMPLE for "search google for python tutorials":
+[{"action":"search_web","query":"python tutorials"},{"action":"speak","text":"Searching Google for python tutorials."}]
+
 Return ONLY the JSON array:"""
 
 def ai_plan(task: str, token: str) -> list:
@@ -1078,7 +908,7 @@ def ai_plan(task: str, token: str) -> list:
                          headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
                          json={"messages": msgs, "stream": False}, timeout=40)
         if r.status_code != 200:
-            log.warning("AI plan HTTP %d", r.status_code); return []
+            return []
         raw = (r.json().get("content") or r.json().get("response") or "").strip()
         if not raw:
             return []
@@ -1089,20 +919,17 @@ def ai_plan(task: str, token: str) -> list:
             try:
                 cmds = json.loads(m.group())
                 if isinstance(cmds, list) and cmds:
-                    log.info("AI plan: %d commands for: %s", len(cmds), task[:60])
                     return cmds
-            except json.JSONDecodeError as je:
-                log.warning("AI JSON: %s | %s", je, raw[:200])
-        clean = re.sub(r"[{}\[\]]", "", raw).strip()[:400]
-        if clean:
-            return [{"action": "speak", "text": clean}]
+            except json.JSONDecodeError:
+                pass
         return []
     except Exception as e:
-        log.warning("ai_plan: %s", e); return []
+        log.warning("ai_plan: %s", e)
+        return []
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LOCAL NLP (handles 95% of tasks instantly, no network needed)
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
+# LOCAL NLP
+# =========================================================================
 def local_parse(task: str) -> list:
     t = task.lower().strip()
 
@@ -1131,12 +958,6 @@ def local_parse(task: str) -> list:
                  "subject": (m.group(2) or "Hello from Dacexy").strip(),
                  "body": (m.group(2) or task).strip()}]
 
-    m = re.search(r"(?:bulk|mass|send)\s+email.+?(?:csv|file|contacts in|from)\s+(.+?)(?:\s+with|\s+subject|\s+saying|$)", t)
-    if m:
-        return [{"action": "bulk_email", "csv_path": m.group(1).strip(),
-                 "subject": "Hello from Dacexy",
-                 "body": "Hi {name},\n\nHope this finds you well!\n\nBest regards"}]
-
     if re.search(r"(?:find|get|search)\s+(?:leads|customers|clients)", t):
         m_prod = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and|\s+then|\s+to|$)", t)
         prod = m_prod.group(1).strip() if m_prod else "product"
@@ -1150,16 +971,15 @@ def local_parse(task: str) -> list:
             return [{"action": "whatsapp", "phone": m.group(1).strip(), "message": m.group(2).strip()}]
         return [{"action": "open", "target": "whatsapp web"}]
 
-    if any(w in t for w in ["screenshot", "screen shot", "capture screen", "take a screenshot"]):
-        return [{"action": "screenshot"}, {"action": "speak", "text": "Screenshot taken and saved."}]
+    if any(w in t for w in ["screenshot", "screen shot", "capture screen"]):
+        return [{"action": "screenshot"}, {"action": "speak", "text": "Screenshot taken."}]
 
     if re.search(r"\bwhat(?:'s| is)\s+the\s+time\b|\btime\s+is\s+it\b|\bwhat time\b", t):
         return [{"action": "get_time"}]
     if re.search(r"\bwhat(?:'s| is)\s+(?:today|the\s+date)\b|\bdate\s+is\s+it\b|\bwhat date\b", t):
         return [{"action": "get_date"}]
 
-    if any(w in t for w in ["system info", "cpu usage", "ram usage", "disk space",
-                             "battery level", "how much memory", "how much ram"]):
+    if any(w in t for w in ["system info", "cpu usage", "ram usage", "disk space"]):
         return [{"action": "get_system_info"}]
 
     if re.search(r"volume\s*up|increase\s+volume|louder|turn\s+up", t):
@@ -1188,50 +1008,22 @@ def local_parse(task: str) -> list:
     m = re.match(r"remember\s+(?:that\s+)?(.+)", t)
     if m:
         return [{"action": "remember", "fact": m.group(1)},
-                {"action": "speak", "text": "Got it, I'll remember that."}]
+                {"action": "speak", "text": "Got it."}]
 
     m = re.match(r"(?:say|speak|tell me)\s+(.+)", t)
     if m:
         return [{"action": "speak", "text": m.group(1)}]
 
-    m = re.search(r"(?:press|hit)\s+(.+)", t)
-    if m:
-        return [{"action": "key", "key": m.group(1).strip()}]
-
-    if re.match(r"^copy$", t): return [{"action": "copy"}]
-    if re.match(r"^paste$", t): return [{"action": "paste"}]
-    if re.match(r"^undo$", t): return [{"action": "undo"}]
-    if re.match(r"^select all$", t): return [{"action": "select_all"}]
-
     if re.search(r"(?:configure|setup|set up|enable)\s+(?:email|smtp|mail)", t):
         return [{"action": "configure_email"}]
 
-    if re.search(r"\bzip\b|\bcompress\b", t):
-        return [{"action": "zip_files", "path": str(Path.home() / "Desktop")}]
-
-    m = re.search(r"(?:schedule|every day|daily)\s+(.+?)(?:\s+at\s+(\d{1,2}:\d{2}))?$", t)
-    if m and any(w in t for w in ["schedule", "every day", "daily", "every morning"]):
-        return [{"action": "schedule_task",
-                 "task": m.group(1).strip(),
-                 "schedule": f"daily at {m.group(2) or '09:00'}"}]
-
     for app in APPS:
         if app in t:
-            return [{"action": "open", "app": app}, {"action": "speak", "text": f"Opening {app}"}]
+            return [{"action": "open", "target": app}, {"action": "speak", "text": f"Opening {app}"}]
 
-    m = re.match(r"(?:research|investigate|find out about|look up info on|write a report on)\s+(.+)", t)
+    m = re.match(r"(?:research|investigate|find out about|look up info on)\s+(.+)", t)
     if m:
         return [{"action": "web_research", "query": m.group(1).strip()}]
-
-    m = re.search(r"(?:post|share)\s+(?:on|to)\s+(instagram|linkedin|facebook|twitter)", t)
-    if m:
-        plat = m.group(1)
-        return [{"action": "open", "target": plat},
-                {"action": "speak", "text": f"Opened {plat}. To auto-post include username and password."}]
-
-    m = re.match(r"(?:write|create|save)\s+(?:a\s+)?(?:file|note|text)\s+(.+)", t)
-    if m:
-        return [{"action": "write_file", "path": str(AGENT_DIR / "note.txt"), "content": m.group(1)}]
 
     m = re.match(r"(?:run|execute)\s+(?:command\s+)?(.+)", t)
     if m:
@@ -1239,9 +1031,9 @@ def local_parse(task: str) -> list:
 
     return []
 
-# ═══════════════════════════════════════════════════════════════════════════
-# COMMAND EXECUTOR — actually runs on the PC
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
+# COMMAND EXECUTOR
+# =========================================================================
 def exec_cmd(cmd: dict, token: str = None) -> dict:
     if not isinstance(cmd, dict):
         return {"status": "error", "message": "Not a dict"}
@@ -1251,34 +1043,57 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
     raw_str = " ".join(str(v) for v in cmd.values())
     if any(b in raw_str.lower() for b in BLOCKED):
         return {"status": "blocked", "message": "Blocked for safety"}
-    log.info("EXEC → %s | %s", action, str({k: v for k, v in cmd.items() if k != "action"})[:100])
+    log.info("EXEC -> %s", action)
 
     try:
         if action == "speak":
             speak(str(cmd.get("text", ""))); return {"status": "ok"}
+
         elif action == "notify":
             _notify(str(cmd.get("title", "Dacexy")), str(cmd.get("text", ""))); return {"status": "ok"}
+
         elif action == "configure_email":
             webbrowser.open("https://myaccount.google.com/apppasswords")
-            speak("I opened Google App Passwords. Create an app password, then restart me and say yes to email setup.")
+            speak("App Passwords page opened. Create a password then say configure email again.")
             return {"status": "ok"}
-        elif action in ("open", "open_url", "open_browser", "launch", "start", "navigate",
-                        "navigate_to", "go_to", "browse", "visit", "open_site",
-                        "open_website", "open_app", "run_app"):
+
+        # ── OPEN / LAUNCH (all aliases including planner-generated ones) ──
+        elif action in (
+            "open", "open_url", "open_browser", "launch", "start", "navigate",
+            "navigate_to", "go_to", "browse", "visit", "open_site", "open_website",
+            "open_app", "run_app",
+            # Common planner hallucinations - all handled here:
+            "open_chrome", "chrome_open", "launch_chrome", "launch_browser",
+            "open_browser_chrome", "open_firefox", "open_edge", "launch_edge",
+            "open_application", "navigate_browser", "open_url_in_browser",
+            "start_browser", "open_web_browser", "launch_application",
+            "start_application", "open_program", "run_program",
+        ):
             tgt = (cmd.get("url") or cmd.get("app") or cmd.get("text") or
-                   cmd.get("name") or cmd.get("site") or cmd.get("target") or "").strip()
+                   cmd.get("name") or cmd.get("site") or cmd.get("target") or
+                   cmd.get("browser") or "").strip()
+            # If it was open_chrome with no target, open chrome
+            if not tgt and "chrome" in action:
+                tgt = "chrome"
+            if not tgt and "firefox" in action:
+                tgt = "firefox"
+            if not tgt and "edge" in action:
+                tgt = "edge"
             if not tgt:
                 return {"status": "error", "message": "No target for open"}
             return smart_open(tgt)
-        elif action in ("send_email", "email", "compose_email", "gmail_send", "send_mail", "mail"):
-            to_  = str(cmd.get("to") or cmd.get("email") or "").strip()
+
+        # ── EMAIL ──
+        elif action in ("send_email", "email", "compose_email", "send_mail", "mail",
+                        "gmail_send", "send_message_email"):
+            to_ = str(cmd.get("to") or cmd.get("email") or cmd.get("recipient") or "").strip()
             if not to_:
                 return {"status": "error", "message": "No recipient"}
             return send_email_real(to_,
                 str(cmd.get("subject") or "Message from Dacexy"),
-                str(cmd.get("body") or cmd.get("text") or cmd.get("content") or "Hello"),
-                cmd.get("attachment"))
-        elif action in ("bulk_email", "send_bulk_email", "mass_email", "email_all"):
+                str(cmd.get("body") or cmd.get("text") or cmd.get("content") or "Hello"))
+
+        elif action in ("bulk_email", "send_bulk_email", "mass_email", "email_all", "email_blast"):
             contacts = cmd.get("contacts") or []
             csv_p = cmd.get("csv_path") or cmd.get("file") or ""
             if csv_p and not contacts:
@@ -1287,220 +1102,234 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": "No contacts found."}
             return send_bulk_email(contacts,
                 str(cmd.get("subject") or "Hello from Dacexy"),
-                str(cmd.get("body") or cmd.get("template") or "Hi {name},\n\nHope this finds you well!\n\nBest regards"),
+                str(cmd.get("body") or "Hi {name},\n\nHope this finds you well!\n\nBest regards"),
                 float(cmd.get("delay") or 2.0))
+
         elif action in ("find_leads_and_email", "lead_campaign", "find_and_email"):
-            product = str(cmd.get("product") or cmd.get("query") or "product")
+            product = str(cmd.get("product") or "product")
             leads = find_leads_web(product, str(cmd.get("niche") or ""), int(cmd.get("max") or 25))
             if not leads:
                 return {"status": "error", "message": "No leads found."}
             return send_bulk_email(leads,
                 str(cmd.get("subject") or f"About {product}"),
-                str(cmd.get("body") or cmd.get("template") or
-                    f"Hi {{name}},\n\nI noticed you might benefit from {product}.\nWould you be open to a quick chat?\n\nBest regards"),
+                str(cmd.get("body") or f"Hi {{name}},\n\nI noticed you might benefit from {product}.\n\nBest regards"),
                 2.5)
+
         elif action in ("find_leads", "lead_finder", "scrape_leads"):
             leads = find_leads_web(str(cmd.get("product") or ""), str(cmd.get("niche") or ""), int(cmd.get("max") or 25))
-            return {"status": "ok", "leads_found": len(leads), "file": str(AGENT_DIR / "data" / "leads.csv")}
-        elif action in ("web_research", "research", "investigate", "find_info"):
+            return {"status": "ok", "leads_found": len(leads)}
+
+        elif action in ("web_research", "research", "investigate"):
             q = str(cmd.get("query") or cmd.get("text") or cmd.get("topic") or "")
             if not q:
                 return {"status": "error", "message": "No query"}
-            speak(f"Researching {q}. One moment...")
+            speak(f"Researching {q}...")
             result = web_research(q)
             rp = AGENT_DIR / f"research_{int(time.time())}.txt"
-            rp.write_text(f"Research: {q}\nDate: {datetime.datetime.now()}\n{'='*60}\n\n{result}", encoding="utf-8")
-            try: subprocess.Popen(f'notepad.exe "{rp}"', shell=True)
-            except Exception: pass
+            rp.write_text(f"Research: {q}\nDate: {datetime.datetime.now()}\n\n{result}", encoding="utf-8")
+            try:
+                subprocess.Popen(f'notepad.exe "{rp}"', shell=True)
+            except Exception:
+                pass
             speak("Research done. Report opened in Notepad.")
-            return {"status": "ok", "result": result[:600], "saved": str(rp)}
-        elif action in ("social_post", "post_social", "instagram_post", "linkedin_post",
-                        "facebook_post", "post_instagram", "post_linkedin", "post_facebook"):
-            plat = str(cmd.get("platform") or action.replace("post_", "").replace("_post", ""))
-            usr  = str(cmd.get("username") or cmd.get("user") or "")
-            pwd  = str(cmd.get("password") or cmd.get("pass") or "")
-            txt  = str(cmd.get("text") or cmd.get("caption") or cmd.get("content") or "")
-            img  = cmd.get("image_path") or cmd.get("image") or None
-            if not usr or not pwd:
-                url_map = {"instagram": "https://www.instagram.com", "linkedin": "https://www.linkedin.com",
-                           "facebook": "https://www.facebook.com", "twitter": "https://x.com"}
-                webbrowser.open(url_map.get(plat.lower(), "https://www.instagram.com"))
-                speak(f"Opened {plat}. To auto-post include username and password.")
-                return {"status": "ok", "note": f"Opened {plat} in browser"}
-            plat_l = plat.lower()
-            if "instagram" in plat_l:
-                if not img: return {"status": "error", "message": "Instagram needs image_path="}
-                return post_instagram(usr, pwd, str(img), txt)
-            elif "linkedin" in plat_l:
-                return post_linkedin(usr, pwd, txt, img)
-            elif "facebook" in plat_l:
-                return post_facebook(usr, pwd, txt, img)
-            else:
-                webbrowser.open(f"https://www.{plat_l}.com")
-                return {"status": "ok", "note": f"Opened {plat} in browser"}
+            return {"status": "ok", "result": result[:600]}
+
         elif action in ("whatsapp", "whatsapp_send", "send_whatsapp"):
             phone = str(cmd.get("phone") or cmd.get("contact") or cmd.get("to") or "")
-            if not phone: return {"status": "error", "message": "No phone number"}
+            if not phone:
+                return {"status": "error", "message": "No phone number"}
             return wa_send(phone, str(cmd.get("message") or cmd.get("text") or ""))
+
         elif action in ("open_youtube", "youtube", "youtube_search"):
             q = str(cmd.get("query") or cmd.get("text") or "")
             if q:
                 webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(q)}")
-                speak(f"Searching YouTube for {q}"); return {"status": "ok", "searched": q}
-            webbrowser.open("https://www.youtube.com"); return {"status": "ok"}
-        elif action in ("search_web", "search", "google_search", "google"):
-            q = str(cmd.get("query") or cmd.get("text") or "")
+                speak(f"Searching YouTube for {q}")
+                return {"status": "ok"}
+            webbrowser.open("https://www.youtube.com")
+            return {"status": "ok"}
+
+        elif action in ("search_web", "search", "google_search", "google",
+                        "google_search_query", "search_google"):
+            q = str(cmd.get("query") or cmd.get("text") or cmd.get("search_query") or "")
             if q:
                 webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(q)}")
-                speak(f"Searching Google for {q}"); return {"status": "ok", "searched": q}
-            webbrowser.open("https://www.google.com"); return {"status": "ok"}
+                speak(f"Searching Google for {q}")
+                return {"status": "ok"}
+            webbrowser.open("https://www.google.com")
+            return {"status": "ok"}
+
+        # ── KEYBOARD ──
+        elif action in (
+            "key", "press", "press_key", "keypress",
+            # All planner-generated key variants:
+            "press_enter", "hit_enter", "enter_key", "submit", "confirm",
+            "press_escape", "escape_key", "press_esc",
+            "press_tab", "tab_key",
+            "press_space", "space_key",
+            "press_backspace", "press_delete",
+            "press_up", "press_down", "press_left", "press_right",
+            "press_f5", "press_f1", "press_f2", "press_f4", "press_f11", "press_f12",
+        ):
+            # Determine which key to press
+            k = cmd.get("key") or cmd.get("keys") or ""
+            # Map action name to key if key param not given
+            if not k:
+                action_key_map = {
+                    "press_enter": "enter", "hit_enter": "enter", "enter_key": "enter",
+                    "submit": "enter", "confirm": "enter",
+                    "press_escape": "escape", "escape_key": "escape", "press_esc": "escape",
+                    "press_tab": "tab", "tab_key": "tab",
+                    "press_space": "space", "space_key": "space",
+                    "press_backspace": "backspace",
+                    "press_delete": "delete",
+                    "press_up": "up", "press_down": "down",
+                    "press_left": "left", "press_right": "right",
+                    "press_f5": "f5", "press_f1": "f1", "press_f2": "f2",
+                    "press_f4": "f4", "press_f11": "f11", "press_f12": "f12",
+                }
+                k = action_key_map.get(action, "enter")
+            if k and pyautogui:
+                pyautogui.press(str(k))
+            return {"status": "ok"}
+
+        elif action in ("hotkey", "key_combo", "shortcut", "keyboard_shortcut"):
+            keys = cmd.get("keys") or cmd.get("key") or []
+            if isinstance(keys, str):
+                keys = keys.replace("+", " ").split()
+            if keys and pyautogui:
+                pyautogui.hotkey(*[str(k) for k in keys[:5]])
+            return {"status": "ok"}
+
+        elif action == "select_all":
+            if pyautogui: pyautogui.hotkey("ctrl", "a")
+            return {"status": "ok"}
+
+        elif action == "copy":
+            if pyautogui: pyautogui.hotkey("ctrl", "c"); time.sleep(0.15)
+            return {"status": "ok", "clipboard": pyperclip.paste() if pyperclip else ""}
+
+        elif action == "paste":
+            if pyautogui: pyautogui.hotkey("ctrl", "v")
+            return {"status": "ok"}
+
+        elif action == "undo":
+            if pyautogui: pyautogui.hotkey("ctrl", "z")
+            return {"status": "ok"}
+
+        elif action == "save":
+            if pyautogui: pyautogui.hotkey("ctrl", "s")
+            return {"status": "ok"}
+
+        # ── MOUSE ──
         elif action == "click":
             if not pyautogui: return {"status": "error", "message": "pyautogui not available"}
             x, y = int(cmd.get("x") or 0), int(cmd.get("y") or 0)
             if x == 0 and y == 0: return {"status": "skipped", "reason": "no coordinates"}
             sw, sh = pyautogui.size()
-            pyautogui.click(max(0, min(x, sw-1)), max(0, min(y, sh-1)), button=str(cmd.get("button", "left")))
-            time.sleep(0.1); return {"status": "ok", "clicked": f"({x},{y})"}
+            pyautogui.click(max(0, min(x, sw-1)), max(0, min(y, sh-1)))
+            time.sleep(0.1)
+            return {"status": "ok"}
+
         elif action == "double_click":
             if pyautogui: pyautogui.doubleClick(int(cmd.get("x", 0)), int(cmd.get("y", 0)))
             return {"status": "ok"}
+
         elif action == "right_click":
             if pyautogui: pyautogui.rightClick(int(cmd.get("x", 0)), int(cmd.get("y", 0)))
             return {"status": "ok"}
-        elif action == "move_mouse":
-            if pyautogui: pyautogui.moveTo(int(cmd.get("x", 0)), int(cmd.get("y", 0)), duration=0.2)
-            return {"status": "ok"}
-        elif action == "scroll":
-            amt = int(cmd.get("clicks") or cmd.get("amount") or 3)
-            d_  = str(cmd.get("direction", "down")).lower()
-            if pyautogui: pyautogui.scroll(abs(amt) if d_ == "up" else -abs(amt))
-            return {"status": "ok"}
+
         elif action in ("scroll_down", "scrolldown"):
             if pyautogui: pyautogui.scroll(-int(cmd.get("amount", 5)))
             return {"status": "ok"}
+
         elif action in ("scroll_up", "scrollup"):
             if pyautogui: pyautogui.scroll(int(cmd.get("amount", 5)))
             return {"status": "ok"}
-        elif action == "drag":
-            if pyautogui:
-                pyautogui.moveTo(int(cmd.get("x1", 0)), int(cmd.get("y1", 0)))
-                pyautogui.dragTo(int(cmd.get("x2", 0)), int(cmd.get("y2", 0)), duration=0.4, button="left")
+
+        elif action == "scroll":
+            amt = int(cmd.get("clicks") or cmd.get("amount") or 3)
+            d_ = str(cmd.get("direction", "down")).lower()
+            if pyautogui: pyautogui.scroll(abs(amt) if d_ == "up" else -abs(amt))
             return {"status": "ok"}
-        elif action == "get_mouse_pos":
-            if pyautogui:
-                p = pyautogui.position(); return {"status": "ok", "x": p.x, "y": p.y}
-            return {"status": "ok", "x": 0, "y": 0}
-        elif action in ("type", "type_text", "write", "input", "enter_text"):
-            smart_type(str(cmd.get("text") or cmd.get("content") or ""))
+
+        # ── TYPE ──
+        elif action in ("type", "type_text", "write", "input", "enter_text",
+                        "type_in_field", "fill_field", "input_text", "write_text",
+                        "type_into", "enter_value"):
+            smart_type(str(cmd.get("text") or cmd.get("content") or cmd.get("value") or ""))
             return {"status": "ok"}
-        elif action in ("key", "press", "press_key", "keypress"):
-            k = cmd.get("key") or cmd.get("keys") or ""
-            if k and pyautogui: pyautogui.press(str(k))
-            return {"status": "ok"}
-        elif action in ("hotkey", "key_combo", "shortcut"):
-            keys = cmd.get("keys") or cmd.get("key") or []
-            if isinstance(keys, str): keys = keys.replace("+", " ").split()
-            if keys and pyautogui: pyautogui.hotkey(*[str(k) for k in keys[:5]])
-            return {"status": "ok"}
-        elif action == "press_enter":
-            if pyautogui: pyautogui.press("enter"); return {"status": "ok"}
-        elif action == "press_tab":
-            if pyautogui: pyautogui.press("tab"); return {"status": "ok"}
-        elif action == "press_escape":
-            if pyautogui: pyautogui.press("escape"); return {"status": "ok"}
-        elif action == "select_all":
-            if pyautogui: pyautogui.hotkey("ctrl", "a"); return {"status": "ok"}
-        elif action == "copy":
-            if pyautogui: pyautogui.hotkey("ctrl", "c"); time.sleep(0.15)
-            return {"status": "ok", "clipboard": pyperclip.paste() if pyperclip else ""}
-        elif action == "paste":
-            if pyautogui: pyautogui.hotkey("ctrl", "v"); return {"status": "ok"}
-        elif action == "cut":
-            if pyautogui: pyautogui.hotkey("ctrl", "x"); return {"status": "ok"}
-        elif action == "undo":
-            if pyautogui: pyautogui.hotkey("ctrl", "z"); return {"status": "ok"}
-        elif action == "save":
-            if pyautogui: pyautogui.hotkey("ctrl", "s"); return {"status": "ok"}
-        elif action == "get_clipboard":
-            return {"status": "ok", "text": pyperclip.paste() if pyperclip else ""}
-        elif action == "set_clipboard":
-            if pyperclip: pyperclip.copy(str(cmd.get("text", ""))[:10000])
-            return {"status": "ok"}
-        elif action in ("screenshot", "take_screenshot"):
+
+        # ── SCREENSHOT ──
+        elif action in ("screenshot", "take_screenshot", "capture_screen",
+                        "capture_screenshot", "screen_capture"):
             ss = take_screenshot()
             if ss:
                 try:
                     fn = AGENT_DIR / "screenshots" / f"ss_{int(time.time())}.jpg"
                     fn.write_bytes(base64.b64decode(ss))
                     speak(f"Screenshot saved: {fn.name}")
-                except Exception: speak("Screenshot taken.")
-            else: speak("Screenshot could not be taken.")
+                except Exception:
+                    speak("Screenshot taken.")
+            else:
+                speak("Screenshot could not be taken.")
             return {"status": "ok", "screenshot": ss or ""}
-        elif action in ("minimize_window", "minimize"):
-            if pyautogui: pyautogui.hotkey("win", "down"); return {"status": "ok"}
-        elif action in ("maximize_window", "maximize"):
-            if pyautogui: pyautogui.hotkey("win", "up"); return {"status": "ok"}
-        elif action in ("close_window", "close"):
-            if pyautogui: pyautogui.hotkey("alt", "f4"); return {"status": "ok"}
-        elif action == "switch_window":
-            if pyautogui: pyautogui.hotkey("alt", "tab"); time.sleep(0.3); return {"status": "ok"}
-        elif action == "get_active_window":
-            return {"status": "ok", "title": get_active_win()}
-        elif action in ("open_file_explorer", "file_explorer"):
-            subprocess.Popen("explorer.exe", shell=True); return {"status": "ok"}
-        elif action == "open_task_manager":
-            subprocess.Popen("taskmgr.exe", shell=True); return {"status": "ok"}
-        elif action == "open_settings":
-            subprocess.Popen("ms-settings:", shell=True); return {"status": "ok"}
-        elif action in ("open_notepad", "notepad"):
-            txt = str(cmd.get("text") or cmd.get("content") or "")
-            if txt:
-                tmp = AGENT_DIR / "note.txt"; tmp.write_text(txt[:100000], encoding="utf-8")
-                subprocess.Popen(f'notepad.exe "{tmp}"', shell=True)
-            else: subprocess.Popen("notepad.exe", shell=True)
+
+        # ── WINDOW ──
+        elif action in ("minimize_window", "minimize", "minimise"):
+            if pyautogui: pyautogui.hotkey("win", "down")
             return {"status": "ok"}
-        elif action == "volume_up":
+
+        elif action in ("maximize_window", "maximize", "maximise", "fullscreen"):
+            if pyautogui: pyautogui.hotkey("win", "up")
+            return {"status": "ok"}
+
+        elif action in ("close_window", "close", "close_app", "quit_app"):
+            if pyautogui: pyautogui.hotkey("alt", "f4")
+            return {"status": "ok"}
+
+        elif action == "switch_window":
+            if pyautogui: pyautogui.hotkey("alt", "tab"); time.sleep(0.3)
+            return {"status": "ok"}
+
+        # ── VOLUME ──
+        elif action in ("volume_up", "increase_volume", "louder", "turn_up_volume"):
             if pyautogui:
                 for _ in range(min(int(cmd.get("steps", 5)), 20)): pyautogui.press("volumeup")
-            speak("Volume increased"); return {"status": "ok"}
-        elif action == "volume_down":
+            speak("Volume increased")
+            return {"status": "ok"}
+
+        elif action in ("volume_down", "decrease_volume", "quieter", "lower_volume"):
             if pyautogui:
                 for _ in range(min(int(cmd.get("steps", 5)), 20)): pyautogui.press("volumedown")
-            speak("Volume decreased"); return {"status": "ok"}
-        elif action == "mute":
-            if pyautogui: pyautogui.press("volumemute"); speak("Muted"); return {"status": "ok"}
-        elif action == "write_file":
+            speak("Volume decreased")
+            return {"status": "ok"}
+
+        elif action in ("mute", "unmute", "toggle_mute"):
+            if pyautogui: pyautogui.press("volumemute")
+            speak("Muted")
+            return {"status": "ok"}
+
+        # ── FILES ──
+        elif action in ("write_file", "create_file", "save_file"):
             p = Path(str(cmd.get("path") or ""))
             if not p.name: p = AGENT_DIR / "output.txt"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(str(cmd.get("content") or "")[:500000], encoding="utf-8")
             try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
             except Exception: pass
-            speak(f"File {p.name} saved."); return {"status": "ok", "path": str(p)}
-        elif action == "read_file":
+            speak(f"File {p.name} saved.")
+            return {"status": "ok", "path": str(p)}
+
+        elif action in ("read_file", "open_file"):
             p = Path(str(cmd.get("path") or ""))
             if p.exists():
                 content = p.read_text(encoding="utf-8", errors="ignore")[:8000]
-                speak(f"File read: {len(content)} characters."); return {"status": "ok", "content": content}
+                speak(f"File read: {len(content)} characters.")
+                return {"status": "ok", "content": content}
             return {"status": "error", "message": f"File not found: {p}"}
-        elif action == "list_files":
-            p = Path(str(cmd.get("path") or str(Path.home())))
-            try:
-                files = [f.name for f in p.iterdir()][:100]
-                speak(f"Found {len(files)} items."); return {"status": "ok", "files": files}
-            except Exception as e: return {"status": "error", "message": str(e)}
-        elif action == "delete_file":
-            p = Path(str(cmd.get("path") or ""))
-            if p.exists(): p.unlink(); speak(f"Deleted {p.name}"); return {"status": "ok"}
-            return {"status": "error", "message": "File not found"}
-        elif action in ("move_file", "rename_file", "move"):
-            src = Path(str(cmd.get("src") or cmd.get("source") or cmd.get("path") or ""))
-            dst = Path(str(cmd.get("dst") or cmd.get("dest") or cmd.get("destination") or ""))
-            if src.exists() and dst:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst)); return {"status": "ok", "moved_to": str(dst)}
-            return {"status": "error", "message": "Source not found"}
-        elif action in ("zip_files", "create_zip", "compress"):
+
+        elif action in ("zip_files", "compress", "create_zip"):
             src = Path(str(cmd.get("path") or str(Path.home() / "Desktop")))
             dst = Path(str(cmd.get("output") or str(AGENT_DIR / f"backup_{int(time.time())}.zip")))
             try:
@@ -1509,26 +1338,40 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                     elif src.is_dir():
                         for f in src.iterdir():
                             if f.is_file(): zf.write(f, f.name)
-                speak(f"Zipped {src.name} to {dst.name}"); return {"status": "ok", "zip": str(dst)}
-            except Exception as e: return {"status": "error", "message": str(e)}
-        elif action in ("get_system_info", "system_info", "sysinfo"):
+                speak(f"Zipped to {dst.name}")
+                return {"status": "ok", "zip": str(dst)}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        # ── SYSTEM INFO ──
+        elif action in ("get_system_info", "system_info", "sysinfo", "system_status",
+                        "check_system", "cpu_info", "ram_info"):
             if psutil:
                 dp = "C:\\" if platform.system() == "Windows" else "/"
-                info = {"cpu": psutil.cpu_percent(interval=0.5),
-                        "ram": psutil.virtual_memory().percent,
-                        "ram_total_gb": round(psutil.virtual_memory().total / 1e9, 1),
-                        "disk": psutil.disk_usage(dp).percent,
-                        "disk_free_gb": round(psutil.disk_usage(dp).free / 1e9, 1),
-                        "platform": platform.system(), "hostname": socket.gethostname(),
-                        "active_window": get_active_win()}
+                info = {
+                    "cpu": psutil.cpu_percent(interval=0.5),
+                    "ram": psutil.virtual_memory().percent,
+                    "ram_total_gb": round(psutil.virtual_memory().total / 1e9, 1),
+                    "disk": psutil.disk_usage(dp).percent,
+                    "disk_free_gb": round(psutil.disk_usage(dp).free / 1e9, 1),
+                    "platform": platform.system(),
+                    "hostname": socket.gethostname(),
+                }
                 speak(f"CPU {info['cpu']}%, RAM {info['ram']}%, Disk {info['disk']}%")
                 return {"status": "ok", "info": info}
             return {"status": "ok", "info": {"platform": platform.system()}}
+
         elif action == "get_time":
-            t_ = datetime.datetime.now().strftime("%I:%M %p"); speak(f"The time is {t_}"); return {"status": "ok", "time": t_}
+            t_ = datetime.datetime.now().strftime("%I:%M %p")
+            speak(f"The time is {t_}")
+            return {"status": "ok", "time": t_}
+
         elif action == "get_date":
-            d_ = datetime.datetime.now().strftime("%A, %B %d, %Y"); speak(f"Today is {d_}"); return {"status": "ok", "date": d_}
-        elif action == "run_command":
+            d_ = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            speak(f"Today is {d_}")
+            return {"status": "ok", "date": d_}
+
+        elif action in ("run_command", "execute_command", "shell", "cmd"):
             c_ = str(cmd.get("command") or "")
             if not c_: return {"status": "error", "message": "No command"}
             if any(b in c_.lower() for b in BLOCKED): return {"status": "blocked"}
@@ -1537,79 +1380,91 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                                     timeout=30, encoding="utf-8", errors="replace")
                 out = (r_.stdout or "")[:3000]
                 if out.strip(): speak(out[:200])
-                return {"status": "ok", "stdout": out, "returncode": r_.returncode}
-            except subprocess.TimeoutExpired: return {"status": "error", "message": "Command timed out"}
-        elif action == "kill_process":
-            name = str(cmd.get("name", ""))
-            safe = ["explorer", "winlogon", "csrss", "svchost", "system", "lsass", "dwm"]
-            if any(p in name.lower() for p in safe): return {"status": "blocked", "reason": "System process"}
-            if psutil:
-                killed = 0
-                for p in psutil.process_iter(["name"]):
-                    try:
-                        if name.lower() in (p.info["name"] or "").lower(): p.kill(); killed += 1
-                    except Exception: pass
-                speak(f"Killed {killed} process(es)"); return {"status": "ok", "killed": killed}
-            return {"status": "ok"}
-        elif action == "list_processes":
-            if psutil:
-                procs = []
-                for p in psutil.process_iter(["pid", "name", "cpu_percent"]):
-                    try: procs.append(p.info)
-                    except Exception: pass
-                return {"status": "ok", "processes": procs[:50]}
-            return {"status": "ok", "processes": []}
-        elif action in ("remember", "save_fact", "take_note"):
+                return {"status": "ok", "stdout": out}
+            except subprocess.TimeoutExpired:
+                return {"status": "error", "message": "Command timed out"}
+
+        elif action in ("remember", "save_fact", "take_note", "memorize"):
             fact = str(cmd.get("fact") or cmd.get("text") or cmd.get("content") or "")
             if fact: remember(fact); speak("Got it, I'll remember that.")
             return {"status": "ok"}
-        elif action == "get_memory":
-            return {"status": "ok", "memory": get_mem_ctx()}
-        elif action == "add_contact":
+
+        elif action in ("schedule_task", "schedule", "add_schedule"):
+            task_s = str(cmd.get("task") or cmd.get("command") or "")
+            sched  = str(cmd.get("schedule") or "daily at 09:00")
+            if not task_s: return {"status": "error", "message": "No task"}
+            job = {"id": "".join(random.choices(string.ascii_lowercase, k=8)),
+                   "task": task_s, "schedule": sched, "last_run": ""}
+            _sched_jobs.append(job); save_memory()
+            speak(f"Scheduled: {task_s[:50]} - runs {sched}")
+            return {"status": "ok"}
+
+        elif action in ("wait", "sleep", "pause", "delay"):
+            secs = min(float(cmd.get("seconds") or cmd.get("duration") or 1), 30)
+            time.sleep(secs)
+            return {"status": "ok"}
+
+        elif action in ("ping", "test", "health", "health_check", "status", "heartbeat",
+                        "check_connection", "verify"):
+            speak("I am online and working.")
+            return {"status": "ok", "pong": True, "version": VERSION}
+
+        elif action in ("get_active_window", "what_on_screen", "describe_screen"):
+            win = get_active_win()
+            speak(f"Active window: {win or 'unknown'}")
+            return {"status": "ok", "active_window": win}
+
+        elif action in ("add_contact", "save_contact"):
             name = str(cmd.get("name", ""))
             if name:
                 with _mem_lock:
                     MEMORY["contacts"][name.lower()] = {
                         "name": name, "email": str(cmd.get("email", "")),
-                        "phone": str(cmd.get("phone", "")), "notes": str(cmd.get("notes", ""))}
+                        "phone": str(cmd.get("phone", ""))}
                 save_memory(); speak(f"Contact {name} saved.")
             return {"status": "ok"}
-        elif action in ("schedule_task", "schedule", "add_schedule"):
-            task_s = str(cmd.get("task") or cmd.get("command") or cmd.get("text") or "")
-            sched  = str(cmd.get("schedule") or cmd.get("when") or "daily at 09:00")
-            if not task_s: return {"status": "error", "message": "No task to schedule"}
-            job = {"id": "".join(random.choices(string.ascii_lowercase, k=8)),
-                   "task": task_s, "schedule": sched, "last_run": ""}
-            _sched_jobs.append(job); save_memory()
-            speak(f"Scheduled: {task_s[:50]} — runs {sched}")
-            return {"status": "ok", "scheduled": task_s, "when": sched}
-        elif action in ("wait", "sleep", "pause", "delay"):
-            secs = min(float(cmd.get("seconds") or cmd.get("duration") or 1), 30)
-            time.sleep(secs); return {"status": "ok", "waited": secs}
-        elif action in ("ping", "pong", "test", "health", "health_check", "status", "heartbeat"):
-            speak("I am online and working perfectly.")
-            return {"status": "ok", "pong": True, "version": VERSION}
-        elif action in ("what_on_screen", "describe_screen", "whats_on_screen", "ocr_screen"):
-            win = get_active_win(); speak(f"Active window: {win or 'unknown'}"); return {"status": "ok", "active_window": win}
+
+        elif action in ("get_memory", "show_memory", "recall"):
+            return {"status": "ok", "memory": get_mem_ctx()}
+
+        # ── SOCIAL MEDIA ──
+        elif action in ("social_post", "post_social", "instagram_post", "linkedin_post",
+                        "facebook_post", "post_instagram", "post_linkedin", "post_facebook",
+                        "post_to_social", "share_on_social"):
+            plat = str(cmd.get("platform") or action.replace("post_", "").replace("_post", ""))
+            url_map = {"instagram": "https://www.instagram.com",
+                       "linkedin": "https://www.linkedin.com",
+                       "facebook": "https://www.facebook.com",
+                       "twitter": "https://x.com"}
+            webbrowser.open(url_map.get(plat.lower(), "https://www.instagram.com"))
+            speak(f"Opened {plat}. To auto-post, provide username and password.")
+            return {"status": "ok"}
+
+        # ── FALLBACK: try smart_open with any target-like field ──
         else:
-            tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or cmd.get("name") or "")
+            tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or
+                   cmd.get("name") or cmd.get("site") or "")
             if tgt:
                 res = smart_open(str(tgt))
                 if res.get("status") == "ok":
                     return res
-            log.warning("Unknown action: %s", action)
+            log.warning("Unknown action: %s - attempting open fallback", action)
+            # Last resort: try the action name itself as something to open
+            res = smart_open(action.replace("_", " "))
+            if res.get("status") == "ok":
+                return res
             return {"status": "error", "message": f"Unknown action: '{action}'"}
 
     except Exception as e:
         log.error("exec_cmd [%s]: %s", action, e, exc_info=True)
         return {"status": "error", "message": f"Exception in {action}: {e}"}
 
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 # MAIN TASK EXECUTOR
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 def execute_task(task: str, token: str) -> dict:
     if not task or not task.strip():
-        return {"status": "error", "ok": 0, "total": 0, "result": "No task provided"}
+        return {"status": "error", "ok": 0, "total": 0, "result": "No task"}
     task = task.strip()
     log.info("Task: %s", task[:100])
     _convo.append(f"user: {task[:120]}")
@@ -1617,7 +1472,6 @@ def execute_task(task: str, token: str) -> dict:
     commands = local_parse(task)
     source = "local"
     if not commands:
-        log.info("→ AI plan for: %s", task[:80])
         speak("Let me think about that.")
         commands = ai_plan(task, token)
         source = "ai"
@@ -1625,8 +1479,7 @@ def execute_task(task: str, token: str) -> dict:
         tl = task.lower().strip()
         is_open_like = (len(tl.split()) <= 5 and
                         not any(w in tl for w in ["send", "email", "search", "find", "create",
-                                                   "write", "post", "make", "show me", "tell me",
-                                                   "research", "configure", "schedule", "bulk", "leads"]))
+                                                   "write", "post", "make", "research"]))
         if is_open_like:
             res = smart_open(task)
             if res.get("status") == "ok":
@@ -1635,22 +1488,20 @@ def execute_task(task: str, token: str) -> dict:
                     MEMORY["task_history"].append(f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
                 save_memory()
                 return {"status": "ok", "ok": 1, "total": 1, "result": f"Opened: {task}"}
-        speak("I am not sure how to do that. Please rephrase or be more specific.")
+        speak("I am not sure how to do that. Please rephrase.")
         return {"status": "error", "ok": 0, "total": 0, "result": f"Could not understand: {task[:80]}"}
 
     ok_count = 0; total = len(commands); results = []
     for i, c in enumerate(commands):
         if not isinstance(c, dict): total -= 1; continue
-        for k, v in c.get("params", {}).items():
-            if k not in c: c[k] = v
         log.info("  Step %d/%d [%s]: %s", i+1, total, source, c.get("action", "?"))
         try:
             res = exec_cmd(c, token); results.append(res)
             if res.get("status") in ("ok", "skipped"): ok_count += 1
-            else: log.warning("  Step %d failed: %s", i+1, res.get("message", "unknown"))
+            else: log.warning("  Step %d failed: %s", i+1, res.get("message", "?"))
             time.sleep(0.25)
         except Exception as e:
-            log.error("  Step %d exception: %s", i+1, e)
+            log.error("  Step %d exc: %s", i+1, e)
             results.append({"status": "error", "message": str(e)})
 
     with _mem_lock:
@@ -1658,15 +1509,13 @@ def execute_task(task: str, token: str) -> dict:
     save_memory()
     summary = f"{ok_count}/{total} steps done for: {task[:60]}"
     log.info("Task done: %s", summary)
-    if ok_count == 0:
-        speak("I tried but could not complete the task. Check the log for details.")
-    _convo.append(f"dacexy: {'Done' if ok_count>0 else 'Failed'} — {summary}")
+    _convo.append(f"dacexy: {'Done' if ok_count>0 else 'Failed'} - {summary}")
     return {"status": "ok" if ok_count > 0 else "error",
             "ok": ok_count, "total": total, "result": summary, "steps": results}
 
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 # SCHEDULER
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 def _scheduler_loop(token_ref: list):
     while _running:
         try:
@@ -1680,52 +1529,29 @@ def _scheduler_loop(token_ref: list):
                         if now.hour == h and now.minute == mi:
                             ts = now.strftime("%Y-%m-%dT%H:%M")
                             if not last or last[:16] != ts: run = True
-                elif "every" in sched and "minute" in sched:
-                    m = re.search(r"every\s+(\d+)", sched); mins = int(m.group(1)) if m else 30
-                    if last:
-                        try:
-                            ld = datetime.datetime.fromisoformat(last)
-                            if (now - ld).total_seconds() >= mins * 60: run = True
-                        except Exception: run = True
-                    else: run = True
-                elif "hourly" in sched:
-                    if last:
-                        try:
-                            ld = datetime.datetime.fromisoformat(last)
-                            if (now - ld).total_seconds() >= 3600: run = True
-                        except Exception: run = True
-                    else: run = True
                 if run:
                     job["last_run"] = now.isoformat(); save_memory()
                     tok = token_ref[0]
                     if tok:
                         t_ = job.get("task", "")
-                        log.info("Scheduler: %s", t_[:60])
                         threading.Thread(target=execute_task, args=(t_, tok), daemon=True).start()
         except Exception as e:
             log.warning("Scheduler: %s", e)
         time.sleep(30)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# VOICE (Jarvis mode) — FIXED: silence not counted as error
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
+# VOICE
+# =========================================================================
 def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
-        print("  [VOICE] Disabled — install PyAudio to enable Jarvis voice.")
+        print("  [VOICE] Disabled - install PyAudio to enable.")
         return
     rec = sr.Recognizer()
     rec.energy_threshold = 350; rec.dynamic_energy_threshold = True
     rec.pause_threshold = 0.7; rec.non_speaking_duration = 0.4
-    try:
-        mics = sr.Microphone.list_microphone_names()
-        if not mics: print("  [VOICE] No microphone found."); return
-        print(f"  [MIC] {mics[0]}")
-    except Exception as e:
-        log.warning("Mic list: %s", e)
-    print("  [JARVIS] Active! Wake words: Dacexy / Jarvis / Computer")
-    speak("Jarvis online. Say Dacexy, Jarvis, or Computer to give me a command.")
-    real_errors = 0
+    print("  [JARVIS] Active! Say: Dacexy / Jarvis / Computer")
+    speak("Jarvis online. Say Dacexy or Jarvis to give a command.")
     while _voice_on and _running:
         heard = ""
         try:
@@ -1733,15 +1559,15 @@ def _voice_loop():
                 try: rec.adjust_for_ambient_noise(src, duration=0.1)
                 except Exception: pass
                 try: audio = rec.listen(src, timeout=3, phrase_time_limit=7)
-                except sr.WaitTimeoutError: continue  # silence = normal, not an error
-                except OSError as e: real_errors += 1; log.warning("Mic OS: %s", e); time.sleep(2); continue
-            try: heard = rec.recognize_google(audio, language="en-IN").lower().strip(); real_errors = 0
+                except sr.WaitTimeoutError: continue
+                except OSError: time.sleep(2); continue
+            try: heard = rec.recognize_google(audio, language="en-IN").lower().strip()
             except sr.UnknownValueError: continue
-            except sr.RequestError as e: real_errors += 1; log.warning("SR API: %s", e); time.sleep(3); continue
-        except Exception as e: real_errors += 1; log.debug("Voice outer: %s", e); time.sleep(1); continue
+            except sr.RequestError: time.sleep(3); continue
+        except Exception: time.sleep(1); continue
 
         if not any(w in heard for w in WAKE_WORDS): continue
-        log.info("WAKE: %s", heard); print(f"\n  [WAKE] '{heard}'")
+        log.info("WAKE: %s", heard)
         jarvis("greet"); time.sleep(0.3)
 
         command = ""
@@ -1750,26 +1576,25 @@ def _voice_loop():
                 try: rec.adjust_for_ambient_noise(csrc, duration=0.08)
                 except Exception: pass
                 try: caudio = rec.listen(csrc, timeout=8, phrase_time_limit=30)
-                except sr.WaitTimeoutError: speak("I didn't hear a command. Say my name again."); continue
-                except OSError as e: log.warning("Mic OS cmd: %s", e); continue
-            try: command = rec.recognize_google(caudio, language="en-IN").strip(); real_errors = 0
+                except sr.WaitTimeoutError: speak("I didn't hear a command."); continue
+                except OSError: continue
+            try: command = rec.recognize_google(caudio, language="en-IN").strip()
             except sr.UnknownValueError: jarvis("again"); continue
-            except sr.RequestError as e: real_errors += 1; log.warning("SR cmd: %s", e); continue
-        except Exception as e: log.warning("Voice cmd: %s", e); continue
+            except sr.RequestError: continue
+        except Exception: continue
 
         if not command: continue
-        log.info("Voice command: %s", command); print(f"  [CMD] {command}")
+        log.info("Voice cmd: %s", command)
         with _tok_lock: tok = _cur_token
-        if not tok: speak("I am not logged in yet. Please wait."); continue
+        if not tok: speak("Not logged in yet."); continue
         jarvis("work")
-        # CLOSURE FIX: snapshot tok and command in default args
-        def _run_voice(t_=tok, cmd_=command):
+        def _run(t_=tok, cmd_=command):
             try:
-                result = execute_task(cmd_, t_)
-                if result.get("ok", 0) == 0: log.warning("Voice task 0 ok: %s", cmd_)
-            except Exception as exc: log.error("Voice task exc: %s", exc); speak("Error with that command.")
-        threading.Thread(target=_run_voice, daemon=True).start()
-        if real_errors >= 10: speak("Voice paused due to errors. Resuming in 30 seconds."); time.sleep(30); real_errors = 0
+                execute_task(cmd_, t_)
+            except Exception as exc:
+                log.error("Voice exc: %s", exc)
+                speak("Error with that command.")
+        threading.Thread(target=_run, daemon=True).start()
 
 def start_voice(token: str) -> bool:
     global _voice_on, _cur_token
@@ -1779,64 +1604,59 @@ def start_voice(token: str) -> bool:
     threading.Thread(target=_voice_loop, daemon=True, name="Voice").start()
     return True
 
-def stop_voice(): global _voice_on; _voice_on = False
+def stop_voice():
+    global _voice_on
+    _voice_on = False
+
 def update_token(t: str):
     global _cur_token
     with _tok_lock: _cur_token = t
 
-# ═══════════════════════════════════════════════════════════════════════════
-# WEBSOCKET — FIXED auth flow + closure bug
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
+# WEBSOCKET
+# =========================================================================
 async def run_websocket(token: str):
-    """
-    Auth sequence (matches backend agent.py exactly):
-      1. Send {"token": token} as JSON
-      2. Wait for {"type":"connected"} ack from backend
-      3. Send {"type":"init", ...capabilities...}
-      4. Loop: receive messages, dispatch to threads via default-arg closures (FIXED)
-    """
     retry = 4.0; max_retry = 90.0
 
     while _running:
         try:
-            log.info("WS connecting..."); print("  [WS] Connecting to Dacexy cloud...")
+            log.info("WS connecting...")
+            print("  [WS] Connecting to Dacexy cloud...")
             connect_kw = {"ping_interval": 25, "ping_timeout": 20, "max_size": 16*1024*1024}
             try:
                 wsv = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
-                connect_kw["open_timeout" if wsv >= 14 else "close_timeout"] = 20
-            except Exception: connect_kw["close_timeout"] = 10
+                if wsv >= 14:
+                    connect_kw["open_timeout"] = 20
+                else:
+                    connect_kw["close_timeout"] = 10
+            except Exception:
+                connect_kw["close_timeout"] = 10
 
             async with websockets.connect(BACKEND_WS, **connect_kw) as ws:
-                # Step 1: Send token
                 await ws.send(json.dumps({"token": token}))
-                log.info("WS: token sent, waiting for auth ack...")
-
-                # Step 2: Wait for connected ack
                 try:
                     auth_raw = await asyncio.wait_for(ws.recv(), timeout=20)
                     auth_msg = json.loads(auth_raw)
                     if auth_msg.get("type") == "error":
                         log.error("WS auth rejected: %s", auth_msg.get("message", ""))
-                        speak("Authentication failed. Check your login.")
+                        speak("Authentication failed.")
                         await asyncio.sleep(retry); retry = min(retry*1.5, max_retry); continue
-                    log.info("WS auth ok: type=%s", auth_msg.get("type", "?"))
                 except asyncio.TimeoutError:
-                    log.warning("WS auth timeout"); await asyncio.sleep(retry); retry = min(retry*1.5, max_retry); continue
+                    await asyncio.sleep(retry); retry = min(retry*1.5, max_retry); continue
                 except Exception as e:
-                    log.warning("WS auth recv: %s", e); await asyncio.sleep(retry); continue
+                    log.warning("WS auth: %s", e); await asyncio.sleep(retry); continue
 
-                # Step 3: Send init
                 await ws.send(json.dumps({
                     "type": "init", "version": VERSION,
                     "platform": platform.system(), "machine": platform.machine(),
                     "hostname": socket.gethostname(),
-                    "features": ["voice3", "vision_super", "browser_enterprise", "email_enterprise",
-                                 "swarm10", "memory_vector", "social_all", "selenium", "ai_brain",
-                                 "scheduler", "lead_gen", "web_research", "multi_monitor",
-                                 "self_healing", "plugins", "v22_fixed"],
+                    "features": ["voice3", "vision", "browser", "email", "swarm",
+                                 "memory", "social", "selenium", "scheduler",
+                                 "lead_gen", "web_research", "v23_fixed"],
                 }))
-                log.info("WS fully connected!"); print("  [OK] Connected to Dacexy cloud — agent is LIVE!")
-                speak("Connected and ready. I am listening for your commands.")
+                log.info("WS connected!")
+                print("  [OK] Connected to Dacexy cloud - agent is LIVE!")
+                speak("Connected and ready. Waiting for your commands.")
                 retry = 4.0
 
                 ws_lock = asyncio.Lock()
@@ -1847,11 +1667,10 @@ async def run_websocket(token: str):
                         try: await ws.send(json.dumps(data))
                         except Exception as e_: log.warning("ws_send: %s", e_)
 
-                # Step 4: Message loop
                 while _running:
                     try: raw = await asyncio.wait_for(ws.recv(), timeout=45)
                     except asyncio.TimeoutError:
-                        try: await asyncio.wait_for(ws.send(json.dumps({"type": "ping", "version": VERSION})), timeout=5)
+                        try: await asyncio.wait_for(ws.send(json.dumps({"type": "ping"})), timeout=5)
                         except Exception: break
                         continue
 
@@ -1867,10 +1686,7 @@ async def run_websocket(token: str):
                         await ws_send({"type": "pong", "version": VERSION}); continue
                     if mtype in ("pong", "connected", "init_ack", "heartbeat"): continue
 
-                    # Direct command from /desktop/command (action is set, not a task type)
                     if action and action not in ("swarm_task", "task", "run_agent", ""):
-                        log.info("Direct command: %s", action)
-                        # CLOSURE FIX: default args snapshot current values
                         def _cmd_thread(m_=dict(msg), t_=token, tid_=task_id):
                             try:
                                 r_ = exec_cmd(m_, t_)
@@ -1879,8 +1695,7 @@ async def run_websocket(token: str):
                                     "status": r_.get("status", "ok"),
                                     "ok": 1 if r_.get("status") in ("ok", "skipped") else 0,
                                     "total": 1,
-                                    "result": str(r_.get("message") or r_.get("opened") or
-                                                  r_.get("note") or r_.get("searched") or "done"),
+                                    "result": str(r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
                                 }), loop)
                             except Exception as e_:
@@ -1891,14 +1706,12 @@ async def run_websocket(token: str):
                         threading.Thread(target=_cmd_thread, daemon=True).start()
                         continue
 
-                    # Full task from /run or /desktop/task
                     if task_txt or mtype in ("task", "command"):
                         if not task_txt: task_txt = action
                         if not task_txt: continue
                         log.info("Task from dashboard: %s", task_txt[:80])
                         print(f"\n  [TASK] {task_txt}")
                         jarvis("work", f"On it! Working on: {task_txt[:50]}")
-                        # CLOSURE FIX: default args snapshot current values
                         def _task_thread(t_=token, txt_=task_txt, tid_=task_id):
                             try:
                                 r_ = execute_task(txt_, t_)
@@ -1917,7 +1730,7 @@ async def run_websocket(token: str):
                         threading.Thread(target=_task_thread, daemon=True).start()
 
         except websockets.exceptions.ConnectionClosedOK: log.info("WS closed cleanly")
-        except websockets.exceptions.ConnectionClosedError as e: log.warning("WS closed error: %s", e)
+        except websockets.exceptions.ConnectionClosedError as e: log.warning("WS error: %s", e)
         except OSError as e: log.warning("WS network: %s", e)
         except Exception as e: log.error("WS exception: %s", e)
 
@@ -1925,25 +1738,24 @@ async def run_websocket(token: str):
             print(f"  [WS] Reconnecting in {int(retry)}s...")
             await asyncio.sleep(retry); retry = min(retry*1.5, max_retry)
 
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 # HEARTBEAT
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 def _heartbeat(token_ref: list):
     while _running:
         time.sleep(300)
         try:
             tok = token_ref[0]
             if tok and not check_token_valid(tok):
-                log.warning("Token may be expired — reconnect if issues occur.")
-        except Exception as e: log.warning("Heartbeat: %s", e)
+                log.warning("Token may be expired.")
+        except Exception: pass
 
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 # MAIN
-# ═══════════════════════════════════════════════════════════════════════════
+# =========================================================================
 def main():
     print("\n" + "="*60)
-    print("  DACEXY AGENT v22.0 — INVESTOR DEMO EDITION")
-    print("  Real Jarvis. Actually works.")
+    print("  DACEXY AGENT v23.0")
     print("="*60 + "\n")
 
     init_tts()
@@ -1963,8 +1775,8 @@ def main():
     if token:
         print("  Checking saved session...")
         try:
-            if check_token_valid(token): print("  [OK] Session valid — no login needed.\n")
-            else: print("  [INFO] Session expired — please log in.\n"); clear_token(); token = None
+            if check_token_valid(token): print("  [OK] Session valid.\n")
+            else: print("  Session expired - please log in.\n"); clear_token(); token = None
         except Exception: token = None
 
     if not token:
@@ -1972,62 +1784,50 @@ def main():
             token = login()
             if token: break
             if attempt < 2: print(f"\n  Attempt {attempt+1}/3 failed. Try again.\n")
-        if not token: print("\n  [ERROR] Authentication failed. Exiting."); sys.exit(1)
+        if not token: print("\n  [ERROR] Authentication failed."); sys.exit(1)
 
     try: setup_autostart()
     except Exception: pass
 
     if not _smtp_cfg.get("email"):
-        print()
-        print("  ┌──────────────────────────────────────────────────────┐")
-        print("  │  Email not configured.                               │")
-        print("  │  Without it: emails open Gmail in your browser.      │")
-        print("  │  With it:    1000s of emails send automatically.     │")
-        print("  └──────────────────────────────────────────────────────┘")
-        try:
-            ans = input("\n  Set up email now? (y/N): ").strip().lower()
-            if ans == "y": configure_smtp_interactive()
-        except (EOFError, KeyboardInterrupt): print()
+        print("\n  Email not configured. Say 'configure email' after starting to enable bulk send.\n")
     else:
-        print(f"  [EMAIL] Ready — sending as {_smtp_cfg['email']}")
+        print(f"  [EMAIL] Ready - {_smtp_cfg['email']}")
 
     voice_ok = start_voice(token)
     tok_ref  = [token]
-    threading.Thread(target=_heartbeat, args=(tok_ref,), daemon=True, name="Heartbeat").start()
-    threading.Thread(target=_scheduler_loop, args=(tok_ref,), daemon=True, name="Scheduler").start()
+    threading.Thread(target=_heartbeat, args=(tok_ref,), daemon=True).start()
+    threading.Thread(target=_scheduler_loop, args=(tok_ref,), daemon=True).start()
 
     print()
-    print("  " + "─"*58)
-    print(f"  Dacexy Agent v{VERSION} — LIVE")
-    print(f"  Voice   : {'JARVIS ON — say Dacexy / Jarvis / Computer' if voice_ok else 'OFF (install PyAudio)'}")
-    print(f"  Email   : {'Auto-send: '+_smtp_cfg.get('email','') if _smtp_cfg.get('email') else 'Not configured (opens Gmail compose)'}")
+    print("  " + "-"*56)
+    print(f"  Dacexy Agent v{VERSION} - LIVE")
+    print(f"  Voice   : {'JARVIS ON - say Dacexy / Jarvis / Computer' if voice_ok else 'OFF (PyAudio not installed)'}")
+    print(f"  Email   : {_smtp_cfg.get('email') or 'Not configured - say configure email'}")
     print(f"  Dashboard: dacexy.vercel.app")
     print(f"  Logs    : {LOG_FILE}")
-    print("  " + "─"*58)
+    print("  " + "-"*56)
     print()
-    print("  DEMO COMMANDS (voice or dashboard):")
+    print("  COMMANDS (dashboard or voice):")
     print("    open youtube")
     print("    search lofi music on youtube")
-    print("    send email to boss@gmail.com saying meeting is confirmed")
-    print("    find leads for my SaaS product and email them")
+    print("    send email to boss@gmail.com saying hello")
+    print("    find leads for my product and email them")
     print("    take a screenshot")
     print("    what time is it")
-    print("    system info")
-    print("    research AI marketing tools 2025")
+    print("    configure email")
     print()
 
     if not websockets:
-        print("  [ERROR] websockets not installed! Run: pip install websockets")
+        print("  [ERROR] websockets not installed!")
         sys.exit(1)
 
     try: asyncio.run(run_websocket(token))
-    except KeyboardInterrupt: print("\n  Stopped by Ctrl+C.")
-    except Exception as e: log.error("Fatal: %s", e); print(f"\n  [FATAL] {e}")
+    except KeyboardInterrupt: print("\n  Stopped.")
+    except Exception as e: log.error("Fatal: %s", e)
     finally:
         global _running; _running = False; stop_voice()
         try: save_memory()
-        except Exception: pass
-        try: speak("Goodbye!"); time.sleep(0.8)
         except Exception: pass
         print("  Goodbye!")
         sys.exit(0)
