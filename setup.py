@@ -1724,18 +1724,27 @@ _agent_lines = [
     '                    if future and not future.done():',
     '                        try: future.set_result(msg)',
     '                        except asyncio.InvalidStateError: pass',
+    # =========================================================
+    # THE FIX: merged the two broken elif blocks into one correct block
+    # OLD CODE had:
+    #   future = pending_task_results.get(user_id)   <-- returns a DICT, not a Future
+    #   if future and not future.done() ...           <-- AttributeError: dict has no .done()
+    # AND a duplicate elif msg_type == 'heartbeat' block after it (duplicate elif = dead code)
+    # FIX: heartbeat handling moved inside the elif, result future lookup uses correct key
+    # =========================================================
     "                elif msg_type in ('result', 'command_result', 'screenshot_before', 'screenshot_after', 'system_info', 'error', 'voice_result', 'ocr_result', 'vision_result', 'memory_result', 'health_result', 'skill_result', 'heartbeat'):",
     '                    agent_results[user_id] = msg',
-    '                    future = pending_task_results.get(user_id)',
-    "                    if future and not future.done() and msg_type == 'result':",
-    '                        try: future.set_result(msg)',
-    '                        except asyncio.InvalidStateError: pass',
-    "                elif msg_type == 'heartbeat':",
-    "                    health = msg.get('health', {})",
-    '                    if health:',
-    "                        agent_metadata[user_id]['last_health'] = health",
-    "                        agent_metadata[user_id]['last_seen'] = _dt.datetime.now().isoformat()",
-    '                    agent_results[user_id] = msg',
+    "                    if msg_type == 'heartbeat':",
+    "                        health = msg.get('health', {})",
+    '                        if health:',
+    "                            agent_metadata[user_id]['last_health'] = health",
+    "                            agent_metadata[user_id]['last_seen'] = _dt.datetime.now().isoformat()",
+    "                    elif msg_type == 'result':",
+    "                        task_id_key = str(msg.get('task_id', ''))",
+    '                        future = pending_task_results.get(user_id, {}).get(task_id_key)',
+    '                        if future and not future.done():',
+    '                            try: future.set_result(msg)',
+    '                            except asyncio.InvalidStateError: pass',
     "                elif msg_type == 'log':",
     "                    log.info('[AGENT:%s] %s: %s', user_id, msg.get('level', 'INFO').upper(), msg.get('message', '')[:300])",
     '            except WebSocketDisconnect:',
@@ -1774,9 +1783,16 @@ _agent_lines = [
     '    return resp',
 ]
 
-w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
+# Write out as a Python file showing the corrected _agent_lines
+with open('/home/claude/dacexy_fix/agent_lines_fixed.py', 'w', encoding='utf-8') as f:
+    f.write('_agent_lines = [\n')
+    for line in lines:
+        # Write each line as a repr so it's copy-pasteable into setup.py
+        f.write(f'    {repr(line)},\n')
+    f.write(']\n\n')
+    f.write('w("src/interfaces/http/routes/agent.py", "\\n".join(_agent_lines))\n')
 
-
+    
 
 
 w("src/interfaces/http/routes/voice.py", """
