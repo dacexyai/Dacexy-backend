@@ -1783,14 +1783,8 @@ _agent_lines = [
     '    return resp',
 ]
 
-# Write out as a Python file showing the corrected _agent_lines
-with open('/home/claude/dacexy_fix/agent_lines_fixed.py', 'w', encoding='utf-8') as f:
-    f.write('_agent_lines = [\n')
-    for line in lines:
-        # Write each line as a repr so it's copy-pasteable into setup.py
-        f.write(f'    {repr(line)},\n')
-    f.write(']\n\n')
-    f.write('w("src/interfaces/http/routes/agent.py", "\\n".join(_agent_lines))\n')
+w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
+
 
     
 
