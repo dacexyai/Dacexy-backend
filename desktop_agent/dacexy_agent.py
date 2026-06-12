@@ -1,8 +1,9 @@
 """
-DACEXY DESKTOP AGENT v27.0 — PRODUCTION REBUILD
+DACEXY DESKTOP AGENT v28.0 — PRODUCTION REBUILD
 =================================================
 Real desktop automation: mouse, keyboard, screen reading, file ops,
-email, voice control, WebSocket cloud link, human approval gates.
+email, voice control, WebSocket cloud link, human approval gates,
+social-message reply bots, invoice payment queue.
 
 Files output:  dacexy_agent.py  (this file)
                install_dacexy_agent.bat
@@ -247,7 +248,7 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
-VERSION      = "27.0"
+VERSION      = "28.0"
 
 AGENT_DIR  = Path.home() / "DacexyAgent"
 LOG_FILE   = AGENT_DIR / "logs" / "agent.log"
@@ -262,11 +263,26 @@ MEMORY_FILE = Path.home() / ".dacexy_memory.json"
 for _d in [AGENT_DIR, AGENT_DIR/"logs", SS_DIR, DATA_DIR, DOC_DIR, INBOX_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
+# ── NEW in v28: social reply-bot profile dir + payment-queue file/portals ────
+SOCIAL_PROFILE_DIR = AGENT_DIR / "browser_profiles"
+SOCIAL_PROFILE_DIR.mkdir(exist_ok=True)
+PAYMENT_QUEUE_FILE = DATA_DIR / "payment_queue.json"
+
+PAYMENT_PORTALS: Dict[str, str] = {
+    "razorpay": "https://dashboard.razorpay.com/app/payments",
+    "paypal":   "https://www.paypal.com/myaccount/transfer/homepage/pay",
+    "bank":     "",   # set to your bank's payment URL if you want auto-open
+}
+
+AUTO_REPLY_TEMPLATES: Dict[str, str] = {
+    "default": "Thanks for your message! I'll get back to you shortly.",
+}
+
 # Sensitive operations that require human approval
 APPROVAL_REQUIRED = {
     "send_email", "send_bulk_email", "delete_file", "run_command",
     "pay_invoice", "execute_payment", "post_twitter", "post_linkedin",
-    "post_facebook", "bulk_email",
+    "post_facebook", "bulk_email", "approve_payment", "enable_auto_reply",
 }
 
 # Private folders that are off-limits
@@ -439,6 +455,14 @@ _sel_lock         = threading.Lock()
 _pending_approvals: Dict[str, dict] = {}
 _approval_lock     = threading.Lock()
 _ws_send_fn        = None   # set by websocket loop
+
+# ── NEW in v28: social reply-bot state ───────────────────────────────────────
+_social_drivers: Dict[str, Any] = {}
+_social_lock       = threading.Lock()
+_social_auto: Dict[str, bool] = {"whatsapp": False, "instagram": False, "facebook": False}
+_social_seen: Dict[str, set]  = {"whatsapp": set(), "instagram": set(), "facebook": set()}
+_social_thread     = None
+_social_running    = False
 
 MEMORY: Dict = {
     "facts":        [],
@@ -1093,11 +1117,12 @@ def extract_invoice_data(pdf_path: str) -> dict:
 
 
 def process_invoices_folder(folder: str) -> dict:
-    """Scan folder, extract data from all PDFs, save CSV report."""
+    """Scan folder, extract data from all PDFs, queue payments, save CSV report."""
     p = Path(folder)
     if not p.exists():
         return {"status": "error", "message": "Folder not found"}
     records = []
+    queued = 0
     for f in p.rglob("*.pdf"):
         d = extract_invoice_data(str(f))
         if d.get("status") == "ok":
@@ -1107,6 +1132,9 @@ def process_invoices_folder(folder: str) -> dict:
                 "dates":      "; ".join(d["dates"][:2]),
                 "invoice_no": "; ".join(d["invoice_nos"][:2]),
             })
+            qid = add_to_payment_queue(d)
+            if qid:
+                queued += 1
     report = DATA_DIR / f"invoices_{datetime.date.today()}.csv"
     try:
         with open(report, "w", newline="", encoding="utf-8") as fh:
@@ -1116,10 +1144,119 @@ def process_invoices_folder(folder: str) -> dict:
             subprocess.Popen(f'notepad.exe "{report}"', shell=True)
         except Exception:
             pass
-        speak(f"Processed {len(records)} invoices. Report saved.")
-        return {"status": "ok", "count": len(records), "report": str(report)}
+        speak(f"Processed {len(records)} invoices. {queued} queued for payment approval. Report saved.")
+        return {"status": "ok", "count": len(records), "queued": queued, "report": str(report)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVOICE PAYMENT QUEUE  (extract → queue → human approval → handoff to portal)
+# Nothing here ever moves money automatically. Approval just opens the chosen
+# payment portal with the amount/invoice shown so a human completes the pay.
+# ══════════════════════════════════════════════════════════════════════════════
+def _load_payment_queue() -> list:
+    try:
+        if PAYMENT_QUEUE_FILE.exists():
+            return json.loads(PAYMENT_QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("load_payment_queue: %s", e)
+    return []
+
+
+def _save_payment_queue(q: list):
+    try:
+        tmp = PAYMENT_QUEUE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(q, indent=2), encoding="utf-8")
+        tmp.replace(PAYMENT_QUEUE_FILE)
+    except Exception as e:
+        log.warning("save_payment_queue: %s", e)
+
+
+def add_to_payment_queue(invoice: dict) -> Optional[str]:
+    """invoice: a dict from extract_invoice_data(). Adds an entry if it has an amount > 0."""
+    amount = invoice.get("max_amount") or 0
+    if not amount:
+        return None
+    q = _load_payment_queue()
+    # Avoid duplicate queue entries for the same file
+    if any(i.get("file") == invoice.get("file") and i.get("status") == "pending_review" for i in q):
+        return None
+    qid = hashlib.md5(f"{invoice.get('file','')}-{amount}-{time.time()}".encode()).hexdigest()[:8]
+    entry = {
+        "id":         qid,
+        "file":       invoice.get("file", ""),
+        "amount":     amount,
+        "invoice_no": "; ".join(invoice.get("invoice_nos", [])[:1]),
+        "dates":      "; ".join(invoice.get("dates", [])[:1]),
+        "status":     "pending_review",
+        "added_at":   datetime.datetime.now().isoformat(),
+    }
+    q.append(entry)
+    _save_payment_queue(q)
+    audit.info("PAYMENT_QUEUED id=%s amount=%s file=%s", qid, amount, entry["file"])
+    return qid
+
+
+def list_payment_queue(status: str = "pending_review") -> dict:
+    q = _load_payment_queue()
+    items = [i for i in q if status == "all" or i.get("status") == status]
+    if items:
+        label = "all" if status == "all" else status.replace("_", " ")
+        print(f"\n  === PAYMENT QUEUE ({label}) ===")
+        for it in items:
+            print(f"  [{it['id']}] {it['file']}  amount={it['amount']}  "
+                  f"inv#={it.get('invoice_no','') or '-'}  status={it['status']}")
+        print()
+        speak(f"{len(items)} payment(s) {label}.")
+    else:
+        speak(f"No payments with status {status.replace('_',' ')}.")
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+def approve_payment(queue_id: str, portal: str = "razorpay") -> dict:
+    q = _load_payment_queue()
+    entry = next((i for i in q if i["id"] == queue_id), None)
+    if not entry:
+        return {"status": "error", "message": f"No queued payment with id {queue_id}"}
+    if entry["status"] != "pending_review":
+        return {"status": "error", "message": f"Payment {queue_id} is already '{entry['status']}'"}
+
+    if not request_approval("approve_payment",
+                             f"Pay {entry['amount']} — invoice {entry.get('invoice_no') or '?'} "
+                             f"({entry['file']})"):
+        return {"status": "denied"}
+
+    entry["status"] = "approved"
+    entry["approved_at"] = datetime.datetime.now().isoformat()
+    entry["portal"] = portal
+    _save_payment_queue(q)
+    audit.info("PAYMENT_APPROVED id=%s amount=%s file=%s portal=%s",
+               queue_id, entry["amount"], entry["file"], portal)
+
+    url = PAYMENT_PORTALS.get(portal, "")
+    if url:
+        webbrowser.open(url)
+        speak(f"Approved. Opened {portal} — pay {entry['amount']} for invoice "
+              f"{entry.get('invoice_no') or '?'}. Complete it there.")
+    else:
+        speak(f"Approved payment of {entry['amount']} for invoice "
+              f"{entry.get('invoice_no') or '?'}. No portal URL configured — pay manually.")
+    return {"status": "ok", "entry": entry, "portal_url": url}
+
+
+def reject_payment(queue_id: str, reason: str = "") -> dict:
+    q = _load_payment_queue()
+    entry = next((i for i in q if i["id"] == queue_id), None)
+    if not entry:
+        return {"status": "error", "message": f"No queued payment with id {queue_id}"}
+    entry["status"] = "rejected"
+    if reason:
+        entry["reason"] = reason
+    _save_payment_queue(q)
+    audit.info("PAYMENT_REJECTED id=%s file=%s reason=%s", queue_id, entry["file"], reason[:60])
+    speak(f"Payment {queue_id} rejected.")
+    return {"status": "ok"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1565,7 +1702,7 @@ def selenium_click(selector: str, by: str = "css") -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOCIAL MEDIA
+# SOCIAL MEDIA (outbound posting)
 # ══════════════════════════════════════════════════════════════════════════════
 def post_twitter(username: str, password: str, text: str) -> dict:
     if not request_approval("post_twitter", f"@{username}: {text[:80]}"):
@@ -1638,6 +1775,269 @@ def youtube_search_and_play(query: str) -> dict:
     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
     webbrowser.open(url); speak(f"YouTube search: {query}")
     return {"status": "ok", "url": url}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SOCIAL MESSAGE REPLY BOTS  (WhatsApp / Instagram / Facebook DMs)
+#
+# Uses a SEPARATE, PERSISTENT Chrome profile per platform (saved under
+# AGENT_DIR/browser_profiles/<platform>) so you log in / scan the QR code
+# ONCE and the session survives restarts.
+#
+# Honesty note: Instagram and Facebook actively try to detect and block
+# automated browser sessions (checkpoints, temporary locks). This uses the
+# same pattern as your existing post_twitter/post_linkedin/post_facebook
+# functions, but expect occasional manual re-logins if a platform flags the
+# session. WhatsApp Web requires a one-time QR scan on first run.
+#
+# Default mode is DRAFT ONLY (auto=False): messages are read and a reply is
+# generated but NOT sent — they're returned so you can review them. Turning
+# on auto-send for a platform requires one human approval (enable_auto_reply),
+# same pattern as "always approve" elsewhere in this file.
+# ══════════════════════════════════════════════════════════════════════════════
+def _get_social_driver(platform: str):
+    """Persistent Chrome profile per platform so login/session survives restarts."""
+    with _social_lock:
+        drv = _social_drivers.get(platform)
+        if drv:
+            try:
+                _ = drv.current_url
+                return drv
+            except Exception:
+                try: drv.quit()
+                except Exception: pass
+                _social_drivers.pop(platform, None)
+
+        if not SELENIUM_OK:
+            return None
+        prof_dir = SOCIAL_PROFILE_DIR / platform
+        prof_dir.mkdir(exist_ok=True)
+        opts = ChromeOptions()
+        opts.add_argument(f"--user-data-dir={prof_dir}")
+        opts.add_argument("--start-maximized")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+        opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
+        try:
+            svc = ChromeService(ChromeDriverManager().install())
+            drv = webdriver.Chrome(service=svc, options=opts)
+            drv.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            _social_drivers[platform] = drv
+            return drv
+        except Exception as e:
+            log.warning("Social driver [%s]: %s", platform, e)
+            return None
+
+
+def _gen_reply(message: str) -> str:
+    """Simple keyword-based reply generator (local, no external AI call)."""
+    m = (message or "").lower()
+    if any(k in m for k in ["price", "cost", "how much", "quote"]):
+        return "Thanks for asking! Let me check pricing and get back to you shortly."
+    if any(k in m for k in ["urgent", "asap", "emergency"]):
+        return "Got it — marking this urgent. We'll respond very soon."
+    if any(k in m for k in ["hi", "hello", "hey", "good morning", "good evening"]):
+        return "Hi! Thanks for reaching out — how can I help?"
+    if any(k in m for k in ["thank", "thanks"]):
+        return "You're welcome! Let us know if you need anything else."
+    return AUTO_REPLY_TEMPLATES["default"]
+
+
+def whatsapp_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
+    drv = _get_social_driver("whatsapp")
+    if not drv:
+        return {"status": "error", "message": "Selenium not available"}
+    try:
+        if "web.whatsapp.com" not in (drv.current_url or ""):
+            drv.get("https://web.whatsapp.com")
+            time.sleep(3)
+        # First-run QR check
+        try:
+            WebDriverWait(drv, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "canvas[aria-label='Scan me!']")))
+            speak("WhatsApp Web needs a QR scan — check the browser window.")
+            return {"status": "pending", "message": "Scan the QR code in the opened browser window"}
+        except Exception:
+            pass
+
+        unread = drv.find_elements(By.XPATH, "//span[@aria-label[contains(.,'unread')]]")
+        results = []
+        for chat in unread[:max_chats]:
+            try:
+                row = chat.find_element(By.XPATH, "./ancestor::div[@role='listitem']")
+                row.click(); time.sleep(1.2)
+                msgs = drv.find_elements(By.CSS_SELECTOR, "div.message-in span.selectable-text")
+                if not msgs: continue
+                last_msg = msgs[-1].text
+                if not last_msg: continue
+                seen_key = last_msg[:40]
+                if seen_key in _social_seen["whatsapp"]: continue
+                _social_seen["whatsapp"].add(seen_key)
+                reply = _gen_reply(last_msg)
+                if auto:
+                    box = drv.find_element(By.CSS_SELECTOR, "footer div[contenteditable='true']")
+                    box.click(); box.send_keys(reply); box.send_keys(Keys.RETURN)
+                    audit.info("WHATSAPP_AUTOREPLY sent")
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": True})
+                else:
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": False})
+            except Exception:
+                continue
+
+        if results:
+            speak(f"WhatsApp: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+        return {"status": "ok", "platform": "whatsapp", "messages": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def instagram_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
+    drv = _get_social_driver("instagram")
+    if not drv:
+        return {"status": "error", "message": "Selenium not available"}
+    try:
+        if "instagram.com/direct" not in (drv.current_url or ""):
+            drv.get("https://www.instagram.com/direct/inbox/")
+            time.sleep(3)
+        try:
+            WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.NAME, "username")))
+            speak("Instagram needs login — check the browser window.")
+            return {"status": "pending", "message": "Log in to Instagram in the opened browser window"}
+        except Exception:
+            pass
+
+        threads = drv.find_elements(By.CSS_SELECTOR, "div[role='listitem']")
+        results = []
+        for th in threads[:max_chats]:
+            try:
+                th.click(); time.sleep(1.2)
+                msgs = drv.find_elements(By.CSS_SELECTOR, "div[dir='auto']")
+                if not msgs: continue
+                last_msg = msgs[-1].text
+                if not last_msg: continue
+                seen_key = last_msg[:40]
+                if seen_key in _social_seen["instagram"]: continue
+                _social_seen["instagram"].add(seen_key)
+                reply = _gen_reply(last_msg)
+                if auto:
+                    box = drv.find_element(By.CSS_SELECTOR, "textarea")
+                    box.click(); box.send_keys(reply); box.send_keys(Keys.RETURN)
+                    audit.info("INSTAGRAM_AUTOREPLY sent")
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": True})
+                else:
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": False})
+            except Exception:
+                continue
+
+        if results:
+            speak(f"Instagram: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+        return {"status": "ok", "platform": "instagram", "messages": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def facebook_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
+    drv = _get_social_driver("facebook")
+    if not drv:
+        return {"status": "error", "message": "Selenium not available"}
+    try:
+        if "messages" not in (drv.current_url or ""):
+            drv.get("https://www.facebook.com/messages/t/")
+            time.sleep(3)
+        try:
+            WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.ID, "email")))
+            speak("Facebook needs login — check the browser window.")
+            return {"status": "pending", "message": "Log in to Facebook in the opened browser window"}
+        except Exception:
+            pass
+
+        threads = drv.find_elements(By.CSS_SELECTOR, "a[role='link'][aria-current]")
+        results = []
+        for th in threads[:max_chats]:
+            try:
+                th.click(); time.sleep(1.2)
+                msgs = drv.find_elements(By.CSS_SELECTOR, "div[dir='auto']")
+                if not msgs: continue
+                last_msg = msgs[-1].text
+                if not last_msg: continue
+                seen_key = last_msg[:40]
+                if seen_key in _social_seen["facebook"]: continue
+                _social_seen["facebook"].add(seen_key)
+                reply = _gen_reply(last_msg)
+                if auto:
+                    box = drv.find_element(By.CSS_SELECTOR, "div[contenteditable='true']")
+                    box.click(); box.send_keys(reply); box.send_keys(Keys.RETURN)
+                    audit.info("FACEBOOK_AUTOREPLY sent")
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": True})
+                else:
+                    results.append({"message": last_msg[:80], "reply": reply, "sent": False})
+            except Exception:
+                continue
+
+        if results:
+            speak(f"Facebook: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+        return {"status": "ok", "platform": "facebook", "messages": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+_SOCIAL_CHECKERS = {
+    "whatsapp":  whatsapp_check_messages,
+    "instagram": instagram_check_messages,
+    "facebook":  facebook_check_messages,
+}
+
+
+def _social_poll_loop():
+    global _social_running
+    while _social_running and _running:
+        for plat, auto in list(_social_auto.items()):
+            if auto:
+                try:
+                    _SOCIAL_CHECKERS[plat](auto=True)
+                except Exception as e:
+                    log.warning("social poll [%s]: %s", plat, e)
+        time.sleep(45)
+
+
+def start_social_replies(platforms: list, auto: bool = False) -> dict:
+    """Open/attach a persistent browser session per platform and start polling.
+    auto=True sends replies automatically (one-time approval required)."""
+    global _social_thread, _social_running
+    plats = [str(p).lower().strip() for p in platforms if str(p).lower().strip() in _SOCIAL_CHECKERS]
+    if not plats:
+        return {"status": "error", "message": "No valid platforms (use whatsapp / instagram / facebook)"}
+
+    if auto and not request_approval("enable_auto_reply", f"Auto-send replies on: {', '.join(plats)}"):
+        return {"status": "denied"}
+
+    opened = []
+    for plat in plats:
+        _social_auto[plat] = auto
+        res = _SOCIAL_CHECKERS[plat](auto=False)  # opens browser / triggers login if needed
+        opened.append({"platform": plat, "status": res.get("status")})
+
+    if not _social_running:
+        _social_running = True
+        _social_thread = threading.Thread(target=_social_poll_loop, daemon=True, name="SocialReply")
+        _social_thread.start()
+
+    speak(f"Reply monitoring on for {', '.join(plats)}{' (auto-send)' if auto else ' (drafts only)'}.")
+    return {"status": "ok", "platforms": plats, "auto": auto, "opened": opened}
+
+
+def stop_social_replies(platforms: list = None) -> dict:
+    global _social_running
+    plats = platforms or list(_social_auto.keys())
+    plats = [str(p).lower().strip() for p in plats]
+    for p in plats:
+        if p in _social_auto:
+            _social_auto[p] = False
+    if not any(_social_auto.values()):
+        _social_running = False
+    speak("Reply monitoring stopped.")
+    return {"status": "ok", "platforms": plats}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1760,6 +2160,37 @@ def local_parse(task: str) -> list:
             if txt and len(txt) > 2:
                 return [{"action": "facebook_post", "username": "", "password": "", "text": txt}]
 
+    # ── NEW in v28: social reply-bot phrasing ────────────────────────────────
+    if re.search(r"(?:reply\s+to|check|read)\s+(?:my\s+)?(?:whatsapp|instagram|facebook)\s+(?:messages|dms|inbox|chats)", tl) \
+       or re.search(r"(?:reply\s+to|check)\s+(?:my\s+)?(?:dms|messages)\b", tl):
+        plat = ""
+        for p in ("whatsapp", "instagram", "facebook"):
+            if p in tl: plat = p; break
+        auto = bool(re.search(r"\b(?:auto|automatically|and\s+send|and\s+reply)\b", tl))
+        return [{"action": "check_social_messages", "platform": plat, "auto": auto}]
+
+    if re.search(r"(?:turn\s+on|enable|start)\s+auto.?repl", tl) or \
+       re.search(r"(?:auto.?reply|reply\s+bot)s?\s+(?:on|for)\s+(?:whatsapp|instagram|facebook)", tl):
+        plats = [p for p in ("whatsapp", "instagram", "facebook") if p in tl] or ["whatsapp", "instagram", "facebook"]
+        return [{"action": "start_social_replies", "platforms": plats, "auto": True}]
+
+    if re.search(r"(?:turn\s+off|disable|stop)\s+auto.?repl", tl):
+        plats = [p for p in ("whatsapp", "instagram", "facebook") if p in tl] or None
+        return [{"action": "stop_social_replies", "platforms": plats}]
+
+    # ── NEW in v28: payment-queue phrasing ───────────────────────────────────
+    if re.search(r"(?:pending|queued|outstanding)\s+payments?|payment\s+queue|payments?\s+(?:to\s+)?approve", tl):
+        return [{"action": "list_payment_queue", "status": "pending_review"}]
+
+    if re.search(r"\bapprove(?:d)?\s+payments?\b", tl) and re.search(r"\b(?:list|show|all)\b", tl):
+        return [{"action": "list_payment_queue", "status": "approved"}]
+
+    m = re.search(r"approve\s+payment\s+([a-z0-9]{4,})", tl)
+    if m: return [{"action": "approve_payment", "queue_id": m.group(1), "portal": "razorpay"}]
+
+    m = re.search(r"reject\s+payment\s+([a-z0-9]{4,})", tl)
+    if m: return [{"action": "reject_payment", "queue_id": m.group(1)}]
+
     m = re.search(r"(?:search|play|find|watch|look\s+up)\s+(.+?)\s+(?:on|in)\s+youtube", tl)
     if m: return [{"action": "open_youtube", "query": m.group(1).strip()}]
     if re.search(r"\byoutube\b", tl) and re.search(r"\b(?:search|play|watch|find|open|look)\b", tl):
@@ -1846,7 +2277,9 @@ def local_parse(task: str) -> list:
     if re.search(r"\b(?:help|what\s+can\s+you\s+do|commands)\b", tl):
         return [{"action": "speak", "text": ("I can: open apps/sites, send emails, organize files, "
                                               "read inbox, find leads, process invoices, paste spreadsheet data, "
-                                              "take screenshots, control volume, post social media, book meetings, and more!")}]
+                                              "take screenshots, control volume, post social media, reply to "
+                                              "WhatsApp/Instagram/Facebook messages, manage a payment queue, "
+                                              "book meetings, and more!")}]
 
     if re.search(r"\b(?:hello|hi|hey|good\s+morning|howdy)\b", tl):
         return [{"action": "speak", "text": f"Hello! Dacexy v{VERSION} ready. What can I do?"}]
@@ -1989,6 +2422,41 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 speak(f"Compressed to {dst.name}"); return {"status": "ok", "zip": str(dst)}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
+
+        # ── PAYMENT QUEUE (NEW in v28) ────────────────────────────────────────
+        if action in {"list_payment_queue", "show_payments", "pending_payments", "payment_queue"}:
+            return list_payment_queue(str(cmd.get("status") or "pending_review"))
+
+        if action in {"approve_payment", "pay_invoice"}:
+            qid = str(cmd.get("queue_id") or cmd.get("id") or "")
+            if not qid: return {"status": "error", "message": "queue_id required"}
+            return approve_payment(qid, str(cmd.get("portal") or "razorpay"))
+
+        if action in {"reject_payment"}:
+            qid = str(cmd.get("queue_id") or cmd.get("id") or "")
+            if not qid: return {"status": "error", "message": "queue_id required"}
+            return reject_payment(qid, str(cmd.get("reason") or ""))
+
+        # ── SOCIAL REPLY BOTS (NEW in v28) ────────────────────────────────────
+        if action in {"start_social_replies", "enable_auto_reply", "watch_messages"}:
+            plats = cmd.get("platforms") or ["whatsapp", "instagram", "facebook"]
+            if isinstance(plats, str): plats = re.split(r"[,\s]+", plats)
+            return start_social_replies(plats, bool(cmd.get("auto", False)))
+
+        if action in {"stop_social_replies", "disable_auto_reply"}:
+            plats = cmd.get("platforms")
+            if isinstance(plats, str): plats = re.split(r"[,\s]+", plats)
+            return stop_social_replies(plats)
+
+        if action in {"check_social_messages", "check_messages", "check_dms"}:
+            plat = str(cmd.get("platform") or "").lower().strip()
+            auto = bool(cmd.get("auto", False))
+            if plat in _SOCIAL_CHECKERS:
+                return _SOCIAL_CHECKERS[plat](auto=auto)
+            results = {}
+            for p, fn in _SOCIAL_CHECKERS.items():
+                results[p] = fn(auto=auto)
+            return {"status": "ok", "results": results}
 
         # ── BOOKING ───────────────────────────────────────────────────────────
         if action == "check_calendar":
@@ -2172,7 +2640,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if q: return youtube_search_and_play(q)
             webbrowser.open("https://www.youtube.com"); return {"status": "ok"}
 
-        # ── SOCIAL ────────────────────────────────────────────────────────────
+        # ── SOCIAL (outbound posting) ─────────────────────────────────────────
         if action in {"twitter_post", "post_twitter", "tweet"}:
             return post_twitter(str(cmd.get("username") or ""), str(cmd.get("password") or ""),
                                 str(cmd.get("text") or cmd.get("content") or ""))
@@ -2237,6 +2705,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             skills = ["open apps/sites", "send email", "bulk email", "read inbox", "draft replies",
                       "find leads", "organize files", "process invoices", "paste spreadsheet data",
                       "screenshot & OCR", "voice control", "social media posting", "WhatsApp",
+                      "social reply bots (WhatsApp/Instagram/Facebook)", "invoice payment queue",
                       "book meetings", "web research", "browser automation", "scheduler", "real mouse/keyboard"]
             speak(f"{len(skills)} skill types available."); return {"status": "ok", "skills": skills}
 
@@ -2526,8 +2995,11 @@ def start_voice(token: str) -> bool:
     return True
 
 def stop_voice(): global _voice_on; _voice_on = False
-def update_token(t: str): global _cur_token;
-    with _tok_lock: _cur_token = t
+
+def update_token(t: str):
+    global _cur_token
+    with _tok_lock:
+        _cur_token = t
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2545,10 +3017,14 @@ def _interactive_shell(token: str, tok_ref: list):
 
     cmds_help = {
         "organize desktop":     "Sort files into folders by type",
-        "process invoices":     "Extract data from PDFs in a folder",
+        "process invoices":     "Extract data from PDFs, queue payments",
+        "pending payments":     "Show invoices queued for payment approval",
+        "approve payment <id>": "Approve a queued payment (opens payment portal)",
         "check inbox":          "Read and flag urgent emails",
         "configure email":      "Set up SMTP for auto-send",
         "find leads for X":     "Find email leads for product X",
+        "reply to my whatsapp": "Read WhatsApp DMs and draft replies",
+        "turn on auto reply":   "Enable auto-send replies (needs approval)",
         "open youtube":         "Open YouTube",
         "screenshot":           "Take a screenshot",
         "system info":          "CPU/RAM/disk usage",
@@ -2623,9 +3099,10 @@ async def run_websocket(token: str):
                     "features": ["voice3", "vision", "browser", "email", "social_selenium",
                                  "bulk_email", "lead_gen", "web_research", "scheduler", "memory",
                                  "selenium", "ocr", "screenshot", "file_organizer", "invoice_extractor",
-                                 "spreadsheet_paste", "inbox_reader", "approval_gates", "v27_rebuild",
+                                 "spreadsheet_paste", "inbox_reader", "approval_gates", "v28_rebuild",
                                  "real_mouse_keyboard", "encrypted_config", "health_monitor",
-                                 "calendar_booking", "human_approval"],
+                                 "calendar_booking", "human_approval", "social_reply_bots",
+                                 "payment_queue"],
                 }))
 
                 log.info("WS: connected!")
@@ -2800,6 +3277,10 @@ def main():
         with _sel_lock:
             if _selenium_driver:
                 try: _selenium_driver.quit()
+                except Exception: pass
+        with _social_lock:
+            for _drv in _social_drivers.values():
+                try: _drv.quit()
                 except Exception: pass
         try: save_memory()
         except Exception: pass
