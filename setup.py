@@ -1241,15 +1241,7 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 """)
 
 
-    I understand exactly what went wrong. In my last reply, I gave you the raw Python code for `agent.py`, and you pasted it directly into your `setup.py` around line 1246. 
-
-Because `from __future__ import annotations` is a special Python command that can **only** exist at the very top of a file, putting it in the middle of `setup.py` caused a fatal `SyntaxError` and crashed your Render deployment.
-
-To fix this, you must paste the code **as a Python list of strings** (just like your original format) so `setup.py` can safely write it without running it. I have preserved your exact architecture and authentication.
-
-### Replace your entire `_agent_lines = [...]` block in `setup.py` with this exact code:
-
-```python
+    
 _agent_lines = [
     '# __future__ import removed to prevent setup.py crashes if pasted incorrectly',
     'import json',
