@@ -1774,7 +1774,6 @@ _agent_lines = [
     "    resp.headers['Content-Disposition'] = 'attachment; filename=install_dacexy_agent.sh'",
     '    return resp',
 ]
-```
 
 w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
 
