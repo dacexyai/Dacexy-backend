@@ -1,4 +1,10 @@
 @echo off
+if /I "%~1"=="--relaunched" goto :MAIN
+chcp 65001 >nul 2>&1
+start "Dacexy Desktop Agent - Installer" cmd /k "%~f0" --relaunched
+exit /b
+
+:MAIN
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 title Dacexy Desktop Agent - Installer
@@ -91,14 +97,7 @@ echo  Installing PyAudio for voice control...
 python -m pip install PyAudio --quiet --no-warn-script-location >>"%ALOG%" 2>&1
 python -c "import pyaudio" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    python -m pip install pipwin --quiet --no-warn-script-location >>"%ALOG%" 2>&1
-    python -m pipwin install pyaudio >>"%ALOG%" 2>&1
-    python -c "import pyaudio" >nul 2>&1
-    if !ERRORLEVEL! NEQ 0 (
-        echo  [!] PyAudio failed - voice disabled, text commands still work
-    ) else (
-        echo  [+] PyAudio OK - voice enabled
-    )
+    echo  [!] PyAudio failed - voice disabled, text commands still work
 ) else (
     echo  [+] PyAudio OK - voice enabled
 )
