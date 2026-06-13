@@ -1769,11 +1769,11 @@ _agent_lines = [
     '    gif_bytes = bytes([71,73,70,56,57,97,1,0,1,0,128,0,0,255,255,255,0,0,0,33,249,4,0,0,0,0,0,44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,59])',
     "    return Response(content=gif_bytes, media_type='image/gif', headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})",
     '',
-    "@router.get('/download/windows-agent')",
-    'async def download_windows_agent():',
-    "    agent_path = Path(__file__).resolve().parents[4] / 'desktop_agent' / 'dacexy_agent.py'",
-    "    if not agent_path.exists(): raise HTTPException(status_code=404, detail='Agent file not found')",
-    "    return FileResponse(path=str(agent_path), filename='dacexy_agent.py', media_type='text/x-python')",
+    "@router.get('/download/windows')",
+    'async def download_windows_installer():',
+    "    installer_path = Path(__file__).resolve().parents[4] / 'desktop_agent' / 'install_dacexy_agent.bat'",
+    "    if not installer_path.exists(): raise HTTPException(status_code=404, detail='Installer not found')",
+    "    return FileResponse(path=str(installer_path), filename='install_dacexy_agent.bat', media_type='application/octet-stream')",
     '',
     "@router.get('/download/mac')",
     'async def download_mac_installer():',
@@ -1784,6 +1784,7 @@ _agent_lines = [
 ]
 
 w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
+
 
 
     
