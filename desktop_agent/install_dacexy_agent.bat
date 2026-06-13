@@ -108,7 +108,7 @@ echo [4/8] Installing agent file...
 echo.
 
 if exist "%~dp0dacexy_agent.py" (
-    echo  Found dacexy_agent.py next to this installer - using it.
+    echo  Using dacexy_agent.py found next to this installer (dev override).
     for %%F in ("%~dp0dacexy_agent.py") do echo    File date: %%~tF
     for %%F in ("%~dp0dacexy_agent.py") do echo    File size: %%~zF bytes
     copy /y "%~dp0dacexy_agent.py" "%APY%" >nul 2>&1
@@ -116,35 +116,34 @@ if exist "%~dp0dacexy_agent.py" (
     goto :AGENT_COMPILECHECK
 )
 
-if exist "%APY%" (
-    echo  ******************************************************************
-    echo   NO dacexy_agent.py FOUND NEXT TO THIS INSTALLER.
-    echo   Keeping the file ALREADY INSTALLED at:
-    echo     %APY%
+echo  Downloading latest agent from Dacexy server...
+del "%APY%.new" >nul 2>&1
+powershell -ExecutionPolicy Bypass -Command ^
+    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%APY%.new' -UseBasicParsing; Write-Host 'Downloaded OK' } catch { Write-Host ('FAIL: '+$_.Exception.Message); exit 1 }" >>"%ALOG%" 2>&1
+
+if %ERRORLEVEL% EQU 0 (
+    move /y "%APY%.new" "%APY%" >nul 2>&1
     for %%F in ("%APY%") do echo    File date: %%~tF
     for %%F in ("%APY%") do echo    File size: %%~zF bytes
-    echo.
-    echo   If you have a NEWER dacexy_agent.py from chat, put it in the
-    echo   SAME FOLDER as this installer (%~dp0^) and run this installer
-    echo   again - that is the ONLY way a new version gets installed.
-    echo  ******************************************************************
+    echo  OK: Latest agent downloaded from server
     goto :AGENT_COMPILECHECK
 )
 
-echo  Downloading agent from Dacexy server...
-powershell -ExecutionPolicy Bypass -Command ^
-    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%APY%' -UseBasicParsing; Write-Host 'Downloaded OK' } catch { Write-Host ('FAIL: '+$_.Exception.Message); exit 1 }" >>"%ALOG%" 2>&1
+del "%APY%.new" >nul 2>&1
 
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo  ERROR: dacexy_agent.py could not be downloaded.
-    echo  Please place dacexy_agent.py in the same folder as this installer and re-run.
-    pause
-    exit /b 1
+if exist "%APY%" (
+    echo  WARNING: Could not reach the update server.
+    echo  Keeping your existing installed agent at:
+    echo    %APY%
+    for %%F in ("%APY%") do echo    File date: %%~tF
+    goto :AGENT_COMPILECHECK
 )
-for %%F in ("%APY%") do echo    File date: %%~tF
-for %%F in ("%APY%") do echo    File size: %%~zF bytes
-echo  OK: Agent downloaded from server
+
+echo.
+echo  ERROR: Could not download dacexy_agent.py and none is installed yet.
+echo  Check your internet connection and re-run this installer.
+pause
+exit /b 1
 
 :AGENT_COMPILECHECK
 echo.
