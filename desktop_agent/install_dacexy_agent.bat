@@ -107,7 +107,7 @@ echo [4/8] Installing agent file...
 echo.
 
 if exist "%~dp0dacexy_agent.py" (
-    echo  Using dacexy_agent.py found next to this installer (dev override).
+    echo  Using dacexy_agent.py found next to this installer ^(dev override^).
     for %%F in ("%~dp0dacexy_agent.py") do echo    File date: %%~tF
     for %%F in ("%~dp0dacexy_agent.py") do echo    File size: %%~zF bytes
     copy /y "%~dp0dacexy_agent.py" "%APY%" >nul 2>&1
