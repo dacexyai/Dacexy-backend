@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
-title Dacexy Desktop Agent v25.0 Installer
+title Dacexy Desktop Agent - Installer
 color 0A
 
 echo.
 echo  ===================================================
-echo   DACEXY Desktop Agent v25.0 - Installer
+echo   DACEXY Desktop Agent - Installer
 echo  ===================================================
 echo.
 
@@ -62,7 +62,8 @@ echo  OK
 
 echo.
 echo [3/8] Installing packages...
-echo  (Each one shown below. Any failure is non-fatal.)
+echo  (Each one shown below. Any failure is non-fatal - the agent
+echo   will try again automatically the first time it runs.)
 echo.
 
 python -m pip install pyautogui         --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pyautogui         || echo  [!] pyautogui failed
@@ -81,6 +82,9 @@ python -m pip install beautifulsoup4    --quiet --no-warn-script-location >>"%AL
 python -m pip install lxml              --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] lxml               || echo  [!] lxml failed
 python -m pip install selenium          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] selenium           || echo  [!] selenium failed
 python -m pip install webdriver-manager --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] webdriver-manager  || echo  [!] webdriver-manager failed
+python -m pip install pdfplumber        --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pdfplumber         || echo  [!] pdfplumber failed
+python -m pip install openpyxl          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] openpyxl           || echo  [!] openpyxl failed
+python -m pip install cryptography      --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] cryptography       || echo  [!] cryptography failed
 
 echo.
 echo  Installing PyAudio for voice control...
@@ -100,22 +104,33 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [4/8] Setting up agent file...
+echo [4/8] Installing agent file...
+echo.
 
-rem --- PRIORITY 1: dacexy_agent.py right next to this installer ---
 if exist "%~dp0dacexy_agent.py" (
+    echo  Found dacexy_agent.py next to this installer - using it.
+    for %%F in ("%~dp0dacexy_agent.py") do echo    File date: %%~tF
+    for %%F in ("%~dp0dacexy_agent.py") do echo    File size: %%~zF bytes
     copy /y "%~dp0dacexy_agent.py" "%APY%" >nul 2>&1
-    echo  OK: Copied dacexy_agent.py from installer folder
-    goto :AGENT_OK
+    echo    Installed : %APY%
+    goto :AGENT_COMPILECHECK
 )
 
-rem --- PRIORITY 2: Already installed ---
 if exist "%APY%" (
-    echo  OK: Agent already present at %APY%
-    goto :AGENT_OK
+    echo  ******************************************************************
+    echo   NO dacexy_agent.py FOUND NEXT TO THIS INSTALLER.
+    echo   Keeping the file ALREADY INSTALLED at:
+    echo     %APY%
+    for %%F in ("%APY%") do echo    File date: %%~tF
+    for %%F in ("%APY%") do echo    File size: %%~zF bytes
+    echo.
+    echo   If you have a NEWER dacexy_agent.py from chat, put it in the
+    echo   SAME FOLDER as this installer (%~dp0^) and run this installer
+    echo   again - that is the ONLY way a new version gets installed.
+    echo  ******************************************************************
+    goto :AGENT_COMPILECHECK
 )
 
-rem --- PRIORITY 3: Download from backend ---
 echo  Downloading agent from Dacexy server...
 powershell -ExecutionPolicy Bypass -Command ^
     "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%APY%' -UseBasicParsing; Write-Host 'Downloaded OK' } catch { Write-Host ('FAIL: '+$_.Exception.Message); exit 1 }" >>"%ALOG%" 2>&1
@@ -127,9 +142,20 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     exit /b 1
 )
+for %%F in ("%APY%") do echo    File date: %%~tF
+for %%F in ("%APY%") do echo    File size: %%~zF bytes
 echo  OK: Agent downloaded from server
 
-:AGENT_OK
+:AGENT_COMPILECHECK
+echo.
+echo  Verifying agent file...
+python -m py_compile "%APY%" >>"%ALOG%" 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo    [+] dacexy_agent.py is valid Python - OK
+) else (
+    echo    [!] dacexy_agent.py FAILED to compile - see %ALOG%
+    echo        The agent will NOT run correctly until this is fixed.
+)
 
 rem Save a copy of this installer in the agent folder
 copy /y "%~f0" "%ADIR%\install_dacexy_agent.bat" >nul 2>&1
@@ -142,12 +168,12 @@ echo [5/8] Creating launcher...
 (
 echo @echo off
 echo chcp 65001 ^>nul 2^>^&1
-echo title Dacexy Agent v25.0
+echo title Dacexy Agent
 echo color 0A
 echo set PYTHONIOENCODING=utf-8
 echo set PYTHONUTF8=1
 echo cd /d "%ADIR%"
-echo echo  Dacexy Agent v25.0 starting...
+echo echo  Dacexy Agent starting...
 echo echo  Press Ctrl+C to stop.
 echo echo.
 echo :LOOP
@@ -186,37 +212,42 @@ echo.
 python -c "import pyautogui; print('  [+] Mouse and keyboard control')" 2>nul
 python -c "from PIL import ImageGrab; print('  [+] Screenshot capture')" 2>nul
 python -c "import pyaudio; print('  [+] Voice control')" 2>nul
-python -c "from selenium import webdriver; print('  [+] Browser automation')" 2>nul
-python -c "from bs4 import BeautifulSoup; print('  [+] Web scraping')" 2>nul
+python -c "from selenium import webdriver; print('  [+] Browser automation (incl. social reply bots)')" 2>nul
+python -c "from bs4 import BeautifulSoup; print('  [+] Web scraping / lead generation')" 2>nul
 python -c "import websockets; print('  [+] Cloud dashboard connection')" 2>nul
 python -c "import psutil; print('  [+] System info')" 2>nul
 python -c "import smtplib; print('  [+] Email engine')" 2>nul
+python -c "import pdfplumber; print('  [+] Invoice PDF extraction / payment queue')" 2>nul
+python -c "import openpyxl; print('  [+] Spreadsheet reading')" 2>nul
+python -c "from cryptography.fernet import Fernet; print('  [+] Encrypted local credential storage')" 2>nul
 
 echo.
 echo [8/8] Done!
 echo.
 echo  ===================================================
-echo   DACEXY v25.0 - Installation Complete!
+echo   Installation Complete!
 echo  ===================================================
 echo.
 echo  HOW TO START: Double-click "Dacexy Agent" on your Desktop
 echo.
 echo  FIRST RUN:   Log in with your dacexy.vercel.app account
-echo  THEN TYPE:   configure email  (to enable bulk auto-send)
+echo  THEN TYPE:   configure email   (enables auto-send / inbox reading)
 echo.
 echo  WAKE WORDS:  Dacexy / Hey Dacexy / Jarvis / Computer
 echo.
 echo  EXAMPLE COMMANDS:
 echo    open youtube
-echo    search for AI news
-echo    take a screenshot
-echo    what time is it
-echo    send email to boss@gmail.com saying hello
-echo    configure email
+echo    organize my desktop
+echo    process invoices
+echo    pending payments
+echo    approve payment ^<id^>
+echo    reply to my whatsapp messages
+echo    turn on auto reply for whatsapp
 echo    find leads for my product
-echo    open chrome
-echo    open calculator
-echo    scroll down
+echo    send email to boss@gmail.com saying hello
+echo    take a screenshot
+echo    type hello world
+echo    open notepad
 echo    volume up
 echo.
 echo  DASHBOARD:   dacexy.vercel.app
@@ -229,12 +260,12 @@ if /i "%RUN_NOW%"=="n" goto :SKIP
 if /i "%RUN_NOW%"=="no" goto :SKIP
 echo.
 echo  Opening agent in new window...
-start "Dacexy Agent v25.0" "%SBAT%"
+start "Dacexy Agent" "%SBAT%"
 echo  Done! Login window is now open.
 goto :END
 
 :SKIP
-echo  Start anytime from Desktop shortcut.
+echo  Start anytime from the Desktop shortcut.
 
 :END
 echo.
