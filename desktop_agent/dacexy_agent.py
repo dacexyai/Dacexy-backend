@@ -3086,7 +3086,7 @@ def _voice_loop():
 
         if not _is_wake_word(heard): continue
         log.info("Wake word: '%s'", heard)
-        speak("Yes?"); time.sleep(0.3)
+        speak("Yes sir, how can I help?"); time.sleep(0.3)
 
         command = ""
         try:
