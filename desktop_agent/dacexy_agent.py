@@ -2073,13 +2073,11 @@ def smart_open(target: str) -> dict:
 # SMART AI BRAIN (g4f & research fallback)
 # ══════════════════════════════════════════════════════════════════════════════
 def ask_ai_brain(prompt: str) -> str:
-    """Ask a free LLM provider for a smart response; reliably falls back to a
-    web-search summary (no API key needed) if the provider is unavailable,
-    rate-limited, or returns an empty/error-like response."""
+    """Enterprise Smart AI Brain with resilient fallback."""
     try:
         import g4f
         response = g4f.ChatCompletion.create(
-            model=g4f.models.gpt_35_turbo,
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
         )
         text = str(response).strip()
@@ -2146,22 +2144,26 @@ def draft_contract(client: str) -> dict:
 def local_parse(task: str) -> list:
     t = task.strip(); tl = t.lower()
     
-    # Check for compound commands
-    if " and " in tl and not "search" in tl and not "write about" in tl:
-        parts = tl.split(" and ")
+    # Check for compound commands ONLY if they clearly separate distinct actions, to avoid breaking complex sentences
+    if " then " in tl:
+        parts = tl.split(" then ")
+        cmds = []
+        for p in parts:
+            cmds.extend(local_parse(p.strip()))
+            cmds.append({"action": "wait", "seconds": 2})
+        return [c for c in cmds if c.get("action") != "wait" or cmds.index(c) != len(cmds)-1]
+        
+    if " and then " in tl:
+        parts = tl.split(" and then ")
         cmds = []
         for p in parts:
             cmds.extend(local_parse(p.strip()))
             cmds.append({"action": "wait", "seconds": 2})
         return [c for c in cmds if c.get("action") != "wait" or cmds.index(c) != len(cmds)-1]
 
-    if "then " in tl:
-        parts = tl.split("then ")
-        cmds = []
-        for p in parts:
-            cmds.extend(local_parse(p.strip()))
-            cmds.append({"action": "wait", "seconds": 2})
-        return [c for c in cmds if c.get("action") != "wait" or cmds.index(c) != len(cmds)-1]
+    # Added enterprise NLP mapping for the 50 new business automation requests
+    if re.search(r"(?:asset tracking|appointment rescheduling|archive management|backup verification|business license tracking|badge/id creation|contract drafting|compliance auditing|customer intake|data cleaning|document conversions|digital signatures|expense categorization|e-commerce order sync|estimated tax|financial reporting|fraud detection|gift card generation|government portal|hourly billing|invoice generation|invoicing collections|interview scheduling|it onboarding|job description|job board posting|kpi tracking|leave request|local vendor|market competitor|mailing list cleanup|newsletter formatting|onboarding email|online review scraping|order confirmation|portfolio updates|price sheet|proposal creation|quality inspection|quote comparisons|refund management|reorder alert|shipping label|shipment tracking|supplier directory|ticket triage|unsubscribe processing|user permission auditing|vendor invoice reconciliation|warranty registration|watermark application|weekly status|zip-code territory)", tl):
+        return [{"action": "enterprise_automation", "task": task}]
 
     # AI Brain explicitly requested
     m = re.search(r"(?:think about|explain|what is|who is|write about|generate)\s+(.+)", tl)
