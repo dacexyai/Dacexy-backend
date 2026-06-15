@@ -2714,11 +2714,18 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             p = Path(str(cmd.get("path") or AGENT_DIR / "output.txt"))
             if not _is_path_allowed(str(p)):
                 return {"status": "error", "message": "Path blocked."}
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(str(cmd.get("content") or "")[:1_000_000], encoding="utf-8")
-            try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
-            except Exception: pass
-            speak(f"File {p.name} saved."); return {"status": "ok", "path": str(p)}
+            
+            def _write():
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(str(cmd.get("content") or "")[:1_000_000], encoding="utf-8")
+                try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+                except Exception: pass
+                return {"status": "ok", "path": str(p)}
+                
+            def _verify():
+                return verify_file_created(str(p))
+                
+            return run_with_verification(_write, _verify, f"create file {p.name}")
 
         if action in {"read_file", "open_file"}:
             p = Path(str(cmd.get("path") or ""))
@@ -2805,7 +2812,15 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 for kw in ["chrome", "firefox", "edge"]:
                     if kw in action: tgt = kw; break
             if not tgt: return {"status": "error", "message": "No target to open"}
-            return smart_open(tgt)
+            
+            def _open():
+                return smart_open(tgt)
+            def _verify():
+                return verify_window_contains(tgt) or verify_screen_ocr(tgt)
+            def _correct():
+                smart_open(tgt)
+
+            return run_with_verification(_open, _verify, f"open {tgt}", correction_func=_correct)
 
         # ── REAL MOUSE / KEYBOARD ─────────────────────────────────────────────
         if action == "click":
