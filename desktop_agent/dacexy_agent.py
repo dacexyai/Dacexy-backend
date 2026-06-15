@@ -453,6 +453,7 @@ _sel_lock         = threading.Lock()
 _pending_approvals: Dict[str, dict] = {}
 _approval_lock     = threading.Lock()
 _ws_send_fn        = None   # set by websocket loop
+_ws_loop           = None   # set by websocket loop
 
 # ── Social reply-bot state ─────────────────────────────────────────────────
 _social_drivers: Dict[str, Any] = {}
@@ -2049,9 +2050,6 @@ def smart_open(target: str) -> dict:
     for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ", "visit ", "browse "]:
         if tl.startswith(pfx): tl = tl[len(pfx):].strip(); t = t[len(pfx):].strip()
 
-    if tl in SITES: webbrowser.open(SITES[tl]); speak(f"Opening {tl}"); return {"status": "ok", "opened": SITES[tl]}
-    for site, url in SITES.items():
-        if site in tl: webbrowser.open(url); speak(f"Opening {site}"); return {"status": "ok", "opened": url}
     if tl in APPS:
         try: subprocess.Popen(APPS[tl], shell=True); speak(f"Opening {tl}"); return {"status": "ok", "opened": APPS[tl]}
         except Exception as e: return {"status": "error", "message": str(e)}
@@ -2059,10 +2057,19 @@ def smart_open(target: str) -> dict:
         if app in tl:
             try: subprocess.Popen(exe, shell=True); speak(f"Opening {app}"); return {"status": "ok", "opened": exe}
             except Exception as e: return {"status": "error", "message": str(e)}
+
+    def _open_chrome(url, name=""):
+        speak(f"Opening {name or url}")
+        try: subprocess.Popen(["start", "chrome", url], shell=True)
+        except Exception: webbrowser.open(url)
+
+    if tl in SITES: _open_chrome(SITES[tl], tl); return {"status": "ok", "opened": SITES[tl]}
+    for site, url in SITES.items():
+        if site in tl: _open_chrome(url, site); return {"status": "ok", "opened": url}
     if tl.startswith(("http://", "https://")):
-        webbrowser.open(t); return {"status": "ok", "opened": t}
+        _open_chrome(t); return {"status": "ok", "opened": t}
     if re.match(r"^[a-z0-9\-]+\.[a-z]{2,}$", tl) and " " not in tl:
-        webbrowser.open("https://" + tl); return {"status": "ok", "opened": "https://" + tl}
+        _open_chrome("https://" + tl); return {"status": "ok", "opened": "https://" + tl}
     p = Path(t)
     if p.exists():
         try: os.startfile(str(p)); return {"status": "ok", "opened": str(p)}
@@ -2081,15 +2088,16 @@ def ask_ai_brain(prompt: str) -> str:
     import concurrent.futures
     def _g4f_call():
         import g4f
+        sys_msg = "You are Dacexy, a fast desktop AI agent. You MUST respond ONLY in English, concisely, and directly. Do not use markdown."
         response = g4f.ChatCompletion.create(
             model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": prompt}],
         )
         return str(response).strip()
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(_g4f_call)
-            text = future.result(timeout=15)
+            text = future.result(timeout=30)
         if text and len(text) > 10 and "error" not in text.lower()[:60]:
             return text
         log.warning("AI Brain (g4f): empty/error-like response, falling back")
@@ -3095,6 +3103,11 @@ def execute_task(task: str, token: str) -> dict:
         log.info("  Step %d/%d: %s", i + 1, total, step_action)
         print(f"  [STEP {i+1}/{total}] {step_action}")
         try:
+            if _ws_send_fn and _ws_loop:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(_ws_send_fn({"type": "task_result", "task_id": "live", "status": "running", "result": f"Step {i+1}/{total}: {step_action}"}), _ws_loop)
+        except Exception: pass
+        try:
             res = exec_cmd(c, token); results.append(res)
             if res.get("status") in ("ok", "skipped"):
                 ok_count += 1; print(f"  [OK]")
@@ -3258,7 +3271,7 @@ def _voice_loop():
     rec = sr.Recognizer()
     rec.energy_threshold         = 350
     rec.dynamic_energy_threshold = True
-    rec.pause_threshold          = 0.7
+    rec.pause_threshold          = 2.0
 
     print("  [VOICE] Active! Say: Dacexy / Hey Dacexy / Jarvis / Computer")
     speak("Voice ready. Say Dacexy to give me a command.")
@@ -3269,7 +3282,7 @@ def _voice_loop():
             with sr.Microphone() as src:
                 try: rec.adjust_for_ambient_noise(src, duration=0.1)
                 except Exception: pass
-                try: audio = rec.listen(src, timeout=3, phrase_time_limit=7)
+                try: audio = rec.listen(src, timeout=5, phrase_time_limit=15)
                 except sr.WaitTimeoutError: continue
                 except OSError: time.sleep(2); continue
             try: heard = rec.recognize_google(audio, language="en-IN").lower().strip()
@@ -3286,7 +3299,7 @@ def _voice_loop():
             with sr.Microphone() as csrc:
                 try: rec.adjust_for_ambient_noise(csrc, duration=0.08)
                 except Exception: pass
-                try: caudio = rec.listen(csrc, timeout=8, phrase_time_limit=30)
+                try: caudio = rec.listen(csrc, timeout=12, phrase_time_limit=60)
                 except sr.WaitTimeoutError: speak("I didn't catch that."); continue
                 except OSError: continue
             try: command = rec.recognize_google(caudio, language="en-IN").strip()
@@ -3438,7 +3451,9 @@ async def run_websocket(token: str):
                         try: await ws.send(json.dumps(data))
                         except Exception as e_: log.warning("ws_send: %s", e_)
 
+                global _ws_loop
                 _ws_send_fn = ws_send
+                _ws_loop = loop
 
                 while _running:
                     try:
