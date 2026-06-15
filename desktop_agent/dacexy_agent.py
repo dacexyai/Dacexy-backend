@@ -2165,22 +2165,6 @@ def local_parse(task: str) -> list:
     if re.search(r"(?:asset tracking|appointment rescheduling|archive management|backup verification|business license tracking|badge/id creation|contract drafting|compliance auditing|customer intake|data cleaning|document conversions|digital signatures|expense categorization|e-commerce order sync|estimated tax|financial reporting|fraud detection|gift card generation|government portal|hourly billing|invoice generation|invoicing collections|interview scheduling|it onboarding|job description|job board posting|kpi tracking|leave request|local vendor|market competitor|mailing list cleanup|newsletter formatting|onboarding email|online review scraping|order confirmation|portfolio updates|price sheet|proposal creation|quality inspection|quote comparisons|refund management|reorder alert|shipping label|shipment tracking|supplier directory|ticket triage|unsubscribe processing|user permission auditing|vendor invoice reconciliation|warranty registration|watermark application|weekly status|zip-code territory)", tl):
         return [{"action": "enterprise_automation", "task": task}]
 
-    # Specific enterprise task triggers
-    if re.search(r"(?:monitor|check|read)\s+(?:error\s+)?logs", tl):
-        # We assume logs are at a default location if not specified
-        return [{"action": "monitor_error_logs", "path": str(Path.home() / "Desktop" / "error.log")}]
-    if re.search(r"(?:backup|save)\s+(?:to\s+)?cloud", tl):
-        return [{"action": "backup_to_cloud"}]
-    m = re.search(r"(?:monitor|track)\s+prices?\s+(?:for|on|at)?\s*(https?://\S+)?", tl)
-    if m and "price" in tl:
-        url = m.group(1) if m.group(1) else "amazon.com"
-        return [{"action": "monitor_prices", "url": url}]
-    if re.search(r"(?:create|draft|write)\s+(?:a\s+)?newsletter", tl):
-        return [{"action": "create_newsletter"}]
-    m = re.search(r"(?:draft|create|write)\s+(?:a\s+)?contract\s+(?:for\s+)?(.+)", tl)
-    if m:
-        return [{"action": "draft_contract", "client": m.group(1).strip()}]
-
     # AI Brain explicitly requested
     m = re.search(r"(?:think about|explain|what is|who is|write about|generate)\s+(.+)", tl)
     if m and not "email" in tl:
@@ -2426,39 +2410,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
     try:
         # ── SPEAK / NOTIFY ────────────────────────────────────────────────────
-        if action == "enterprise_automation":
-            speak("Initiating enterprise automation workflow.")
-            print(f"\\n  [ENTERPRISE AUTOMATION] Processing task: {cmd.get('task')}\\n")
-            prompt = f"You are Dacexy, an enterprise AI desktop automation agent. The user requested: '{cmd.get('task')}'. Provide a clear, spoken response outlining the exact action plan or the result of this operation. Do not use markdown, keep it conversational."
-            resp = ask_ai_brain(prompt)
-            speak(resp)
-            return {"status": "ok", "response": resp}
-
-        if action == "monitor_error_logs":
-            res = monitor_error_logs(str(cmd.get("path", "")))
-            speak(res.get("note", "Checked logs."))
-            return res
-            
-        if action == "backup_to_cloud":
-            res = backup_to_cloud()
-            speak(res.get("note", "Backup initiated."))
-            return res
-            
-        if action == "monitor_prices":
-            res = monitor_prices(str(cmd.get("url", "")))
-            speak(res.get("note", "Monitoring prices."))
-            return res
-            
-        if action == "create_newsletter":
-            res = create_newsletter()
-            speak(res.get("note", "Newsletter drafted."))
-            return res
-            
-        if action == "draft_contract":
-            res = draft_contract(str(cmd.get("client", "a client")))
-            speak(res.get("note", "Contract drafted."))
-            return res
-
         if action == "ask_ai":
             speak("Thinking...")
             resp = ask_ai_brain(str(cmd.get("prompt", "")))
@@ -2467,6 +2418,18 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             print(f"\\n  [AI BRAIN]\\n{resp}\\n")
             if "write about" in str(cmd.get("prompt", "")).lower():
                 real_type(resp, clear_first=False, human_speed=False)
+            return {"status": "ok", "response": resp}
+
+        if action == "enterprise_automation":
+            task_text = str(cmd.get("task", ""))
+            speak("Working on that — let me pull together what's needed.")
+            resp = ask_ai_brain(
+                f"The user asked Dacexy (an AI desktop agent) to help with this business task: "
+                f"\"{task_text}\". Give clear, practical, step-by-step guidance for getting this done."
+            )
+            _notify("Dacexy", resp[:150])
+            print(f"\n  [BUSINESS TASK]\n{resp}\n")
+            speak("Here's what I found — check the window for details.")
             return {"status": "ok", "response": resp}
 
         if action == "send_email_by_name":
@@ -3135,7 +3098,7 @@ def _voice_loop():
 
         if not _is_wake_word(heard): continue
         log.info("Wake word: '%s'", heard)
-        speak("Yes?"); time.sleep(0.3)
+        speak("Yes sir, how can I help?"); time.sleep(0.3)
 
         command = ""
         try:
