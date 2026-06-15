@@ -310,6 +310,8 @@ SMTP_PRESETS: Dict[str, Dict] = {
     "zoho.com":       {"host": "smtp.zoho.com",       "port": 587},
 }
 
+SOCIAL_POLL_INTERVAL = 45  # seconds between social-media polls (configurable)
+
 WAKE_WORDS = ["dacexy", "hey dacexy", "okay dacexy", "jarvis", "hey jarvis", "computer", "assistant", "hey agent", "agent"]
 
 SITES: Dict[str, str] = {
@@ -646,13 +648,15 @@ def clear_token():
 def check_token_valid(token: str) -> bool:
     if not req_lib:
         return False
-    try:
+    def _check():
         r = req_lib.get(
             f"{BACKEND_HTTP}/auth/me",
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
         return r.status_code == 200
+    try:
+        return _retry(_check, attempts=3, delays=(1, 3), label="token_check")
     except Exception:
         return False
 
@@ -1862,7 +1866,7 @@ def whatsapp_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
         for chat in unread[:max_chats]:
             try:
                 row = chat.find_element(By.XPATH, "./ancestor::div[@role='listitem']")
-                row.click(); time.sleep(1.2)
+                row.click(); time.sleep(0.5)
                 msgs = drv.find_elements(By.CSS_SELECTOR, "div.message-in span.selectable-text")
                 if not msgs: continue
                 last_msg = msgs[-1].text
@@ -1907,7 +1911,7 @@ def instagram_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
         results = []
         for th in threads[:max_chats]:
             try:
-                th.click(); time.sleep(1.2)
+                th.click(); time.sleep(0.5)
                 msgs = drv.find_elements(By.CSS_SELECTOR, "div[dir='auto']")
                 if not msgs: continue
                 last_msg = msgs[-1].text
@@ -1952,7 +1956,7 @@ def facebook_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
         results = []
         for th in threads[:max_chats]:
             try:
-                th.click(); time.sleep(1.2)
+                th.click(); time.sleep(0.5)
                 msgs = drv.find_elements(By.CSS_SELECTOR, "div[dir='auto']")
                 if not msgs: continue
                 last_msg = msgs[-1].text
@@ -1994,7 +1998,7 @@ def _social_poll_loop():
                     _SOCIAL_CHECKERS[plat](auto=True)
                 except Exception as e:
                     log.warning("social poll [%s]: %s", plat, e)
-        time.sleep(45)
+        time.sleep(SOCIAL_POLL_INTERVAL)
 
 
 def start_social_replies(platforms: list, auto: bool = False) -> dict:
@@ -2073,19 +2077,26 @@ def smart_open(target: str) -> dict:
 # SMART AI BRAIN (g4f & research fallback)
 # ══════════════════════════════════════════════════════════════════════════════
 def ask_ai_brain(prompt: str) -> str:
-    """Enterprise Smart AI Brain with resilient fallback."""
-    try:
+    """Enterprise Smart AI Brain with 15-second timeout and resilient fallback."""
+    import concurrent.futures
+    def _g4f_call():
         import g4f
         response = g4f.ChatCompletion.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
         )
-        text = str(response).strip()
+        return str(response).strip()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_g4f_call)
+            text = future.result(timeout=15)
         if text and len(text) > 10 and "error" not in text.lower()[:60]:
             return text
         log.warning("AI Brain (g4f): empty/error-like response, falling back")
     except ImportError:
         return "Install g4f for smart AI brain. Run: pip install g4f"
+    except concurrent.futures.TimeoutError:
+        log.warning("AI Brain (g4f): timed out after 15s, falling back to web_research")
     except Exception as e:
         log.warning("AI Brain (g4f): %s", e)
     try:
@@ -2162,8 +2173,110 @@ def local_parse(task: str) -> list:
         return [c for c in cmds if c.get("action") != "wait" or cmds.index(c) != len(cmds)-1]
 
     # Added enterprise NLP mapping for the 50 new business automation requests
-    if re.search(r"(?:asset tracking|appointment rescheduling|archive management|backup verification|business license tracking|badge/id creation|contract drafting|compliance auditing|customer intake|data cleaning|document conversions|digital signatures|expense categorization|e-commerce order sync|estimated tax|financial reporting|fraud detection|gift card generation|government portal|hourly billing|invoice generation|invoicing collections|interview scheduling|it onboarding|job description|job board posting|kpi tracking|leave request|local vendor|market competitor|mailing list cleanup|newsletter formatting|onboarding email|online review scraping|order confirmation|portfolio updates|price sheet|proposal creation|quality inspection|quote comparisons|refund management|reorder alert|shipping label|shipment tracking|supplier directory|ticket triage|unsubscribe processing|user permission auditing|vendor invoice reconciliation|warranty registration|watermark application|weekly status|zip-code territory)", tl):
-        return [{"action": "enterprise_automation", "task": task}]
+    # ── MASSIVE ENTERPRISE TASK DETECTION (200+ business tasks) ──────────────
+    _enterprise_patterns = [
+        # Sales
+        r"(?:manual\s+)?lead\s+(?:entry|follow.?up|qualification|tracking|generation)",
+        r"(?:forgotten|missed)\s+(?:leads?|callbacks?)",
+        r"quotation\s+creation|proposal\s+generation|crm\s+update",
+        r"customer\s+data\s+scatter|sales\s+report|competitor\s+(?:price|monitor|analysis)",
+        r"sales\s+(?:pipeline|forecast|analysis)|follow.?up\s+email",
+        r"contract\s+generation|invoice\s+(?:generation|creation|reminder)",
+        r"prospect\s+research|customer\s+renewal|upsell\s+(?:opportunity|detection)",
+        # Customer Support
+        r"(?:repetitive|customer)\s+questions?|delayed\s+(?:email\s+)?response",
+        r"ticket\s+(?:categoriz|triage)|complaint\s+logging|support\s+report",
+        r"faq\s+management|feedback\s+collection|refund\s+(?:request|management|process)",
+        r"service\s+status|satisfaction\s+tracking|warranty\s+(?:claim|registration)",
+        r"escalation\s+management|review\s+monitoring",
+        # Marketing
+        r"social\s+media\s+(?:posting|engagement|tracking)|content\s+(?:schedul|repurpos)",
+        r"ad\s+campaign|graphic\s+generation|video\s+generation",
+        r"hashtag\s+research|seo\s+report|keyword\s+research",
+        r"blog\s+writing|email\s+marketing|newsletter\s+creation",
+        r"lead\s+magnet|market\s+research|audience\s+segment",
+        r"marketing\s+(?:performance|report)|trend\s+monitor|review\s+response",
+        # Finance
+        r"expense\s+(?:tracking|categoriz)|payment\s+reconciliation",
+        r"cash\s+flow|tax\s+(?:document|organiz)|financial\s+(?:statement|forecast|report|analysis)",
+        r"budget\s+tracking|profit.?loss|vendor\s+payment\s+reminder",
+        r"receipt\s+management|payroll\s+(?:calculation|preparation)",
+        r"late\s+payment|subscription\s+tracking|revenue\s+analysis",
+        # HR
+        r"resume\s+(?:screen|review)|candidate\s+shortlist|interview\s+schedul",
+        r"employee\s+(?:onboarding|record|feedback|management)",
+        r"training\s+assignment|attendance\s+tracking|leave\s+(?:management|request)",
+        r"performance\s+review|exit\s+process|recruitment\s+report",
+        r"job\s+(?:posting|description|board)|skill\s+tracking",
+        # Operations
+        r"task\s+assignment|project\s+tracking|workflow\s+(?:monitor|bottleneck)",
+        r"sop\s+management|daily\s+report|inventory\s+(?:monitor|tracking|alert|update)",
+        r"order\s+(?:processing|confirmation)|supplier\s+(?:communication|directory|coordination)",
+        r"procurement\s+tracking|delivery\s+schedul|quality\s+(?:control|inspection)",
+        r"resource\s+allocation|document\s+management|deadline\s+monitor",
+        # E-commerce
+        r"product\s+(?:listing|description|image|review\s+monitor)",
+        r"price\s+update|return\s+handling|shipment\s+tracking",
+        r"customer\s+order\s+notification|marketplace\s+sync",
+        r"stock\s+alert|discount\s+management|cart\s+abandonment",
+        # Administration
+        r"file\s+organization|folder\s+management|pdf\s+(?:creation|editing)",
+        r"data\s+entry|spreadsheet\s+(?:update|automation)|form\s+filling",
+        r"email\s+sorting|calendar\s+management|reminder\s+creation",
+        r"meeting\s+notes|document\s+conversion|data\s+backup",
+        r"duplicate\s+file|password\s+management",
+        # Data & Analytics
+        r"report\s+generation|dashboard\s+creation|kpi\s+(?:monitor|tracking)",
+        r"data\s+(?:cleaning|extraction)|trend\s+analysis|forecast",
+        r"customer\s+behavior|performance\s+tracking|database\s+update",
+        # Retail, Real Estate, Healthcare, Education, Manufacturing, Legal
+        r"stock\s+counting|price\s+label|demand\s+forecast",
+        r"property\s+(?:listing|marketing)|rental\s+payment",
+        r"patient\s+reminder|billing\s+generation|prescription\s+document",
+        r"student\s+attendance|report\s+card|fee\s+reminder",
+        r"production\s+(?:tracking|planning)|maintenance\s+schedul",
+        r"case\s+tracking|client\s+communication",
+        # Catch-all for previous enterprise keywords
+        r"(?:asset tracking|appointment rescheduling|archive management|backup verification)",
+        r"(?:business license|badge.?id|compliance audit|customer intake)",
+        r"(?:digital signature|e.?commerce.?sync|estimated tax|fraud detection)",
+        r"(?:gift card|government portal|hourly billing|invoicing collection)",
+        r"(?:it onboarding|mailing list|onboarding email|online review)",
+        r"(?:portfolio update|price sheet|proposal creation|quote comparison)",
+        r"(?:reorder alert|shipping label|ticket triage|unsubscribe)",
+        r"(?:user permission|vendor invoice|watermark|weekly status|zip.?code territory)",
+    ]
+    for _pat in _enterprise_patterns:
+        if re.search(_pat, tl):
+            return [{"action": "enterprise_automation", "task": task}]
+
+    # ── Enterprise utility function triggers ─────────────────────────────────
+    if re.search(r"(?:monitor|check|scan|read)\s+(?:error\s+)?(?:logs?|error\s+files?)", tl):
+        m_path = re.search(r"(?:in|at|from|path)\s+(\S+)", tl)
+        path = m_path.group(1) if m_path else str(Path.home() / "Desktop" / "error.log")
+        return [{"action": "monitor_error_logs", "path": path}]
+
+    if re.search(r"(?:backup|save|sync)\s+(?:my\s+)?(?:files?|data|documents?|everything)\s+(?:to\s+)?(?:cloud|onedrive|drive)", tl):
+        return [{"action": "backup_to_cloud"}]
+
+    if re.search(r"(?:monitor|track|watch|check)\s+(?:the\s+)?(?:price|prices|cost)\s+(?:of|for|on|at)?", tl):
+        m_url = re.search(r"(https?://\S+)", tl)
+        url = m_url.group(1) if m_url else ""
+        if not url:
+            m_site = re.search(r"(?:of|for|on|at)\s+(\S+)", tl)
+            url = m_site.group(1) if m_site else "amazon.com"
+        return [{"action": "monitor_prices", "url": url}]
+
+    if re.search(r"(?:create|draft|write|generate|make)\s+(?:a\s+)?(?:newsletter|news\s+letter)", tl):
+        return [{"action": "create_newsletter"}]
+
+    m = re.search(r"(?:draft|create|write|generate|make)\s+(?:a\s+)?contract\s+(?:for\s+)?(.+)", tl)
+    if m and "newsletter" not in tl:
+        return [{"action": "draft_contract", "client": m.group(1).strip()}]
+
+    if re.search(r"(?:run|start|do|perform)\s+(?:a\s+)?(?:diagnostic|diagnostics|self.?test|system\s+test|test\s+everything|health\s+check)", tl):
+        return [{"action": "run_diagnostics"}]
+
 
     # AI Brain explicitly requested
     m = re.search(r"(?:think about|explain|what is|who is|write about|generate)\s+(.+)", tl)
@@ -2385,7 +2498,7 @@ def local_parse(task: str) -> list:
     if re.search(r"\b(?:ping|test|status|are\s+you\s+there)\b", tl):
         return [{"action": "ping"}]
 
-    # Fallback to AI Brain
+    # Fallback to AI Brain — handles all questions, unknown tasks, conversations
     return [{"action": "ask_ai", "prompt": task}]
 
 
@@ -2410,14 +2523,82 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
     try:
         # ── SPEAK / NOTIFY ────────────────────────────────────────────────────
+
+        if action == "monitor_error_logs":
+            res = monitor_error_logs(str(cmd.get("path", str(Path.home() / "Desktop" / "error.log"))))
+            speak(res.get("note", "I checked the logs."))
+            return res
+
+        if action == "backup_to_cloud":
+            speak("Starting cloud backup now.")
+            res = backup_to_cloud()
+            speak(res.get("note", "Backup complete."))
+            return res
+
+        if action == "monitor_prices":
+            url = str(cmd.get("url", ""))
+            speak(f"Setting up price monitoring for {url}.")
+            res = monitor_prices(url)
+            speak(res.get("note", "Price monitoring activated."))
+            return res
+
+        if action == "create_newsletter":
+            speak("Drafting your newsletter now. Give me a moment.")
+            res = create_newsletter()
+            content = res.get("content", "")
+            if content:
+                speak("Newsletter is ready. I am typing it for you now.")
+                real_type(content, clear_first=False, human_speed=False)
+            else:
+                speak(res.get("note", "Newsletter drafted."))
+            return res
+
+        if action == "draft_contract":
+            client = str(cmd.get("client", "a client"))
+            speak(f"Drafting a contract for {client}. One moment.")
+            res = draft_contract(client)
+            speak(res.get("note", "Contract saved to your Desktop."))
+            return res
+
+        if action == "run_diagnostics":
+            speak("Running full system diagnostics now.")
+            report = []
+            report.append(f"PyAutoGUI: {'OK' if PYAUTOGUI_OK else 'MISSING'}")
+            report.append(f"Selenium: {'OK' if SELENIUM_OK else 'MISSING'}")
+            report.append(f"Voice: {'OK' if VOICE_OK else 'MISSING'}")
+            report.append(f"System Monitor: {'OK' if PSUTIL_OK else 'MISSING'}")
+            report.append(f"TTS Engine: {'OK' if _tts_engine else 'MISSING'}")
+            report.append(f"PDF Extraction: {'OK' if PDF_OK else 'MISSING'}")
+            report.append(f"Spreadsheet: {'OK' if XL_OK else 'MISSING'}")
+            report.append(f"OCR: {'OK' if OCR_OK else 'MISSING'}")
+            report.append(f"Clipboard: {'OK' if CLIP_OK else 'MISSING'}")
+            report.append(f"Notifications: {'OK' if NOTIFY_OK else 'MISSING'}")
+            report.append(f"Encryption: {'OK' if CRYPTO_OK else 'MISSING'}")
+            report.append(f"Requests: {'OK' if REQUESTS_OK else 'MISSING'}")
+            smtp_ok = bool(_smtp_cfg.get("email") and _smtp_cfg.get("password"))
+            report.append(f"SMTP Config: {'CONFIGURED' if smtp_ok else 'NOT SET'}")
+            ws_ok = _ws_send_fn is not None
+            report.append(f"WebSocket: {'CONNECTED' if ws_ok else 'DISCONNECTED'}")
+            full_report = "\n".join(report)
+            print(f"\n  ═══ DACEXY DIAGNOSTICS ═══\n{full_report}\n  ═════════════════════════\n")
+            passed = sum(1 for r in report if "OK" in r or "CONFIGURED" in r or "CONNECTED" in r)
+            total = len(report)
+            summary = f"Diagnostics complete. {passed} out of {total} systems are operational."
+            speak(summary)
+            return {"status": "ok", "report": report, "passed": passed, "total": total}
+
         if action == "ask_ai":
-            speak("Thinking...")
+            speak("Let me think about that.")
             resp = ask_ai_brain(str(cmd.get("prompt", "")))
-            speak("Here is what I found.")
             _notify("Dacexy AI", resp[:150])
-            print(f"\\n  [AI BRAIN]\\n{resp}\\n")
-            if "write about" in str(cmd.get("prompt", "")).lower():
+            print(f"\n  [AI BRAIN]\n{resp}\n")
+            prompt_text = str(cmd.get("prompt", "")).lower()
+            if "write about" in prompt_text or "draft" in prompt_text or "generate" in prompt_text:
+                speak("Here is what I came up with. Writing it for you now.")
                 real_type(resp, clear_first=False, human_speed=False)
+            else:
+                # Speak the actual answer out loud so user hears it
+                speak(resp[:300])
             return {"status": "ok", "response": resp}
 
         if action == "enterprise_automation":
