@@ -55,6 +55,7 @@ _PACKAGES = [
     ("watchdog",          "watchdog"),
     ("pdfplumber",        "pdfplumber"),
     ("openpyxl",          "openpyxl"),
+    ("edge-tts",          "edge_tts"),
 ]
 
 def _pip_install(*pkgs):
@@ -312,7 +313,9 @@ SMTP_PRESETS: Dict[str, Dict] = {
 
 SOCIAL_POLL_INTERVAL = 45  # seconds between social-media polls (configurable)
 
-WAKE_WORDS = ["dacexy", "hey dacexy", "okay dacexy", "jarvis", "hey jarvis", "computer", "assistant", "hey agent", "agent"]
+WAKE_WORDS = ["dex", "hey dex", "dexy", "hey dexy", "dacexy", "hey dacexy", "okay dacexy", "jarvis", "hey jarvis", "computer", "assistant", "hey agent", "agent"]
+_abort_flag = False
+
 
 SITES: Dict[str, str] = {
     "youtube": "https://www.youtube.com",
@@ -539,6 +542,25 @@ def decrypt_str(s: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # TTS
 # ══════════════════════════════════════════════════════════════════════════════
+async def _edge_speak(text: str):
+    import edge_tts, tempfile
+    communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
+        temp_name = fp.name
+    try:
+        await communicate.save(temp_name)
+        # Play MP3 on Windows using MCI SendString to avoid extra media dependencies
+        import ctypes
+        ctypes.windll.winmm.mciSendStringW(f"open \"{temp_name}\" type mpegvideo alias mymp3", None, 0, 0)
+        ctypes.windll.winmm.mciSendStringW("play mymp3 wait", None, 0, 0)
+        ctypes.windll.winmm.mciSendStringW("close mymp3", None, 0, 0)
+    except Exception as e:
+        log.warning("MCI/Edge-TTS Playback failed: %s", e)
+        raise e
+    finally:
+        try: os.unlink(temp_name)
+        except Exception: pass
+
 def _tts_worker():
     while _running:
         text = None
@@ -547,6 +569,11 @@ def _tts_worker():
             if text is None:
                 break
             try:
+                # Try edge-tts first
+                asyncio.run(_edge_speak(str(text)[:400]))
+            except Exception as e:
+                # Fallback to local pyttsx3
+                log.warning("Edge-TTS failed, falling back to pyttsx3: %s", e)
                 with _tts_lock:
                     if _tts_engine:
                         _tts_engine.say(str(text)[:400])
@@ -3108,11 +3135,18 @@ def execute_task(task: str, token: str) -> dict:
         speak("I'm not sure how to do that. Try rephrasing, or say 'help'.")
         return {"status": "error", "ok": 0, "total": 0, "result": f"Could not understand: {task[:80]}"}
 
+    global _abort_flag
+    _abort_flag = False
+
     ok_count = 0; total = len(commands); results = []
     print(f"  [TASK] {total} steps...")
     audit.info("ACTION=TASK_START | steps=%d | task=%s", total, task[:80])
 
     for i, c in enumerate(commands):
+        if _abort_flag:
+            log.warning("Task aborted by user.")
+            speak("Task stopped.")
+            break
         if not isinstance(c, dict): total -= 1; continue
         step_action = c.get("action", "?")
         log.info("  Step %d/%d: %s", i + 1, total, step_action)
@@ -3128,6 +3162,14 @@ def execute_task(task: str, token: str) -> dict:
                 ok_count += 1; print(f"  [OK]")
             else:
                 log.warning("  Step %d failed: %s", i + 1, res.get("message", "?")); print(f"  [FAIL] {res.get('message', '?')}")
+            # Dynamic self-correct / verification logic here
+            if res.get("status") == "error":
+                speak("I encountered an issue. Retrying...")
+                time.sleep(2.0)
+                res = exec_cmd(c, token)
+                if res.get("status") in ("ok", "skipped"):
+                    ok_count += 1
+                    print("  [RETRY OK]")
             time.sleep(0.15)
         except Exception as e:
             log.error("  Step %d exception: %s", i + 1, e)
@@ -3278,7 +3320,7 @@ def _is_wake_word(heard: str) -> bool:
 
 
 def _voice_loop():
-    global _voice_on
+    global _voice_on, _abort_flag
     if not VOICE_OK or not sr:
         print("  [VOICE] Disabled — install PyAudio + speechrecognition for voice control.")
         return
@@ -3288,8 +3330,8 @@ def _voice_loop():
     rec.dynamic_energy_threshold = True
     rec.pause_threshold          = 2.0
 
-    print("  [VOICE] Active! Say: Dacexy / Hey Dacexy / Jarvis / Computer")
-    speak("Voice ready. Say Dacexy to give me a command.")
+    print("  [VOICE] Active! Say: Dex / Hey Dex / Jarvis / Computer")
+    speak("Voice ready. Say Hey Dex to give me a command.")
 
     while _voice_on and _running:
         heard = ""
@@ -3307,6 +3349,14 @@ def _voice_loop():
 
         if not _is_wake_word(heard): continue
         log.info("Wake word: '%s'", heard)
+
+        # Check for immediate abort trigger (e.g., "Hey Dex stop")
+        if any(x in heard for x in ["stop", "cancel", "terminate", "halt"]):
+            _abort_flag = True
+            log.info("User requested abort via wake word: '%s'", heard)
+            speak("Stopping current task.")
+            continue
+
         speak("Yes sir, how can I help?"); time.sleep(0.3)
 
         command = ""
@@ -3324,6 +3374,13 @@ def _voice_loop():
 
         if not command: continue
         log.info("Voice command: '%s'", command)
+
+        # Check if the command itself is an abort command
+        if command.lower().strip() in ["stop", "cancel", "terminate", "halt", "stop it"]:
+            _abort_flag = True
+            speak("Stopping current task.")
+            continue
+
         with _tok_lock: tok = _cur_token
         if not tok: speak("Not logged in yet."); continue
         speak("On it!")
