@@ -1242,6 +1242,8 @@ async def get_usage(user: User = Depends(_get_current_user), db: AsyncSession = 
 
 
     
+
+
 _agent_lines = [
     '# __future__ import removed to prevent setup.py crashes if pasted incorrectly',
     'import json',
@@ -1775,10 +1777,7 @@ _agent_lines = [
     '    return resp',
 ]
 
-w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))
-
-
-
+w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))       
     
 
 
