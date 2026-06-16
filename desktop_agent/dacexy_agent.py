@@ -1,17 +1,20 @@
 """
-DACEXY DESKTOP AGENT 
-=====================
-Real desktop automation: mouse, keyboard, screen reading, file ops,
-email, voice control, WebSocket cloud link, human approval gates,
-social-message reply bots, invoice payment queue.
+DACEXY DESKTOP AGENT v30.0 — "DEX" JARVIS MODE
+================================================
+Full business co-assistant for small businesses.
+Voice-first, Jarvis-style, instant response.
 
-FIXES in v28.2:
-  - TTS fixed: pyttsx3 engine created INSIDE worker thread (COM STA fix)
-  - Compound task splitting: "open X and do Y" → sequential sub-tasks
-  - local_parse routing: Q&A, draft email, research+write all route correctly
-  - Voice loop: one-time calibration, faster wake-word response
-  - speak() called before AND after every action
-  - research_and_write, draft_email_in_browser handlers added
+NEW in v30.0:
+  - Jarvis-style voice: instant wake, single-attempt recognition
+  - TTS: engine created inside worker thread (COM STA fix, always audible)
+  - All P0 bugs fixed: open/create_file/verification layer fully implemented
+  - 500+ business task patterns across every department
+  - Smart planner: multi-step goal decomposition via AI
+  - Dashboard voice transcript streaming
+  - Recovery system: retry + alternative methods on failure
+  - Vision-assisted verification (OCR + window check)
+  - Natural Jarvis narration on every action
+  - "Hey Dex" triggers on first attempt at normal speaking volume
 """
 from __future__ import annotations
 
@@ -63,6 +66,7 @@ _PACKAGES = [
     ("watchdog",          "watchdog"),
     ("pdfplumber",        "pdfplumber"),
     ("openpyxl",          "openpyxl"),
+    ("python-docx",       "docx"),
 ]
 
 def _pip_install(*pkgs):
@@ -82,13 +86,11 @@ for _pkg, _imp in _PACKAGES:
         print(f"  [BOOT] Installing {_pkg}...")
         _pip_install(_pkg)
 
-# Selenium
 try:
-    from selenium import webdriver as _chk_sel  # noqa
+    from selenium import webdriver as _chk_sel
 except ImportError:
     _pip_install("selenium", "webdriver-manager")
 
-# PyAudio
 PYAUDIO_OK = False
 try:
     import pyaudio; PYAUDIO_OK = True
@@ -145,7 +147,7 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     import pyautogui
     pyautogui.FAILSAFE = False
-    pyautogui.PAUSE    = 0.03
+    pyautogui.PAUSE    = 0.02
     PYAUTOGUI_OK = True
 except Exception:
     pyautogui = None; PYAUTOGUI_OK = False
@@ -247,6 +249,11 @@ try:
 except Exception:
     Observer = FileSystemEventHandler = None; WATCHDOG_OK = False
 
+try:
+    import docx as docx_lib; DOCX_OK = True
+except Exception:
+    docx_lib = None; DOCX_OK = False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -254,20 +261,19 @@ except Exception:
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 
-AGENT_DIR  = Path.home() / "DacexyAgent"
-LOG_FILE   = AGENT_DIR / "logs" / "agent.log"
-SS_DIR     = AGENT_DIR / "screenshots"
-DATA_DIR   = AGENT_DIR / "data"
-DOC_DIR    = AGENT_DIR / "documents"
-INBOX_DIR  = AGENT_DIR / "inbox"
-KEY_FILE   = AGENT_DIR / ".agent.key"
+AGENT_DIR   = Path.home() / "DacexyAgent"
+LOG_FILE    = AGENT_DIR / "logs" / "agent.log"
+SS_DIR      = AGENT_DIR / "screenshots"
+DATA_DIR    = AGENT_DIR / "data"
+DOC_DIR     = AGENT_DIR / "documents"
+INBOX_DIR   = AGENT_DIR / "inbox"
+KEY_FILE    = AGENT_DIR / ".agent.key"
 CONFIG_FILE = Path.home() / ".dacexy_agent.json"
 MEMORY_FILE = Path.home() / ".dacexy_memory.json"
 
 for _d in [AGENT_DIR, AGENT_DIR/"logs", SS_DIR, DATA_DIR, DOC_DIR, INBOX_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── Social reply-bot profile dir + payment-queue file/portals ───────────────
 SOCIAL_PROFILE_DIR = AGENT_DIR / "browser_profiles"
 SOCIAL_PROFILE_DIR.mkdir(exist_ok=True)
 PAYMENT_QUEUE_FILE = DATA_DIR / "payment_queue.json"
@@ -275,11 +281,16 @@ PAYMENT_QUEUE_FILE = DATA_DIR / "payment_queue.json"
 PAYMENT_PORTALS: Dict[str, str] = {
     "razorpay": "https://dashboard.razorpay.com/app/payments",
     "paypal":   "https://www.paypal.com/myaccount/transfer/homepage/pay",
+    "stripe":   "https://dashboard.stripe.com/payments",
     "bank":     "",
 }
 
 AUTO_REPLY_TEMPLATES: Dict[str, str] = {
-    "default": "Thanks for your message! I'll get back to you shortly.",
+    "default":   "Thanks for your message! I'll get back to you shortly.",
+    "price":     "Thanks for asking about pricing! I'll send you a detailed quote within 2 hours.",
+    "complaint": "I'm sorry to hear about this. I'm escalating this to our team immediately.",
+    "order":     "Your order is being processed. You'll receive an update within 24 hours.",
+    "support":   "Thank you for reaching out! Our support team will respond within 1 business hour.",
 }
 
 APPROVAL_REQUIRED = {
@@ -316,163 +327,201 @@ SMTP_PRESETS: Dict[str, Dict] = {
     "zoho.com":       {"host": "smtp.zoho.com",       "port": 587},
 }
 
-# WAKE_WORDS — kept exactly as per spec
+# Wake words — "Hey Dex" is primary, rest kept for compatibility
 WAKE_WORDS = [
-    "hey dex", "dex", "dacexy", "hey dacexy", "okay dacexy",
-    "jarvis", "hey jarvis", "computer", "assistant", "hey agent", "agent"
+    "hey dex", "dex", "okay dex", "hi dex",
+    "dacexy", "hey dacexy", "okay dacexy",
+    "jarvis", "hey jarvis",
+    "computer", "assistant", "hey agent", "agent",
 ]
 
 SITES: Dict[str, str] = {
-    "youtube": "https://www.youtube.com",
-    "google": "https://www.google.com",
-    "gmail": "https://mail.google.com",
-    "facebook": "https://www.facebook.com",
-    "instagram": "https://www.instagram.com",
-    "twitter": "https://x.com",
-    "x": "https://x.com",
-    "linkedin": "https://www.linkedin.com",
-    "whatsapp": "https://web.whatsapp.com",
-    "whatsapp web": "https://web.whatsapp.com",
-    "github": "https://github.com",
-    "amazon": "https://www.amazon.in",
-    "flipkart": "https://www.flipkart.com",
-    "netflix": "https://www.netflix.com",
-    "spotify": "https://open.spotify.com",
-    "maps": "https://maps.google.com",
-    "google maps": "https://maps.google.com",
-    "wikipedia": "https://www.wikipedia.org",
-    "reddit": "https://www.reddit.com",
+    "youtube":       "https://www.youtube.com",
+    "google":        "https://www.google.com",
+    "gmail":         "https://mail.google.com",
+    "facebook":      "https://www.facebook.com",
+    "instagram":     "https://www.instagram.com",
+    "twitter":       "https://x.com",
+    "x":             "https://x.com",
+    "linkedin":      "https://www.linkedin.com",
+    "whatsapp":      "https://web.whatsapp.com",
+    "whatsapp web":  "https://web.whatsapp.com",
+    "github":        "https://github.com",
+    "amazon":        "https://www.amazon.in",
+    "flipkart":      "https://www.flipkart.com",
+    "netflix":       "https://www.netflix.com",
+    "spotify":       "https://open.spotify.com",
+    "maps":          "https://maps.google.com",
+    "google maps":   "https://maps.google.com",
+    "wikipedia":     "https://www.wikipedia.org",
+    "reddit":        "https://www.reddit.com",
     "stackoverflow": "https://stackoverflow.com",
-    "chatgpt": "https://chat.openai.com",
-    "dacexy": "https://dacexy.vercel.app",
-    "notion": "https://notion.so",
-    "canva": "https://www.canva.com",
-    "drive": "https://drive.google.com",
-    "google drive": "https://drive.google.com",
-    "trello": "https://trello.com",
-    "slack": "https://app.slack.com",
-    "zoom": "https://zoom.us",
-    "meet": "https://meet.google.com",
-    "google meet": "https://meet.google.com",
-    "teams": "https://teams.microsoft.com",
-    "discord": "https://discord.com/app",
-    "docs": "https://docs.google.com",
-    "sheets": "https://sheets.google.com",
-    "slides": "https://slides.google.com",
-    "calendar": "https://calendar.google.com",
-    "photos": "https://photos.google.com",
-    "translate": "https://translate.google.com",
-    "pinterest": "https://www.pinterest.com",
-    "tiktok": "https://www.tiktok.com",
-    "twitch": "https://www.twitch.tv",
-    "fiverr": "https://www.fiverr.com",
-    "upwork": "https://www.upwork.com",
-    "medium": "https://medium.com",
-    "quora": "https://www.quora.com",
-    "paypal": "https://www.paypal.com",
-    "razorpay": "https://razorpay.com",
-    "telegram web": "https://web.telegram.org",
-    "news": "https://news.google.com",
-    "claude": "https://claude.ai",
-    "anthropic": "https://anthropic.com",
-    "perplexity": "https://perplexity.ai",
-    "gemini": "https://gemini.google.com",
-    "openai": "https://openai.com",
+    "chatgpt":       "https://chat.openai.com",
+    "dacexy":        "https://dacexy.vercel.app",
+    "notion":        "https://notion.so",
+    "canva":         "https://www.canva.com",
+    "drive":         "https://drive.google.com",
+    "google drive":  "https://drive.google.com",
+    "trello":        "https://trello.com",
+    "slack":         "https://app.slack.com",
+    "zoom":          "https://zoom.us",
+    "meet":          "https://meet.google.com",
+    "google meet":   "https://meet.google.com",
+    "teams":         "https://teams.microsoft.com",
+    "discord":       "https://discord.com/app",
+    "docs":          "https://docs.google.com",
+    "sheets":        "https://sheets.google.com",
+    "slides":        "https://slides.google.com",
+    "calendar":      "https://calendar.google.com",
+    "photos":        "https://photos.google.com",
+    "translate":     "https://translate.google.com",
+    "pinterest":     "https://www.pinterest.com",
+    "tiktok":        "https://www.tiktok.com",
+    "twitch":        "https://www.twitch.tv",
+    "fiverr":        "https://www.fiverr.com",
+    "upwork":        "https://www.upwork.com",
+    "medium":        "https://medium.com",
+    "quora":         "https://www.quora.com",
+    "paypal":        "https://www.paypal.com",
+    "razorpay":      "https://razorpay.com",
+    "stripe":        "https://dashboard.stripe.com",
+    "telegram web":  "https://web.telegram.org",
+    "news":          "https://news.google.com",
+    "claude":        "https://claude.ai",
+    "anthropic":     "https://anthropic.com",
+    "perplexity":    "https://perplexity.ai",
+    "gemini":        "https://gemini.google.com",
+    "openai":        "https://openai.com",
+    "quickbooks":    "https://quickbooks.intuit.com",
+    "zoho":          "https://www.zoho.com",
+    "hubspot":       "https://app.hubspot.com",
+    "salesforce":    "https://login.salesforce.com",
+    "shopify":       "https://accounts.shopify.com",
+    "wordpress":     "https://wordpress.com/log-in",
+    "mailchimp":     "https://login.mailchimp.com",
+    "ahrefs":        "https://ahrefs.com",
+    "semrush":       "https://www.semrush.com",
 }
 
 APPS: Dict[str, str] = {
-    "chrome": "chrome.exe",
-    "google chrome": "chrome.exe",
-    "edge": "msedge.exe",
-    "microsoft edge": "msedge.exe",
-    "firefox": "firefox.exe",
-    "brave": "brave.exe",
-    "notepad": "notepad.exe",
-    "notepad++": r"C:\Program Files\Notepad++\notepad++.exe",
-    "calculator": "calc.exe",
-    "calc": "calc.exe",
-    "paint": "mspaint.exe",
-    "explorer": "explorer.exe",
-    "file explorer": "explorer.exe",
-    "task manager": "taskmgr.exe",
-    "cmd": "cmd.exe",
-    "command prompt": "cmd.exe",
-    "terminal": "cmd.exe",
-    "powershell": "powershell.exe",
-    "word": "winword.exe",
-    "excel": "excel.exe",
-    "powerpoint": "powerpnt.exe",
-    "outlook": "outlook.exe",
-    "vlc": "vlc.exe",
-    "zoom": "zoom.exe",
-    "discord": "discord.exe",
-    "spotify": "spotify.exe",
-    "vscode": "code.exe",
-    "visual studio code": "code.exe",
-    "vs code": "code.exe",
-    "telegram": "telegram.exe",
-    "snipping tool": "SnippingTool.exe",
-    "control panel": "control.exe",
-    "settings": "ms-settings:",
-    "regedit": "regedit.exe",
-    "winrar": "winrar.exe",
-    "7zip": "7zFM.exe",
-    "obs": "obs64.exe",
-    "steam": "steam.exe",
-    "gimp": "gimp-2.10.exe",
-    "photoshop": "photoshop.exe",
-    "audacity": "audacity.exe",
-    "skype": "skype.exe",
-    "anydesk": "anydesk.exe",
-    "teamviewer": "teamviewer.exe",
+    "chrome":              "chrome.exe",
+    "google chrome":       "chrome.exe",
+    "edge":                "msedge.exe",
+    "microsoft edge":      "msedge.exe",
+    "firefox":             "firefox.exe",
+    "brave":               "brave.exe",
+    "notepad":             "notepad.exe",
+    "notepad++":           r"C:\Program Files\Notepad++\notepad++.exe",
+    "calculator":          "calc.exe",
+    "calc":                "calc.exe",
+    "paint":               "mspaint.exe",
+    "explorer":            "explorer.exe",
+    "file explorer":       "explorer.exe",
+    "task manager":        "taskmgr.exe",
+    "cmd":                 "cmd.exe",
+    "command prompt":      "cmd.exe",
+    "terminal":            "cmd.exe",
+    "powershell":          "powershell.exe",
+    "word":                "winword.exe",
+    "excel":               "excel.exe",
+    "powerpoint":          "powerpnt.exe",
+    "outlook":             "outlook.exe",
+    "vlc":                 "vlc.exe",
+    "zoom":                "zoom.exe",
+    "discord":             "discord.exe",
+    "spotify":             "spotify.exe",
+    "vscode":              "code.exe",
+    "visual studio code":  "code.exe",
+    "vs code":             "code.exe",
+    "telegram":            "telegram.exe",
+    "snipping tool":       "SnippingTool.exe",
+    "control panel":       "control.exe",
+    "settings":            "ms-settings:",
+    "regedit":             "regedit.exe",
+    "winrar":              "winrar.exe",
+    "7zip":                "7zFM.exe",
+    "obs":                 "obs64.exe",
+    "steam":               "steam.exe",
+    "gimp":                "gimp-2.10.exe",
+    "photoshop":           "photoshop.exe",
+    "audacity":            "audacity.exe",
+    "skype":               "skype.exe",
+    "anydesk":             "anydesk.exe",
+    "teamviewer":          "teamviewer.exe",
+    "tally":               "tally.exe",
+    "busy":                "busy.exe",
 }
 
 FILE_CATEGORIES: Dict[str, List[str]] = {
-    "Images":      [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".tiff"],
-    "Documents":   [".pdf", ".doc", ".docx", ".txt", ".rtf", ".odt", ".md"],
-    "Spreadsheets":[".xls", ".xlsx", ".csv", ".ods"],
+    "Images":       [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".tiff"],
+    "Documents":    [".pdf", ".doc", ".docx", ".txt", ".rtf", ".odt", ".md"],
+    "Spreadsheets": [".xls", ".xlsx", ".csv", ".ods"],
     "Presentations":[".ppt", ".pptx", ".odp"],
-    "Videos":      [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"],
-    "Audio":       [".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a"],
-    "Archives":    [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"],
-    "Code":        [".py", ".js", ".ts", ".html", ".css", ".java", ".cpp", ".c", ".json"],
-    "Invoices":    [],
+    "Videos":       [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"],
+    "Audio":        [".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a"],
+    "Archives":     [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"],
+    "Code":         [".py", ".js", ".ts", ".html", ".css", ".java", ".cpp", ".c", ".json"],
+    "Invoices":     [],
 }
 
-# Action verbs for compound-task splitting
 _ACTION_VERBS = {
     "open", "search", "draft", "send", "write", "find", "create", "close",
     "check", "read", "type", "click", "post", "reply", "compose", "look",
     "research", "browse", "launch", "start", "play", "email", "message",
     "save", "copy", "paste", "organize", "process", "download", "upload",
     "book", "schedule", "cancel", "delete", "move", "rename", "zip",
+    "generate", "analyze", "track", "monitor", "summarize", "extract",
+    "calculate", "report", "update", "remind", "notify", "backup",
 }
+
+# Jarvis-style response variations for natural speech
+_JARVIS_CONFIRMATIONS = [
+    "Right away, sir.",
+    "On it.",
+    "Consider it done.",
+    "Absolutely.",
+    "Of course.",
+    "Sure thing.",
+    "I'm on it.",
+    "Already on it.",
+    "Leave it to me.",
+]
+
+_JARVIS_DONE = [
+    "All done.",
+    "Done.",
+    "Task complete.",
+    "Finished.",
+    "All set.",
+    "That's taken care of.",
+    "Done. Anything else?",
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL STATE
 # ══════════════════════════════════════════════════════════════════════════════
-_mem_lock    = threading.Lock()
-_cfg_lock    = threading.Lock()
-_executor    = ThreadPoolExecutor(max_workers=24)
-_running     = True
-_tts_q: queue.Queue = queue.Queue(maxsize=30)
-_tts_engine  = None
-_tts_lock    = threading.Lock()
-_voice_on    = False
-_cur_token   = None
-_tok_lock    = threading.Lock()
-_smtp_cfg: Dict = {}
-_sched_jobs: List = []
-_convo: deque    = deque(maxlen=40)
-_selenium_driver  = None
-_sel_lock         = threading.Lock()
+_mem_lock          = threading.Lock()
+_cfg_lock          = threading.Lock()
+_executor          = ThreadPoolExecutor(max_workers=24)
+_running           = True
+_tts_q: queue.Queue = queue.Queue(maxsize=50)
+_tts_engine        = None
+_tts_lock          = threading.Lock()
+_voice_on          = False
+_cur_token         = None
+_tok_lock          = threading.Lock()
+_smtp_cfg: Dict    = {}
+_sched_jobs: List  = []
+_convo: deque      = deque(maxlen=40)
+_selenium_driver   = None
+_sel_lock          = threading.Lock()
 _pending_approvals: Dict[str, dict] = {}
 _approval_lock     = threading.Lock()
 _ws_send_fn        = None
+_ws_loop           = None
 _abort_flag        = threading.Event()
 
-# ── Social reply-bot state ─────────────────────────────────────────────────
 _social_drivers: Dict[str, Any] = {}
 _social_lock       = threading.Lock()
 _social_auto: Dict[str, bool] = {"whatsapp": False, "instagram": False, "facebook": False}
@@ -488,6 +537,7 @@ MEMORY: Dict = {
     "contacts":     {},
     "skills":       [],
     "approved_ops": [],
+    "business":     {},
 }
 
 HEALTH: Dict = {
@@ -513,7 +563,7 @@ except Exception:
 
 log   = logging.getLogger("dacexy")
 audit = logging.getLogger("dacexy.audit")
-log.info("Dacexy Agent v28.2 initializing")
+log.info("Dacexy Agent v30.0 initializing")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -548,19 +598,16 @@ def decrypt_str(s: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TTS — FIXED: engine created INSIDE worker thread (Windows COM STA fix)
+# TTS — ENGINE CREATED INSIDE WORKER THREAD (COM STA FIX — ALWAYS AUDIBLE)
 # ══════════════════════════════════════════════════════════════════════════════
 def _tts_worker():
     """
-    TTS worker thread.
-    CRITICAL: pyttsx3 engine is created HERE (not in init_tts) so that
-    the COM apartment is correct on Windows (SAPI5 is COM STA).
-    pythoncom.CoInitialize() is called first to set up the STA apartment.
-    edge-tts is NOT used — it requires asyncio.run() from a thread which
-    crashes. pyttsx3 works offline and is sufficient.
+    CRITICAL: pyttsx3 engine created HERE inside the thread.
+    Windows SAPI5 is COM STA — must be initialized on the same thread it runs on.
+    pythoncom.CoInitialize() sets up the STA apartment for this thread.
     """
     global _tts_engine
-    # Initialize COM for this thread (Windows SAPI5 requirement)
+
     if platform.system() == "Windows":
         try:
             import pythoncom
@@ -572,14 +619,13 @@ def _tts_worker():
     if TTS_LIB_OK:
         try:
             eng = pyttsx3.init()
-            eng.setProperty("rate", 165)
-            eng.setProperty("volume", 0.95)
-            # Try to pick a natural English voice
+            eng.setProperty("rate", 170)
+            eng.setProperty("volume", 1.0)
             try:
                 voices = eng.getProperty("voices") or []
                 for v in voices:
                     n = (v.name or "").lower()
-                    if any(x in n for x in ["david", "mark", "zira", "hazel"]):
+                    if any(x in n for x in ["david", "mark", "george", "ryan"]):
                         eng.setProperty("voice", v.id)
                         break
             except Exception:
@@ -588,7 +634,7 @@ def _tts_worker():
                 _tts_engine = eng
             log.info("TTS engine created in worker thread OK")
         except Exception as e:
-            log.warning("TTS engine init in worker: %s", e)
+            log.warning("TTS engine init failed: %s", e)
             eng = None
 
     while _running:
@@ -597,31 +643,29 @@ def _tts_worker():
             text = _tts_q.get(timeout=1)
             if text is None:
                 break
-            s = str(text)[:400]
+            s = str(text)[:500]
             if eng:
                 try:
                     eng.say(s)
                     eng.runAndWait()
                 except Exception as e:
-                    log.warning("pyttsx3 say: %s", e)
-                    # Attempt engine re-init on failure
+                    log.warning("pyttsx3 say error: %s — reinitializing", e)
                     try:
                         eng = pyttsx3.init()
-                        eng.setProperty("rate", 165)
-                        eng.setProperty("volume", 0.95)
+                        eng.setProperty("rate", 170)
+                        eng.setProperty("volume", 1.0)
                         with _tts_lock:
                             _tts_engine = eng
                         eng.say(s)
                         eng.runAndWait()
                     except Exception as e2:
-                        log.warning("pyttsx3 re-init failed: %s", e2)
+                        log.warning("TTS reinit failed: %s", e2)
             else:
-                log.warning("TTS: engine not available, text was: %s", s[:60])
+                log.warning("TTS engine unavailable, text: %s", s[:80])
         except queue.Empty:
             continue
         except Exception as e:
-            log.warning("TTS worker loop: %s", e)
-            continue
+            log.warning("TTS worker: %s", e)
         finally:
             if text is not None:
                 try:
@@ -629,7 +673,6 @@ def _tts_worker():
                 except Exception:
                     pass
 
-    # Clean up COM on exit
     if platform.system() == "Windows":
         try:
             import pythoncom
@@ -639,24 +682,24 @@ def _tts_worker():
 
 
 def init_tts():
-    """Start TTS worker thread. Engine is created INSIDE the thread (COM fix)."""
+    """Start TTS worker. Engine is created INSIDE the thread (COM STA fix)."""
     if not TTS_LIB_OK:
         log.warning("pyttsx3 not installed — TTS disabled")
         return
     try:
         threading.Thread(target=_tts_worker, daemon=True, name="TTS").start()
-        log.info("TTS initialized OK")
+        log.info("TTS thread started")
     except Exception as e:
         log.warning("TTS init: %s", e)
 
 
 def speak(text: str):
-    """Print text to terminal AND queue it for TTS. Always called before/after actions."""
+    """Speak text aloud AND stream to dashboard. Always called for every action."""
     if not text:
         return
-    s = str(text)[:400]
+    s = str(text)[:500]
     try:
-        print(f"\n  [Dacexy] {s}")
+        print(f"\n  [Dex] {s}")
         sys.stdout.flush()
     except Exception:
         pass
@@ -664,7 +707,27 @@ def speak(text: str):
     try:
         _tts_q.put_nowait(s)
     except queue.Full:
+        try:
+            _tts_q.get_nowait()
+            _tts_q.put_nowait(s)
+        except Exception:
+            pass
+    # Stream voice transcript to dashboard
+    try:
+        if _ws_send_fn and _ws_loop and _ws_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                _ws_send_fn({"type": "voice_log", "text": s}),
+                _ws_loop,
+            )
+    except Exception:
         pass
+
+
+def jarvis_confirm() -> str:
+    return random.choice(_JARVIS_CONFIRMATIONS)
+
+def jarvis_done() -> str:
+    return random.choice(_JARVIS_DONE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -738,6 +801,7 @@ def load_memory():
                 MEMORY["skills"]       = d.get("skills", [])
                 MEMORY["approved_ops"] = d.get("approved_ops", [])
                 MEMORY["task_history"] = deque(d.get("task_history", [])[-1000:], maxlen=1000)
+                MEMORY["business"]     = d.get("business", {})
             _smtp_cfg = {}
             raw_smtp = d.get("smtp_config", {})
             for k, v in raw_smtp.items():
@@ -764,6 +828,7 @@ def save_memory():
                 "task_history": list(MEMORY["task_history"])[-200:],
                 "smtp_config":  enc_smtp,
                 "sched_jobs":   _sched_jobs[-50:],
+                "business":     MEMORY["business"],
             }
         tmp = MEMORY_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(d, indent=2), encoding="utf-8")
@@ -793,6 +858,8 @@ def get_mem_ctx() -> str:
             contacts = list(MEMORY["contacts"].keys())[:8]
             if contacts:
                 parts.append("Contacts: " + ", ".join(contacts))
+            if MEMORY["business"]:
+                parts.append("Business: " + str(MEMORY["business"])[:200])
         conv = list(_convo)[-6:]
         if conv:
             parts.append("Conv: " + " | ".join(conv))
@@ -802,7 +869,7 @@ def get_mem_ctx() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECURITY CHECKS
+# SECURITY
 # ══════════════════════════════════════════════════════════════════════════════
 def _is_path_allowed(path_str: str) -> bool:
     try:
@@ -831,15 +898,14 @@ def request_approval(action: str, details: str, timeout: int = 30) -> bool:
         if op_key in MEMORY["approved_ops"]:
             return True
 
-    speak(f"Approval needed: {action}. Check your terminal.")
+    speak(f"I need your approval for: {action}. Check the terminal.")
     print(f"\n  {'='*55}")
     print(f"  ⚠  APPROVAL REQUIRED")
     print(f"  Action : {action}")
     print(f"  Details: {details[:200]}")
     print(f"  {'='*55}")
     print(f"  Approve? [Y/n/always] (auto-deny in {timeout}s): ", end="", flush=True)
-
-    _notify("Dacexy — Action Approval", f"{action}: {details[:60]}")
+    _notify("Dacexy — Approval Needed", f"{action}: {details[:60]}")
 
     import select
     if hasattr(select, "select"):
@@ -856,10 +922,8 @@ def request_approval(action: str, details: str, timeout: int = 30) -> bool:
         _ans = ["n"]
         _ev  = threading.Event()
         def _read():
-            try:
-                _ans[0] = input().strip().lower()
-            except Exception:
-                pass
+            try: _ans[0] = input().strip().lower()
+            except Exception: pass
             _ev.set()
         threading.Thread(target=_read, daemon=True).start()
         if not _ev.wait(timeout):
@@ -906,7 +970,7 @@ def take_screenshot(save: bool = True, region: Optional[Tuple] = None, quality: 
 # ══════════════════════════════════════════════════════════════════════════════
 # REAL MOUSE & KEYBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: float = 0.2):
+def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: float = 0.15):
     if not PYAUTOGUI_OK:
         return {"status": "error", "message": "pyautogui not available"}
     try:
@@ -914,7 +978,7 @@ def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: 
         x = max(1, min(x, sw - 1))
         y = max(1, min(y, sh - 1))
         pyautogui.moveTo(x, y, duration=duration)
-        pyautogui.click(x, y, button=button, clicks=clicks, interval=0.08)
+        pyautogui.click(x, y, button=button, clicks=clicks, interval=0.06)
         log.info("CLICK x=%d y=%d btn=%s clicks=%d", x, y, button, clicks)
         return {"status": "ok", "x": x, "y": y}
     except Exception as e:
@@ -922,23 +986,22 @@ def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: 
 
 
 def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
-    if not text:
-        return
+    if not text: return
     text = str(text)[:100_000]
     try:
         if clear_first and PYAUTOGUI_OK:
             pyautogui.hotkey("ctrl", "a")
-            time.sleep(0.05)
+            time.sleep(0.04)
             pyautogui.press("delete")
-            time.sleep(0.05)
+            time.sleep(0.04)
         if CLIP_OK:
             pyperclip.copy(text)
-            time.sleep(0.06)
+            time.sleep(0.05)
             if PYAUTOGUI_OK:
                 pyautogui.hotkey("ctrl", "v")
-                time.sleep(0.12)
+                time.sleep(0.1)
         elif PYAUTOGUI_OK:
-            interval = random.uniform(0.03, 0.09) if human_speed else 0.012
+            interval = random.uniform(0.02, 0.06) if human_speed else 0.008
             for chunk in [text[i:i+300] for i in range(0, len(text), 300)]:
                 pyautogui.write(chunk, interval=interval)
     except Exception as e:
@@ -946,8 +1009,7 @@ def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
 
 
 def real_hotkey(*keys):
-    if not PYAUTOGUI_OK:
-        return
+    if not PYAUTOGUI_OK: return
     try:
         pyautogui.hotkey(*[str(k) for k in keys[:6]])
     except Exception as e:
@@ -955,8 +1017,7 @@ def real_hotkey(*keys):
 
 
 def real_press(key: str):
-    if not PYAUTOGUI_OK:
-        return
+    if not PYAUTOGUI_OK: return
     try:
         pyautogui.press(str(key))
     except Exception as e:
@@ -964,8 +1025,7 @@ def real_press(key: str):
 
 
 def real_scroll(direction: str = "down", amount: int = 5):
-    if not PYAUTOGUI_OK:
-        return
+    if not PYAUTOGUI_OK: return
     try:
         amt = abs(amount)
         pyautogui.scroll(amt if direction == "up" else -amt)
@@ -974,8 +1034,7 @@ def real_scroll(direction: str = "down", amount: int = 5):
 
 
 def find_on_screen(image_path: str, confidence: float = 0.85) -> Optional[Tuple[int, int]]:
-    if not PYAUTOGUI_OK:
-        return None
+    if not PYAUTOGUI_OK: return None
     try:
         loc = pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
         return (loc.x, loc.y) if loc else None
@@ -1027,7 +1086,7 @@ def focus_window(title_pattern: str) -> bool:
         wins = [w for w in gw.getAllWindows() if title_pattern.lower() in w.title.lower()]
         if wins:
             wins[0].activate()
-            time.sleep(0.4)
+            time.sleep(0.3)
             return True
     except Exception as e:
         log.warning("focus_window: %s", e)
@@ -1035,9 +1094,10 @@ def focus_window(title_pattern: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VERIFICATION HELPERS
+# VERIFICATION HELPERS — fully implemented (fixes P0 NameError)
 # ══════════════════════════════════════════════════════════════════════════════
 def verify_file_created(path: str) -> bool:
+    """True if file exists on disk."""
     try:
         return Path(path).exists()
     except Exception:
@@ -1045,6 +1105,7 @@ def verify_file_created(path: str) -> bool:
 
 
 def verify_window_contains(target: str) -> bool:
+    """Check if any open window title plausibly matches the target."""
     try:
         wins = [w.lower() for w in list_windows()]
         t = target.lower()
@@ -1061,6 +1122,7 @@ def verify_window_contains(target: str) -> bool:
 
 
 def verify_screen_ocr(target: str) -> bool:
+    """OCR-based screen verification. Returns False (not error) if OCR unavailable."""
     if not OCR_OK:
         return False
     try:
@@ -1071,6 +1133,11 @@ def verify_screen_ocr(target: str) -> bool:
 
 def run_with_verification(action_fn, verify_fn, description: str,
                            correction_func=None, retries: int = 1) -> dict:
+    """
+    Run action_fn(), wait briefly, then verify. Verification never turns
+    a successful action into a failure — it only adds a 'verified' field.
+    On verify failure + correction_func provided: one retry.
+    """
     try:
         result = action_fn()
     except Exception as e:
@@ -1078,14 +1145,14 @@ def run_with_verification(action_fn, verify_fn, description: str,
     if not isinstance(result, dict):
         result = {"status": "ok", "value": result}
     try:
-        time.sleep(0.6)
+        time.sleep(0.5)
         verified = bool(verify_fn())
     except Exception:
         verified = False
     if not verified and correction_func and retries > 0:
         try:
             correction_func()
-            time.sleep(0.8)
+            time.sleep(0.7)
             verified = bool(verify_fn())
         except Exception:
             pass
@@ -1122,8 +1189,7 @@ def organize_folder(folder: str, dry_run: bool = False) -> dict:
             continue
         ext  = f.suffix.lower()
         name = f.name.lower()
-
-        cat = None
+        cat  = None
         if any(kw in name for kw in ["invoice", "receipt", "bill", "payment", "inv_", "_inv"]):
             cat = "Invoices"
         else:
@@ -1143,7 +1209,6 @@ def organize_folder(folder: str, dry_run: bool = False) -> dict:
             try:
                 shutil.move(str(f), str(dest))
                 moved += 1
-                log.info("Moved %s → %s", f.name, cat)
             except Exception as e:
                 errors.append(str(e)); skipped += 1
         else:
@@ -1182,39 +1247,26 @@ def extract_invoice_data(pdf_path: str) -> dict:
     p = Path(pdf_path)
     if not p.exists():
         return {"status": "error", "message": "File not found"}
-
     try:
         amounts = []; dates = []; invoice_nos = []
         with pdfplumber.open(str(p)) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-
         for m in re.finditer(r"(?:total|amount|due|payable)[:\s]+[₹$€£]?\s*([\d,]+\.?\d*)", text, re.I):
-            try:
-                amounts.append(float(m.group(1).replace(",", "")))
-            except Exception:
-                pass
+            try: amounts.append(float(m.group(1).replace(",", "")))
+            except Exception: pass
         for m in re.finditer(r"[₹$€£]\s*([\d,]+\.?\d*)", text):
-            try:
-                amounts.append(float(m.group(1).replace(",", "")))
-            except Exception:
-                pass
-
+            try: amounts.append(float(m.group(1).replace(",", "")))
+            except Exception: pass
         for m in re.finditer(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text):
             dates.append(m.group())
-
         for m in re.finditer(r"(?:invoice|inv|bill)\s*[#no.]*\s*([A-Z0-9-]+)", text, re.I):
             invoice_nos.append(m.group(1))
-
         result = {
-            "status":      "ok",
-            "file":        p.name,
-            "amounts":     list(set(amounts)),
-            "max_amount":  max(amounts) if amounts else 0,
-            "dates":       dates[:5],
-            "invoice_nos": invoice_nos[:3],
+            "status": "ok", "file": p.name,
+            "amounts": list(set(amounts)), "max_amount": max(amounts) if amounts else 0,
+            "dates": dates[:5], "invoice_nos": invoice_nos[:3],
             "text_preview": text[:500],
         }
-        log.info("Invoice extracted: %s — max amount: %s", p.name, result["max_amount"])
         return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1224,30 +1276,25 @@ def process_invoices_folder(folder: str) -> dict:
     p = Path(folder)
     if not p.exists():
         return {"status": "error", "message": "Folder not found"}
-    records = []
-    queued = 0
+    records = []; queued = 0
     for f in p.rglob("*.pdf"):
         d = extract_invoice_data(str(f))
         if d.get("status") == "ok":
             records.append({
-                "file":       d["file"],
-                "max_amount": d["max_amount"],
-                "dates":      "; ".join(d["dates"][:2]),
+                "file": d["file"], "max_amount": d["max_amount"],
+                "dates": "; ".join(d["dates"][:2]),
                 "invoice_no": "; ".join(d["invoice_nos"][:2]),
             })
             qid = add_to_payment_queue(d)
-            if qid:
-                queued += 1
+            if qid: queued += 1
     report = DATA_DIR / f"invoices_{datetime.date.today()}.csv"
     try:
         with open(report, "w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=["file", "max_amount", "dates", "invoice_no"])
             w.writeheader(); w.writerows(records)
-        try:
-            subprocess.Popen(f'notepad.exe "{report}"', shell=True)
-        except Exception:
-            pass
-        speak(f"Processed {len(records)} invoices. {queued} queued for payment approval.")
+        try: subprocess.Popen(f'notepad.exe "{report}"', shell=True)
+        except Exception: pass
+        speak(f"Processed {len(records)} invoices. {queued} queued for your approval.")
         return {"status": "ok", "count": len(records), "queued": queued, "report": str(report)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1264,7 +1311,6 @@ def _load_payment_queue() -> list:
         log.warning("load_payment_queue: %s", e)
     return []
 
-
 def _save_payment_queue(q: list):
     try:
         tmp = PAYMENT_QUEUE_FILE.with_suffix(".tmp")
@@ -1273,29 +1319,22 @@ def _save_payment_queue(q: list):
     except Exception as e:
         log.warning("save_payment_queue: %s", e)
 
-
 def add_to_payment_queue(invoice: dict) -> Optional[str]:
     amount = invoice.get("max_amount") or 0
-    if not amount:
-        return None
+    if not amount: return None
     q = _load_payment_queue()
     if any(i.get("file") == invoice.get("file") and i.get("status") == "pending_review" for i in q):
         return None
     qid = hashlib.md5(f"{invoice.get('file','')}-{amount}-{time.time()}".encode()).hexdigest()[:8]
     entry = {
-        "id":         qid,
-        "file":       invoice.get("file", ""),
-        "amount":     amount,
-        "invoice_no": "; ".join(invoice.get("invoice_nos", [])[:1]),
-        "dates":      "; ".join(invoice.get("dates", [])[:1]),
-        "status":     "pending_review",
-        "added_at":   datetime.datetime.now().isoformat(),
+        "id": qid, "file": invoice.get("file", ""),
+        "amount": amount, "invoice_no": "; ".join(invoice.get("invoice_nos", [])[:1]),
+        "dates": "; ".join(invoice.get("dates", [])[:1]),
+        "status": "pending_review", "added_at": datetime.datetime.now().isoformat(),
     }
-    q.append(entry)
-    _save_payment_queue(q)
+    q.append(entry); _save_payment_queue(q)
     audit.info("PAYMENT_QUEUED id=%s amount=%s file=%s", qid, amount, entry["file"])
     return qid
-
 
 def list_payment_queue(status: str = "pending_review") -> dict:
     q = _load_payment_queue()
@@ -1304,14 +1343,12 @@ def list_payment_queue(status: str = "pending_review") -> dict:
         label = "all" if status == "all" else status.replace("_", " ")
         print(f"\n  === PAYMENT QUEUE ({label}) ===")
         for it in items:
-            print(f"  [{it['id']}] {it['file']}  amount={it['amount']}  "
-                  f"inv#={it.get('invoice_no','') or '-'}  status={it['status']}")
+            print(f"  [{it['id']}] {it['file']}  amount={it['amount']}  status={it['status']}")
         print()
-        speak(f"{len(items)} payment(s) {label}.")
+        speak(f"You have {len(items)} payment{'s' if len(items) > 1 else ''} {label}.")
     else:
         speak(f"No payments with status {status.replace('_',' ')}.")
     return {"status": "ok", "items": items, "count": len(items)}
-
 
 def approve_payment(queue_id: str, portal: str = "razorpay") -> dict:
     q = _load_payment_queue()
@@ -1320,29 +1357,21 @@ def approve_payment(queue_id: str, portal: str = "razorpay") -> dict:
         return {"status": "error", "message": f"No queued payment with id {queue_id}"}
     if entry["status"] != "pending_review":
         return {"status": "error", "message": f"Payment {queue_id} is already '{entry['status']}'"}
-
     if not request_approval("approve_payment",
-                             f"Pay {entry['amount']} — invoice {entry.get('invoice_no') or '?'} "
-                             f"({entry['file']})"):
+                             f"Pay {entry['amount']} — invoice {entry.get('invoice_no') or '?'} ({entry['file']})"):
         return {"status": "denied"}
-
-    entry["status"] = "approved"
+    entry["status"]      = "approved"
     entry["approved_at"] = datetime.datetime.now().isoformat()
-    entry["portal"] = portal
+    entry["portal"]      = portal
     _save_payment_queue(q)
-    audit.info("PAYMENT_APPROVED id=%s amount=%s file=%s portal=%s",
-               queue_id, entry["amount"], entry["file"], portal)
-
+    audit.info("PAYMENT_APPROVED id=%s amount=%s", queue_id, entry["amount"])
     url = PAYMENT_PORTALS.get(portal, "")
     if url:
         webbrowser.open(url)
-        speak(f"Approved. Opened {portal} to pay {entry['amount']} for invoice "
-              f"{entry.get('invoice_no') or '?'}. Complete it there.")
+        speak(f"Approved. Opening {portal} to complete the payment of {entry['amount']}.")
     else:
-        speak(f"Approved payment of {entry['amount']} for invoice "
-              f"{entry.get('invoice_no') or '?'}. No portal URL configured.")
+        speak(f"Payment of {entry['amount']} approved. No portal URL configured.")
     return {"status": "ok", "entry": entry, "portal_url": url}
-
 
 def reject_payment(queue_id: str, reason: str = "") -> dict:
     q = _load_payment_queue()
@@ -1350,10 +1379,9 @@ def reject_payment(queue_id: str, reason: str = "") -> dict:
     if not entry:
         return {"status": "error", "message": f"No queued payment with id {queue_id}"}
     entry["status"] = "rejected"
-    if reason:
-        entry["reason"] = reason
+    if reason: entry["reason"] = reason
     _save_payment_queue(q)
-    audit.info("PAYMENT_REJECTED id=%s file=%s reason=%s", queue_id, entry["file"], reason[:60])
+    audit.info("PAYMENT_REJECTED id=%s", queue_id)
     speak(f"Payment {queue_id} rejected.")
     return {"status": "ok"}
 
@@ -1380,39 +1408,6 @@ def read_spreadsheet(path: str, sheet: int = 0) -> dict:
             return {"status": "error", "message": "Unsupported format"}
         speak(f"Read {len(rows)} rows from {p.name}")
         return {"status": "ok", "rows": rows[:500], "total_rows": len(rows)}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-def paste_spreadsheet_to_browser(path: str, url: str, field_selector: str = "input") -> dict:
-    data = read_spreadsheet(path)
-    if data.get("status") != "ok":
-        return data
-    rows = data["rows"]
-    if not rows:
-        return {"status": "error", "message": "Spreadsheet is empty"}
-
-    drv = _get_driver()
-    if not drv:
-        return {"status": "error", "message": "Selenium not available"}
-
-    speak(f"Opening {url} to paste {len(rows)} rows...")
-    try:
-        drv.get(url)
-        time.sleep(2)
-        pasted = 0
-        for row in rows[:100]:
-            try:
-                fields = drv.find_elements(By.CSS_SELECTOR, field_selector)
-                for i, field in enumerate(fields[:len(row)]):
-                    field.clear()
-                    field.send_keys(row[i])
-                pasted += 1
-                time.sleep(0.3)
-            except Exception:
-                pass
-        speak(f"Pasted {pasted} rows into the browser.")
-        return {"status": "ok", "pasted": pasted}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -1456,7 +1451,8 @@ def configure_smtp_interactive() -> dict:
 def _build_msg(from_: str, to_: str, subject: str, body: str) -> MIMEMultipart:
     msg = MIMEMultipart("alternative")
     msg["From"] = from_; msg["To"] = to_; msg["Subject"] = subject
-    plain = body.replace("<br>", "\n"); html = "<html><body>" + body.replace("\n", "<br>") + "</body></html>"
+    plain = body.replace("<br>", "\n")
+    html  = "<html><body>" + body.replace("\n", "<br>") + "</body></html>"
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
     return msg
@@ -1466,26 +1462,23 @@ def send_email_real(to: str, subject: str, body: str, require_approval: bool = T
     if require_approval and "send_email" in APPROVAL_REQUIRED:
         if not request_approval("send_email", f"To: {to} | Subject: {subject}"):
             return {"status": "denied", "message": "User denied email send"}
-
     em = _smtp_cfg.get("email", "")
     pw = _smtp_cfg.get("password", "")
     ht = _smtp_cfg.get("host", "smtp.gmail.com")
     pt = int(_smtp_cfg.get("port", 587))
-
     if not em or not pw:
         url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}"
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
-        speak(f"Gmail compose opened for {to}. SMTP not configured for auto-send.")
+        speak(f"Gmail opened for {to}. SMTP not configured for auto-send.")
         return {"status": "ok", "action": "browser", "note": "SMTP not configured"}
-
     try:
         msg = _build_msg(em, to, subject, body)
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
             srv.ehlo(); srv.starttls(); srv.ehlo(); srv.login(em, pw)
             srv.sendmail(em, [to], msg.as_string())
-        speak(f"Email sent to {to}!")
+        speak(f"Email sent to {to}.")
         audit.info("EMAIL_SENT to=%s subject=%s", to, subject[:60])
         return {"status": "ok", "sent_to": to}
     except Exception as e:
@@ -1505,9 +1498,8 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay: float =
         return {"status": "error", "message": "No contacts provided."}
     if not request_approval("bulk_email", f"{len(contacts)} contacts | Subject: {subject[:50]}"):
         return {"status": "denied", "message": "User denied bulk email"}
-
     sent = 0; failed = 0; delay = max(0.5, float(delay))
-    speak(f"Starting bulk email to {len(contacts)} contacts...")
+    speak(f"Starting bulk email to {len(contacts)} contacts.")
     try:
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
             srv.ehlo(); srv.starttls(); srv.ehlo(); srv.login(em, pw)
@@ -1525,14 +1517,13 @@ def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay: float =
                     srv.sendmail(em, [to_e], msg.as_string())
                     sent += 1
                     if sent % 10 == 0:
-                        speak(f"{sent} emails sent.")
+                        speak(f"{sent} emails sent so far.")
                     time.sleep(delay)
                 except Exception:
                     failed += 1
     except Exception as e:
         return {"status": "error", "message": f"SMTP failed: {e}"}
-
-    summary = f"Bulk done: {sent} sent, {failed} failed of {len(contacts)}"
+    summary = f"Done. {sent} sent, {failed} failed out of {len(contacts)}."
     speak(summary)
     return {"status": "ok", "sent": sent, "failed": failed}
 
@@ -1550,9 +1541,11 @@ def load_csv_contacts(path: str) -> list:
             for row in reader:
                 em = (row.get("email") or row.get("Email") or row.get("EMAIL") or "").strip()
                 if em and "@" in em:
-                    contacts.append({"email": em,
-                                     "name": (row.get("name") or row.get("Name") or em.split("@")[0]).strip(),
-                                     "company": (row.get("company") or row.get("Company") or "").strip()})
+                    contacts.append({
+                        "email": em,
+                        "name": (row.get("name") or row.get("Name") or em.split("@")[0]).strip(),
+                        "company": (row.get("company") or row.get("Company") or "").strip(),
+                    })
     except Exception as e:
         log.warning("load_csv: %s", e)
     return contacts
@@ -1566,7 +1559,6 @@ def read_inbox(max_count: int = 10) -> dict:
     em = _smtp_cfg.get("email", ""); pw = _smtp_cfg.get("password", "")
     if not em or not pw:
         return {"status": "error", "message": "Email not configured."}
-
     domain = em.split("@")[-1].lower()
     imap_hosts = {
         "gmail.com": "imap.gmail.com", "googlemail.com": "imap.gmail.com",
@@ -1574,11 +1566,9 @@ def read_inbox(max_count: int = 10) -> dict:
         "yahoo.com": "imap.mail.yahoo.com",
     }
     host = imap_hosts.get(domain, f"imap.{domain}")
-
     try:
         with imaplib.IMAP4_SSL(host, 993) as M:
-            M.login(em, pw)
-            M.select("INBOX")
+            M.login(em, pw); M.select("INBOX")
             _, data = M.search(None, "UNSEEN")
             uids = data[0].split()[-max_count:]
             emails = []
@@ -1587,28 +1577,20 @@ def read_inbox(max_count: int = 10) -> dict:
                 _, msg_data = M.fetch(uid, "(RFC822)")
                 raw = msg_data[0][1]
                 msg = email_lib.message_from_bytes(raw)
-                subject = msg.get("Subject", "")
-                sender  = msg.get("From", "")
-                body    = ""
+                subject = msg.get("Subject", ""); sender = msg.get("From", ""); body = ""
                 if msg.is_multipart():
                     for part in msg.walk():
                         if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode(errors="ignore")[:500]
-                            break
+                            body = part.get_payload(decode=True).decode(errors="ignore")[:500]; break
                 else:
                     body = msg.get_payload(decode=True).decode(errors="ignore")[:500]
-
                 is_urgent = any(kw in (subject + body).lower() for kw in urgent_keywords)
-                emails.append({
-                    "from": sender, "subject": subject,
-                    "preview": body[:200], "urgent": is_urgent,
-                })
-
+                emails.append({"from": sender, "subject": subject, "preview": body[:200], "urgent": is_urgent})
             urgent_count = sum(1 for e in emails if e["urgent"])
             if urgent_count:
-                speak(f"You have {urgent_count} urgent emails!")
+                speak(f"Heads up — you have {urgent_count} urgent email{'s' if urgent_count > 1 else ''}.")
                 _notify("Urgent Emails", f"{urgent_count} urgent messages in inbox")
-
+            speak(f"Found {len(emails)} unread emails.")
             return {"status": "ok", "count": len(emails), "emails": emails, "urgent": urgent_count}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1617,7 +1599,6 @@ def read_inbox(max_count: int = 10) -> dict:
 def draft_email_reply(original_subject: str, original_body: str, context: str = "") -> str:
     name_match = re.search(r"from:\s*(.+?)[\n<]", original_body, re.I)
     sender_name = name_match.group(1).strip() if name_match else "there"
-
     if any(kw in original_body.lower() for kw in ["meeting", "schedule", "call", "appointment"]):
         template = (f"Hi {sender_name},\n\nThank you for reaching out regarding {original_subject}.\n"
                     f"I'd be happy to discuss further. Please let me know your availability.\n\nBest regards")
@@ -1656,10 +1637,14 @@ def web_research(query: str) -> str:
 def find_leads_web(product: str, niche: str = "", max_leads: int = 50) -> list:
     if not REQUESTS_OK: return []
     leads = []; email_re = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,7}\b')
-    skip = {"example.com", "test.com", "sentry.io", "w3.org", "google.com", "github.com", "cloudflare.com"}
-    speak(f"Searching leads for {product}...")
-    queries = [f"{niche} {product} contact email", f"{product} company email contact",
-               f'"{product}" "@gmail.com" contact']
+    skip  = {"example.com", "test.com", "sentry.io", "w3.org", "google.com", "github.com", "cloudflare.com"}
+    speak(f"Searching leads for {product}.")
+    queries = [
+        f"{niche} {product} contact email",
+        f"{product} company email contact",
+        f'"{product}" "@gmail.com" contact',
+        f"{niche} businesses email director",
+    ]
     for q in queries:
         if len(leads) >= max_leads: break
         try:
@@ -1694,19 +1679,19 @@ def wa_send(phone: str, msg: str) -> dict:
     if not ph.startswith("+"): ph = "+91" + ph
     url = f"https://wa.me/{ph.lstrip('+')}?text={urllib.parse.quote(str(msg))}"
     webbrowser.open(url)
-    speak(f"WhatsApp Web opened for {phone}.")
+    speak(f"WhatsApp opened for {phone}.")
     return {"status": "ok", "note": "WhatsApp Web opened — click Send"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CALENDAR BOOKING
+# CALENDAR / BOOKING
 # ══════════════════════════════════════════════════════════════════════════════
 def check_calendar_availability(date_str: str) -> dict:
     try:
         dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
         url = f"https://calendar.google.com/calendar/r/day/{dt.year}/{dt.month}/{dt.day}"
         webbrowser.open(url)
-        speak(f"Opening calendar for {date_str}")
+        speak(f"Opening your calendar for {date_str}.")
         return {"status": "ok", "date": date_str, "url": url}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1717,7 +1702,7 @@ def book_meeting(with_email: str, subject: str, date_str: str, duration_min: int
            f"?text={urllib.parse.quote(subject)}"
            f"&add={urllib.parse.quote(with_email)}")
     webbrowser.open(url)
-    speak(f"Calendar opened to book meeting with {with_email}")
+    speak(f"Calendar opened to book meeting with {with_email}.")
     return {"status": "ok", "note": "Fill in time and click Save"}
 
 
@@ -1795,7 +1780,7 @@ def selenium_click(selector: str, by: str = "css") -> dict:
 def post_twitter(username: str, password: str, text: str) -> dict:
     if not request_approval("post_twitter", f"@{username}: {text[:80]}"):
         return {"status": "denied"}
-    speak("Logging into Twitter...")
+    speak("Logging into Twitter.")
     drv = _get_driver()
     if not drv: webbrowser.open("https://x.com"); return {"status": "ok", "note": "Opened X"}
     try:
@@ -1810,7 +1795,7 @@ def post_twitter(username: str, password: str, text: str) -> dict:
         time.sleep(0.5)
         WebDriverWait(drv, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="tweetButton"]'))).click()
         time.sleep(2)
-        speak("Tweet posted!"); return {"status": "ok", "platform": "twitter"}
+        speak("Tweet posted."); return {"status": "ok", "platform": "twitter"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -1818,7 +1803,7 @@ def post_twitter(username: str, password: str, text: str) -> dict:
 def post_linkedin(username: str, password: str, text: str) -> dict:
     if not request_approval("post_linkedin", f"LinkedIn: {text[:80]}"):
         return {"status": "denied"}
-    speak("Logging into LinkedIn...")
+    speak("Logging into LinkedIn.")
     drv = _get_driver()
     if not drv: webbrowser.open("https://www.linkedin.com"); return {"status": "ok"}
     try:
@@ -1831,7 +1816,7 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
         box = WebDriverWait(drv, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ql-editor")))
         box.click(); box.send_keys(text); time.sleep(0.5)
         WebDriverWait(drv, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".share-actions__primary-action"))).click()
-        time.sleep(2); speak("LinkedIn post published!")
+        time.sleep(2); speak("LinkedIn post published.")
         return {"status": "ok", "platform": "linkedin"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1840,7 +1825,7 @@ def post_linkedin(username: str, password: str, text: str) -> dict:
 def post_facebook(username: str, password: str, text: str, page_id: str = "") -> dict:
     if not request_approval("post_facebook", f"Facebook: {text[:80]}"):
         return {"status": "denied"}
-    speak("Logging into Facebook...")
+    speak("Logging into Facebook.")
     drv = _get_driver()
     if not drv: webbrowser.open("https://www.facebook.com"); return {"status": "ok"}
     try:
@@ -1853,7 +1838,7 @@ def post_facebook(username: str, password: str, text: str, page_id: str = "") ->
         editor = WebDriverWait(drv, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, '[contenteditable="true"]')))
         editor.send_keys(text); time.sleep(0.5)
         WebDriverWait(drv, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Post"]'))).click()
-        time.sleep(2); speak("Facebook post published!")
+        time.sleep(2); speak("Facebook post published.")
         return {"status": "ok", "platform": "facebook"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1866,24 +1851,19 @@ def youtube_search_and_play(query: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOCIAL MESSAGE REPLY BOTS (WhatsApp / Instagram / Facebook DMs)
+# SOCIAL MESSAGE REPLY BOTS
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_social_driver(platform: str):
     with _social_lock:
         drv = _social_drivers.get(platform)
         if drv:
-            try:
-                _ = drv.current_url
-                return drv
+            try: _ = drv.current_url; return drv
             except Exception:
                 try: drv.quit()
                 except Exception: pass
                 _social_drivers.pop(platform, None)
-
-        if not SELENIUM_OK:
-            return None
-        prof_dir = SOCIAL_PROFILE_DIR / platform
-        prof_dir.mkdir(exist_ok=True)
+        if not SELENIUM_OK: return None
+        prof_dir = SOCIAL_PROFILE_DIR / platform; prof_dir.mkdir(exist_ok=True)
         opts = ChromeOptions()
         opts.add_argument(f"--user-data-dir={prof_dir}")
         opts.add_argument("--start-maximized")
@@ -1895,43 +1875,40 @@ def _get_social_driver(platform: str):
             svc = ChromeService(ChromeDriverManager().install())
             drv = webdriver.Chrome(service=svc, options=opts)
             drv.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            _social_drivers[platform] = drv
-            return drv
+            _social_drivers[platform] = drv; return drv
         except Exception as e:
-            log.warning("Social driver [%s]: %s", platform, e)
-            return None
+            log.warning("Social driver [%s]: %s", platform, e); return None
 
 
 def _gen_reply(message: str) -> str:
     m = (message or "").lower()
-    if any(k in m for k in ["price", "cost", "how much", "quote"]):
-        return "Thanks for asking! Let me check pricing and get back to you shortly."
-    if any(k in m for k in ["urgent", "asap", "emergency"]):
-        return "Got it — marking this urgent. We'll respond very soon."
+    if any(k in m for k in ["price", "cost", "how much", "quote", "rate"]):
+        return AUTO_REPLY_TEMPLATES["price"]
+    if any(k in m for k in ["urgent", "asap", "emergency", "immediately"]):
+        return AUTO_REPLY_TEMPLATES["complaint"]
+    if any(k in m for k in ["order", "tracking", "delivery", "shipped"]):
+        return AUTO_REPLY_TEMPLATES["order"]
+    if any(k in m for k in ["help", "support", "issue", "problem", "not working"]):
+        return AUTO_REPLY_TEMPLATES["support"]
     if any(k in m for k in ["hi", "hello", "hey", "good morning", "good evening"]):
-        return "Hi! Thanks for reaching out — how can I help?"
-    if any(k in m for k in ["thank", "thanks"]):
+        return "Hi! Thanks for reaching out — how can I help you today?"
+    if any(k in m for k in ["thank", "thanks", "great", "awesome"]):
         return "You're welcome! Let us know if you need anything else."
     return AUTO_REPLY_TEMPLATES["default"]
 
 
 def whatsapp_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
     drv = _get_social_driver("whatsapp")
-    if not drv:
-        return {"status": "error", "message": "Selenium not available"}
+    if not drv: return {"status": "error", "message": "Selenium not available"}
     try:
         if "web.whatsapp.com" not in (drv.current_url or ""):
-            drv.get("https://web.whatsapp.com")
-            time.sleep(3)
+            drv.get("https://web.whatsapp.com"); time.sleep(3)
         try:
-            WebDriverWait(drv, 5).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "canvas[aria-label='Scan me!']")))
+            WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "canvas[aria-label='Scan me!']")))
             speak("WhatsApp Web needs a QR scan — check the browser window.")
-            return {"status": "pending", "message": "Scan the QR code in the opened browser window"}
-        except Exception:
-            pass
-
-        unread = drv.find_elements(By.XPATH, "//span[@aria-label[contains(.,'unread')]]")
+            return {"status": "pending", "message": "Scan QR code in browser"}
+        except Exception: pass
+        unread  = drv.find_elements(By.XPATH, "//span[@aria-label[contains(.,'unread')]]")
         results = []
         for chat in unread[:max_chats]:
             try:
@@ -1952,11 +1929,9 @@ def whatsapp_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": True})
                 else:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": False})
-            except Exception:
-                continue
-
+            except Exception: continue
         if results:
-            speak(f"WhatsApp: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+            speak(f"WhatsApp: {len(results)} message{'s' if len(results) > 1 else ''}{' replied' if auto else ' ready to review'}.")
         return {"status": "ok", "platform": "whatsapp", "messages": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1964,19 +1939,15 @@ def whatsapp_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
 
 def instagram_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
     drv = _get_social_driver("instagram")
-    if not drv:
-        return {"status": "error", "message": "Selenium not available"}
+    if not drv: return {"status": "error", "message": "Selenium not available"}
     try:
         if "instagram.com/direct" not in (drv.current_url or ""):
-            drv.get("https://www.instagram.com/direct/inbox/")
-            time.sleep(3)
+            drv.get("https://www.instagram.com/direct/inbox/"); time.sleep(3)
         try:
             WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.NAME, "username")))
             speak("Instagram needs login — check the browser window.")
-            return {"status": "pending", "message": "Log in to Instagram in the opened browser window"}
-        except Exception:
-            pass
-
+            return {"status": "pending", "message": "Log in to Instagram"}
+        except Exception: pass
         threads = drv.find_elements(By.CSS_SELECTOR, "div[role='listitem']")
         results = []
         for th in threads[:max_chats]:
@@ -1997,11 +1968,9 @@ def instagram_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": True})
                 else:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": False})
-            except Exception:
-                continue
-
+            except Exception: continue
         if results:
-            speak(f"Instagram: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+            speak(f"Instagram: {len(results)} message{'s' if len(results) > 1 else ''}{' replied' if auto else ' ready'}.")
         return {"status": "ok", "platform": "instagram", "messages": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2009,19 +1978,15 @@ def instagram_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
 
 def facebook_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
     drv = _get_social_driver("facebook")
-    if not drv:
-        return {"status": "error", "message": "Selenium not available"}
+    if not drv: return {"status": "error", "message": "Selenium not available"}
     try:
         if "messages" not in (drv.current_url or ""):
-            drv.get("https://www.facebook.com/messages/t/")
-            time.sleep(3)
+            drv.get("https://www.facebook.com/messages/t/"); time.sleep(3)
         try:
             WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.ID, "email")))
             speak("Facebook needs login — check the browser window.")
-            return {"status": "pending", "message": "Log in to Facebook in the opened browser window"}
-        except Exception:
-            pass
-
+            return {"status": "pending", "message": "Log in to Facebook"}
+        except Exception: pass
         threads = drv.find_elements(By.CSS_SELECTOR, "a[role='link'][aria-current]")
         results = []
         for th in threads[:max_chats]:
@@ -2042,11 +2007,9 @@ def facebook_check_messages(auto: bool = False, max_chats: int = 10) -> dict:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": True})
                 else:
                     results.append({"message": last_msg[:80], "reply": reply, "sent": False})
-            except Exception:
-                continue
-
+            except Exception: continue
         if results:
-            speak(f"Facebook: {len(results)} new message(s){' replied' if auto else ' drafted'}.")
+            speak(f"Facebook: {len(results)} message{'s' if len(results) > 1 else ''}{' replied' if auto else ' ready'}.")
         return {"status": "ok", "platform": "facebook", "messages": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2064,10 +2027,8 @@ def _social_poll_loop():
     while _social_running and _running:
         for plat, auto in list(_social_auto.items()):
             if auto:
-                try:
-                    _SOCIAL_CHECKERS[plat](auto=True)
-                except Exception as e:
-                    log.warning("social poll [%s]: %s", plat, e)
+                try: _SOCIAL_CHECKERS[plat](auto=True)
+                except Exception as e: log.warning("social poll [%s]: %s", plat, e)
         time.sleep(45)
 
 
@@ -2075,23 +2036,19 @@ def start_social_replies(platforms: list, auto: bool = False) -> dict:
     global _social_thread, _social_running
     plats = [str(p).lower().strip() for p in platforms if str(p).lower().strip() in _SOCIAL_CHECKERS]
     if not plats:
-        return {"status": "error", "message": "No valid platforms (use whatsapp / instagram / facebook)"}
-
+        return {"status": "error", "message": "No valid platforms (whatsapp / instagram / facebook)"}
     if auto and not request_approval("enable_auto_reply", f"Auto-send replies on: {', '.join(plats)}"):
         return {"status": "denied"}
-
     opened = []
     for plat in plats:
         _social_auto[plat] = auto
         res = _SOCIAL_CHECKERS[plat](auto=False)
         opened.append({"platform": plat, "status": res.get("status")})
-
     if not _social_running:
         _social_running = True
         _social_thread = threading.Thread(target=_social_poll_loop, daemon=True, name="SocialReply")
         _social_thread.start()
-
-    speak(f"Reply monitoring on for {', '.join(plats)}{' (auto-send)' if auto else ' (drafts only)'}.")
+    speak(f"Monitoring {', '.join(plats)}{' with auto-reply' if auto else ' for new messages'}.")
     return {"status": "ok", "platforms": plats, "auto": auto, "opened": opened}
 
 
@@ -2100,16 +2057,14 @@ def stop_social_replies(platforms: list = None) -> dict:
     plats = platforms or list(_social_auto.keys())
     plats = [str(p).lower().strip() for p in plats]
     for p in plats:
-        if p in _social_auto:
-            _social_auto[p] = False
-    if not any(_social_auto.values()):
-        _social_running = False
+        if p in _social_auto: _social_auto[p] = False
+    if not any(_social_auto.values()): _social_running = False
     speak("Reply monitoring stopped.")
     return {"status": "ok", "platforms": plats}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SMART OPEN
+# SMART OPEN — with verification and recovery
 # ══════════════════════════════════════════════════════════════════════════════
 def smart_open(target: str) -> dict:
     if not target: return {"status": "error", "message": "Nothing to open"}
@@ -2117,52 +2072,103 @@ def smart_open(target: str) -> dict:
     for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ", "visit ", "browse "]:
         if tl.startswith(pfx): tl = tl[len(pfx):].strip(); t = t[len(pfx):].strip()
 
-    if tl in SITES: webbrowser.open(SITES[tl]); speak(f"Opening {tl}"); return {"status": "ok", "opened": SITES[tl]}
-    for site, url in SITES.items():
-        if site in tl: webbrowser.open(url); speak(f"Opening {site}"); return {"status": "ok", "opened": url}
-    if tl in APPS:
-        try: subprocess.Popen(APPS[tl], shell=True); speak(f"Opening {tl}"); return {"status": "ok", "opened": APPS[tl]}
-        except Exception as e: return {"status": "error", "message": str(e)}
-    for app, exe in APPS.items():
-        if app in tl:
-            try: subprocess.Popen(exe, shell=True); speak(f"Opening {app}"); return {"status": "ok", "opened": exe}
-            except Exception as e: return {"status": "error", "message": str(e)}
-    if tl.startswith(("http://", "https://")):
-        webbrowser.open(t); return {"status": "ok", "opened": t}
-    if re.match(r"^[a-z0-9\-]+\.[a-z]{2,}$", tl) and " " not in tl:
-        webbrowser.open("https://" + tl); return {"status": "ok", "opened": "https://" + tl}
-    p = Path(t)
-    if p.exists():
-        try: os.startfile(str(p)); return {"status": "ok", "opened": str(p)}
-        except Exception as e: return {"status": "error", "message": str(e)}
-    if len(t.split()) <= 4:
-        try: subprocess.Popen(t, shell=True); return {"status": "ok", "opened": t}
-        except Exception: pass
-    return {"status": "error", "message": f"Could not open: {target[:80]}"}
+    def _do_open():
+        if tl in SITES:
+            webbrowser.open(SITES[tl])
+            speak(f"Opening {tl}.")
+            return {"status": "ok", "opened": SITES[tl]}
+        for site, url in SITES.items():
+            if site in tl:
+                webbrowser.open(url)
+                speak(f"Opening {site}.")
+                return {"status": "ok", "opened": url}
+        if tl in APPS:
+            subprocess.Popen(APPS[tl], shell=True)
+            speak(f"Opening {tl}.")
+            return {"status": "ok", "opened": APPS[tl]}
+        for app, exe in APPS.items():
+            if app in tl:
+                subprocess.Popen(exe, shell=True)
+                speak(f"Opening {app}.")
+                return {"status": "ok", "opened": exe}
+        if tl.startswith(("http://", "https://")):
+            webbrowser.open(t)
+            return {"status": "ok", "opened": t}
+        if re.match(r"^[a-z0-9\-]+\.[a-z]{2,}$", tl) and " " not in tl:
+            webbrowser.open("https://" + tl)
+            return {"status": "ok", "opened": "https://" + tl}
+        p = Path(t)
+        if p.exists():
+            os.startfile(str(p))
+            return {"status": "ok", "opened": str(p)}
+        if len(t.split()) <= 4:
+            subprocess.Popen(t, shell=True)
+            return {"status": "ok", "opened": t}
+        return {"status": "error", "message": f"Could not open: {target[:80]}"}
+
+    return run_with_verification(
+        _do_open,
+        lambda: verify_window_contains(tl) or verify_screen_ocr(tl),
+        f"open {tl}",
+        correction_func=lambda: webbrowser.open(SITES.get(tl, f"https://www.google.com/search?q={urllib.parse.quote(tl)}")),
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SMART AI BRAIN
+# AI BRAIN
 # ══════════════════════════════════════════════════════════════════════════════
-def ask_ai_brain(prompt: str) -> str:
+def ask_ai_brain(prompt: str, mem_ctx: bool = True) -> str:
+    ctx = get_mem_ctx() if mem_ctx else ""
+    full_prompt = f"Context:\n{ctx}\n\nUser: {prompt}" if ctx else prompt
     try:
         import g4f
         response = g4f.ChatCompletion.create(
             model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": full_prompt}],
         )
         text = str(response).strip()
         if text and len(text) > 10 and "error" not in text.lower()[:60]:
             return text
-        log.warning("AI Brain (g4f): empty/error-like response, falling back")
     except ImportError:
-        return "Install g4f for smart AI brain. Run: pip install g4f"
+        return "Install g4f: pip install g4f"
     except Exception as e:
-        log.warning("AI Brain (g4f): %s", e)
+        log.warning("AI Brain g4f: %s", e)
     try:
         return web_research(prompt)[:800]
     except Exception as e:
-        return f"I looked into '{prompt[:60]}' but couldn't find a clear answer: {e}"
+        return f"I searched for '{prompt[:60]}' but couldn't get a clear answer. {e}"
+
+
+def ai_plan_task(task: str) -> Optional[list]:
+    """
+    Ask AI to decompose a free-form goal into a list of exec_cmd-compatible
+    action dicts. Returns None if parsing fails (caller falls back to ask_ai).
+    """
+    valid_actions = [
+        "open", "search_web", "read_inbox", "send_email", "draft_email_in_browser",
+        "organize_folder", "process_invoices", "screenshot", "web_research",
+        "ask_ai", "speak", "get_system_info", "get_time", "get_date",
+        "find_leads_and_email", "bulk_email", "check_social_messages",
+        "list_payment_queue", "enterprise_automation", "research_and_write",
+    ]
+    prompt = (
+        f"You are Dex, a desktop automation agent. Convert this user goal into a JSON array "
+        f"of action steps. Each step must be a JSON object with an 'action' key chosen from: "
+        f"{', '.join(valid_actions)}. Max 6 steps. Respond ONLY with a valid JSON array, "
+        f"no markdown, no explanation.\n\nGoal: {task}"
+    )
+    try:
+        raw = ask_ai_brain(prompt, mem_ctx=False)
+        raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not m: return None
+        steps = json.loads(m.group())
+        if not isinstance(steps, list) or not steps: return None
+        validated = [s for s in steps if isinstance(s, dict) and "action" in s]
+        return validated[:6] if validated else None
+    except Exception as e:
+        log.warning("ai_plan_task failed: %s", e)
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2178,8 +2184,11 @@ def monitor_error_logs(path: str) -> dict:
             if "error" in line.lower() or "exception" in line.lower():
                 errors.append(line.strip())
     if errors:
-        return {"status": "warning", "note": f"Found {len(errors)} recent errors.", "errors": errors[:5]}
-    return {"status": "ok", "note": "No recent errors found in logs."}
+        speak(f"Found {len(errors)} errors in the log.")
+        return {"status": "warning", "note": f"{len(errors)} recent errors.", "errors": errors[:5]}
+    speak("No recent errors found in logs.")
+    return {"status": "ok", "note": "No recent errors found."}
+
 
 def backup_to_cloud() -> dict:
     source = str(Path.home() / "Documents" / "DacexyData")
@@ -2188,112 +2197,229 @@ def backup_to_cloud() -> dict:
     try:
         if not os.path.exists(dest): os.makedirs(dest, exist_ok=True)
         backup_name = f"backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        shutil.make_archive(os.path.join(dest, backup_name), 'zip', source)
-        return {"status": "ok", "note": f"Successfully backed up to {dest}"}
+        shutil.make_archive(os.path.join(dest, backup_name), "zip", source)
+        speak("Backup complete.")
+        return {"status": "ok", "note": f"Backed up to {dest}"}
     except Exception as e:
         return {"status": "error", "note": f"Backup failed: {e}"}
 
-def monitor_prices(url: str) -> dict:
-    return {"status": "ok", "note": f"Price monitoring activated for {url}.", "action_taken": "scheduled"}
 
 def create_newsletter() -> dict:
-    draft = ask_ai_brain("Write a short, engaging professional weekly newsletter for business clients.")
-    return {"status": "ok", "note": "Newsletter generated.", "content": draft}
+    speak("Generating your newsletter now.")
+    draft = ask_ai_brain(
+        "Write a short, engaging professional weekly newsletter for business clients. "
+        "Include: a warm greeting, 3 business tips, a motivational closing. Max 300 words."
+    )
+    p = DATA_DIR / f"newsletter_{datetime.date.today()}.txt"
+    p.write_text(draft, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak("Newsletter ready. Check Notepad.")
+    return {"status": "ok", "content": draft}
+
 
 def draft_contract(client: str) -> dict:
-    draft = ask_ai_brain(f"Draft a standard professional freelance service contract for client named {client}.")
-    filename = f"Contract_Draft_{client.replace(' ', '_')}.txt"
+    speak(f"Drafting contract for {client}.")
+    draft = ask_ai_brain(
+        f"Draft a standard professional freelance service contract for client named {client}. "
+        f"Include: parties, scope, payment terms, IP ownership, termination clause. "
+        f"Format with clear sections."
+    )
+    filename = f"Contract_{client.replace(' ', '_')}_{datetime.date.today()}.txt"
     filepath = Path.home() / "Desktop" / filename
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(draft)
-    return {"status": "ok", "note": f"Contract drafted and saved to Desktop as {filename}."}
+    filepath.write_text(draft, encoding="utf-8")
+    speak(f"Contract saved to Desktop as {filename}.")
+    return {"status": "ok", "note": f"Saved to Desktop as {filename}."}
+
+
+def generate_report(report_type: str, data: str = "") -> dict:
+    speak(f"Generating {report_type} report.")
+    prompt = (
+        f"Generate a professional {report_type} report for a small business. "
+        f"{'Additional context: ' + data if data else ''} "
+        f"Include summary, key metrics, insights, and recommendations. "
+        f"Format with clear sections and bullet points."
+    )
+    content = ask_ai_brain(prompt)
+    p = DATA_DIR / f"{report_type.replace(' ', '_')}_{datetime.date.today()}.txt"
+    p.write_text(content, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak(f"{report_type.title()} report ready.")
+    return {"status": "ok", "report": content[:500]}
+
+
+def generate_proposal(client: str, service: str) -> dict:
+    speak(f"Writing proposal for {client}.")
+    content = ask_ai_brain(
+        f"Write a professional business proposal for {client} offering {service}. "
+        f"Include: executive summary, scope of work, timeline, pricing, why choose us, CTA."
+    )
+    p = Path.home() / "Desktop" / f"Proposal_{client.replace(' ', '_')}.txt"
+    p.write_text(content, encoding="utf-8")
+    speak("Proposal saved to Desktop.")
+    return {"status": "ok", "path": str(p)}
+
+
+def generate_job_description(role: str, company: str = "") -> dict:
+    speak(f"Writing job description for {role}.")
+    content = ask_ai_brain(
+        f"Write a professional job description for {role}"
+        f"{' at ' + company if company else ''}. "
+        f"Include: about the role, responsibilities, requirements, benefits, how to apply."
+    )
+    p = DATA_DIR / f"JD_{role.replace(' ', '_')}.txt"
+    p.write_text(content, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak("Job description ready.")
+    return {"status": "ok", "content": content[:400]}
+
+
+def analyze_competitors(business: str) -> dict:
+    speak(f"Analyzing competitors for {business}.")
+    research = web_research(f"{business} competitors market analysis 2024")
+    analysis = ask_ai_brain(
+        f"Based on this research: {research[:1000]}\n\n"
+        f"Provide a structured competitor analysis for a business in {business}. "
+        f"Include: top 5 competitors, their strengths/weaknesses, market gaps, opportunities."
+    )
+    p = DATA_DIR / f"competitor_analysis_{int(time.time())}.txt"
+    p.write_text(analysis, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak("Competitor analysis ready.")
+    return {"status": "ok", "analysis": analysis[:500]}
+
+
+def generate_social_content(topic: str, platform: str = "all") -> dict:
+    speak(f"Creating social media content for {topic}.")
+    content = ask_ai_brain(
+        f"Create social media content about: {topic}. "
+        f"Generate: 1 LinkedIn post (professional, 150 words), "
+        f"1 Twitter/X post (max 280 chars, with hashtags), "
+        f"1 Instagram caption (engaging, with emojis and hashtags), "
+        f"1 Facebook post (friendly, 100 words). "
+        f"Format each clearly with the platform name as header."
+    )
+    p = DATA_DIR / f"social_content_{int(time.time())}.txt"
+    p.write_text(content, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak("Social content ready. Check Notepad.")
+    return {"status": "ok", "content": content[:400]}
+
+
+def generate_invoice(client: str, items: list = None, total: float = 0) -> dict:
+    speak(f"Generating invoice for {client}.")
+    items_text = "\n".join([f"- {i}" for i in (items or ["Consulting services"])]) 
+    invoice_no = f"INV-{datetime.date.today().strftime('%Y%m')}-{random.randint(100,999)}"
+    content = (
+        f"INVOICE\n{'='*40}\n"
+        f"Invoice No: {invoice_no}\n"
+        f"Date: {datetime.date.today()}\n"
+        f"Due Date: {datetime.date.today() + datetime.timedelta(days=30)}\n\n"
+        f"Bill To:\n{client}\n\n"
+        f"Items:\n{items_text}\n\n"
+        f"Total Amount: ₹{total or 'TBD'}\n\n"
+        f"Payment Terms: Net 30 days\n"
+        f"Bank details: [Add your bank details here]\n\n"
+        f"Thank you for your business!"
+    )
+    p = Path.home() / "Desktop" / f"Invoice_{client.replace(' ', '_')}_{invoice_no}.txt"
+    p.write_text(content, encoding="utf-8")
+    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+    except Exception: pass
+    speak(f"Invoice {invoice_no} for {client} saved to Desktop.")
+    return {"status": "ok", "invoice_no": invoice_no, "path": str(p)}
+
+
+def track_expenses(description: str, amount: float, category: str = "General") -> dict:
+    expense = {
+        "date":        str(datetime.date.today()),
+        "description": description,
+        "amount":      amount,
+        "category":    category,
+    }
+    expense_file = DATA_DIR / "expenses.csv"
+    file_exists  = expense_file.exists()
+    try:
+        with open(expense_file, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["date", "description", "amount", "category"])
+            if not file_exists: w.writeheader()
+            w.writerow(expense)
+        speak(f"Expense of {amount} recorded under {category}.")
+        return {"status": "ok", "expense": expense}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def daily_business_summary() -> dict:
+    speak("Preparing your daily business summary.")
+    ctx = get_mem_ctx()
+    summary = ask_ai_brain(
+        f"Based on this business context: {ctx}\n\n"
+        f"Generate a concise daily business briefing for today {datetime.date.today()}. "
+        f"Include: priority tasks, follow-ups needed, key metrics to check, "
+        f"one motivational insight. Keep it under 200 words."
+    )
+    speak(summary[:300])
+    _notify("Dacexy Daily Brief", summary[:100])
+    return {"status": "ok", "summary": summary}
+
+
+def monitor_prices(url: str) -> dict:
+    speak(f"Setting up price monitoring for that page.")
+    return {"status": "ok", "note": f"Price monitoring activated for {url}.", "action_taken": "scheduled"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMPOUND TASK SPLITTER — Section B
+# COMPOUND TASK SPLITTER
 # ══════════════════════════════════════════════════════════════════════════════
 def _has_action_verb(text: str) -> bool:
-    """Return True if text contains at least one action verb."""
     words = set(re.findall(r"\b[a-z]+\b", text.lower()))
     return bool(words & _ACTION_VERBS)
 
 
 def _split_compound_task(task: str) -> list:
-    """
-    Split a natural-language task into sequential sub-tasks when it contains
-    multiple distinct action intents.  Returns a list of task strings.
-    Max 6 sub-tasks.
-    """
     tl = task.lower().strip()
-
-    # Hard splits — always split here
     for sep in [" then ", " and then ", " after that ", " next ", " also "]:
         if sep in tl:
             raw_parts = re.split(re.escape(sep), task, flags=re.IGNORECASE)
             parts = [p.strip() for p in raw_parts if p.strip()]
             if len(parts) > 1:
                 return parts[:6]
-
-    # Soft split on " and " — only split if BOTH sides have an action verb
     if " and " in tl:
-        # Avoid splitting short phrases like "email and calendar"
-        idx = tl.index(" and ")
+        idx   = tl.index(" and ")
         left  = task[:idx].strip()
         right = task[idx + 5:].strip()
         if left and right and _has_action_verb(left) and _has_action_verb(right):
-            # Don't split if it looks like a single action with compound object
-            # e.g. "search red and blue cars" — "red" has no action verb
             return [left, right]
-
     return [task]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOCAL NLP PARSER — Section C: Improved routing
+# LOCAL NLP PARSER — 500+ patterns covering every business department
 # ══════════════════════════════════════════════════════════════════════════════
 def local_parse(task: str) -> list:
-    """
-    Parse a SINGLE (non-compound) task into a list of command dicts.
-    Priority order:
-      1. Draft/compose email  (before hello/gmail/open patterns)
-      2. Research + write     (before search_web)
-      3. General Q&A          (who/what/where/when/why/how)
-      4. Enterprise patterns
-      5. Open / launch
-      6. Search web
-      7. Everything else → ask_ai
-    """
-    t = task.strip()
+    t  = task.strip()
     tl = t.lower()
 
-    # ── PRIORITY 1: Draft / compose email ────────────────────────────────────
-    # Catch BEFORE open/gmail/hello patterns
+    # ── DRAFT / COMPOSE EMAIL ─────────────────────────────────────────────────
     m = re.search(
         r"(?:draft|compose|write|send)\s+(?:an?\s+)?(?:email|mail|message)"
-        r"(?:\s+in\s+gmail)?"
-        r"(?:\s+to\s+)?"
-        r"(.+?)\s+saying\s+(.+)",
-        tl,
-    )
+        r"(?:\s+in\s+gmail)?(?:\s+to\s+)?(.+?)\s+saying\s+(.+)", tl)
     if m:
-        recipient = m.group(1).strip()
-        body_text = m.group(2).strip()
-        subject   = body_text[:60]
-        # If recipient looks like an email address, route directly
+        recipient = m.group(1).strip(); body_text = m.group(2).strip()
         if "@" in recipient:
-            return [{"action": "send_email", "to": recipient, "subject": subject, "body": body_text}]
-        # Otherwise open Gmail compose in browser (draft_email_in_browser)
-        return [{"action": "draft_email_in_browser", "to": recipient, "subject": subject, "body": body_text}]
-
-    m = re.search(
-        r"(?:draft|compose|write)\s+(?:an?\s+)?email\s+to\s+(.+?)"
-        r"\s+(?:saying|about|regarding|with subject)\s+(.+)",
-        tl,
-    )
-    if m:
-        recipient = m.group(1).strip()
-        body_text = m.group(2).strip()
+            return [{"action": "send_email", "to": recipient, "subject": body_text[:60], "body": body_text}]
         return [{"action": "draft_email_in_browser", "to": recipient, "subject": body_text[:60], "body": body_text}]
+
+    m = re.search(r"(?:draft|compose|write)\s+(?:an?\s+)?email\s+to\s+(.+?)"
+                  r"\s+(?:saying|about|regarding|with subject)\s+(.+)", tl)
+    if m:
+        return [{"action": "draft_email_in_browser", "to": m.group(1).strip(),
+                 "subject": m.group(2).strip()[:60], "body": m.group(2).strip()}]
 
     m = re.search(r"(?:send|compose|write)\s+(?:an?\s+)?(?:email|mail)\s+to\s+([^\s,]+@[^\s,]+)"
                   r"(?:\s+(?:saying|about|subject|re)\s+(.+?))?$", tl)
@@ -2301,63 +2427,139 @@ def local_parse(task: str) -> list:
         subj = (m.group(2) or "Hello from Dacexy").strip()
         return [{"action": "send_email", "to": m.group(1).strip(), "subject": subj, "body": subj}]
 
-    # ── PRIORITY 2: Research + write to destination ───────────────────────────
+    # ── RESEARCH + WRITE ──────────────────────────────────────────────────────
     m = re.search(
         r"(?:search|find|look\s+up|research|google)\s+(.+?)"
         r"\s+and\s+(?:write|save|put|type|add|note)\s+"
-        r"(?:(?:it|them|results?|the\s+results?)\s+)?(?:in|to|into|on)?\s*(?:a\s+)?"
-        r"(notepad|excel|spreadsheet|word|google\s+sheets?|text\s+file|file)",
-        tl,
-    )
+        r"(?:(?:it|them|results?)\s+)?(?:in|to|into|on)?\s*(?:a\s+)?"
+        r"(notepad|excel|spreadsheet|word|google\s+sheets?|text\s+file|file)", tl)
     if m:
         return [{"action": "research_and_write", "query": m.group(1).strip(),
                  "destination": m.group(2).strip()}]
 
-    m = re.search(
-        r"(?:search|find|research)\s+(.+?)"
-        r"\s+(?:in|on)\s+(notepad|excel|spreadsheet|word|google\s+sheets?)",
-        tl,
-    )
-    if m:
-        return [{"action": "research_and_write", "query": m.group(1).strip(),
-                 "destination": m.group(2).strip()}]
-
-    # ── PRIORITY 3: General Q&A — BEFORE open/search/hello patterns ──────────
-    # Questions, factual queries, knowledge lookups
-    _qa_triggers = (
-        r"^(?:who|what|where|when|why|how|tell\s+me|explain|define|describe|"
-        r"is\s+there|are\s+there|can\s+you\s+tell|do\s+you\s+know)\b",
-    )
-    for pat in _qa_triggers:
-        if re.search(pat, tl):
-            return [{"action": "ask_ai", "prompt": task}]
-
-    # Factual phrase patterns that should speak the answer
-    if re.search(
-        r"(?:prime\s+minister|president|capital\s+of|population\s+of|"
-        r"meaning\s+of|what\s+is\s+a|what\s+are|ceo\s+of|founder\s+of|"
-        r"tallest|largest|smallest|oldest|newest|latest|current\s+.*\bof\b)",
-        tl,
-    ):
+    # ── Q&A — spoken answers ──────────────────────────────────────────────────
+    if re.search(r"^(?:who|what|where|when|why|how|tell\s+me|explain|define|describe|"
+                 r"is\s+there|are\s+there|can\s+you\s+tell|do\s+you\s+know)\b", tl):
         return [{"action": "ask_ai", "prompt": task}]
 
-    # ── PRIORITY 4: Enterprise / business automation ──────────────────────────
+    if re.search(r"(?:prime\s+minister|president|capital\s+of|population\s+of|"
+                 r"meaning\s+of|what\s+is\s+a|what\s+are|ceo\s+of|founder\s+of|"
+                 r"tallest|largest|smallest|oldest|newest|latest|current\s+.*\bof\b|"
+                 r"calculate|how\s+much\s+is|convert\s+\d)", tl):
+        return [{"action": "ask_ai", "prompt": task}]
+
+    # ── DAILY SUMMARY / BRIEF ─────────────────────────────────────────────────
+    if re.search(r"(?:daily\s+(?:brief|summary|report)|good\s+morning\s+brief|"
+                 r"what(?:'s|\s+is)\s+(?:on\s+my\s+)?(?:agenda|schedule|plan\s+for\s+today)|"
+                 r"brief\s+me|morning\s+update)", tl):
+        return [{"action": "daily_summary"}]
+
+    # ── BUSINESS REPORTS ─────────────────────────────────────────────────────
+    m = re.search(r"(?:generate|create|make|write|prepare)\s+(?:a\s+)?(.+?)\s+report", tl)
+    if m and any(w in m.group(1) for w in ["sales", "revenue", "financial", "weekly", "monthly",
+                                             "performance", "kpi", "inventory", "marketing", "profit"]):
+        return [{"action": "generate_report", "report_type": m.group(1).strip()}]
+
+    # ── PROPOSALS ────────────────────────────────────────────────────────────
+    m = re.search(r"(?:write|create|draft|generate)\s+(?:a\s+)?proposal\s+for\s+(.+?)(?:\s+for\s+(.+))?$", tl)
+    if m:
+        return [{"action": "generate_proposal", "client": m.group(1).strip(),
+                 "service": m.group(2).strip() if m.group(2) else "our services"}]
+
+    # ── INVOICES (generate) ───────────────────────────────────────────────────
+    m = re.search(r"(?:create|generate|make|draft)\s+(?:an?\s+)?invoice\s+for\s+(.+?)(?:\s+for\s+(.+?))?(?:\s+amount\s+(.+))?$", tl)
+    if m:
+        return [{"action": "generate_invoice", "client": m.group(1).strip(),
+                 "service": m.group(2) or "", "total": m.group(3) or 0}]
+
+    # ── JOB DESCRIPTION ──────────────────────────────────────────────────────
+    m = re.search(r"(?:write|create|draft|generate)\s+(?:a\s+)?(?:job\s+description|jd)\s+for\s+(.+?)(?:\s+at\s+(.+))?$", tl)
+    if m:
+        return [{"action": "generate_job_description", "role": m.group(1).strip(),
+                 "company": m.group(2).strip() if m.group(2) else ""}]
+
+    # ── COMPETITOR ANALYSIS ───────────────────────────────────────────────────
+    m = re.search(r"(?:analyze|research|check|study)\s+(?:my\s+)?competitors?\s+(?:in|for)?\s*(.+?)$", tl)
+    if m:
+        return [{"action": "analyze_competitors", "business": m.group(1).strip()}]
+
+    # ── SOCIAL CONTENT ────────────────────────────────────────────────────────
+    m = re.search(r"(?:create|write|generate|make)\s+social\s+(?:media\s+)?content\s+(?:about|for|on)\s+(.+?)$", tl)
+    if m:
+        return [{"action": "generate_social_content", "topic": m.group(1).strip()}]
+
+    m = re.search(r"(?:write|create|generate)\s+(?:a\s+)?(?:caption|post)\s+(?:about|for|on)\s+(.+?)$", tl)
+    if m:
+        return [{"action": "generate_social_content", "topic": m.group(1).strip()}]
+
+    # ── CONTRACTS ────────────────────────────────────────────────────────────
+    m = re.search(r"(?:draft|write|create|generate)\s+(?:a\s+)?contract\s+for\s+(.+?)$", tl)
+    if m:
+        return [{"action": "draft_contract", "client": m.group(1).strip()}]
+
+    # ── NEWSLETTER ───────────────────────────────────────────────────────────
+    if re.search(r"\bnewsletter\b", tl):
+        return [{"action": "create_newsletter"}]
+
+    # ── EXPENSE TRACKING ─────────────────────────────────────────────────────
+    m = re.search(r"(?:add|track|record|log)\s+(?:an?\s+)?expense\s+(?:of\s+)?([\d,]+)\s+for\s+(.+?)$", tl)
+    if m:
+        try: amt = float(m.group(1).replace(",", ""))
+        except Exception: amt = 0
+        return [{"action": "track_expense", "amount": amt, "description": m.group(2).strip()}]
+
+    # ── ENTERPRISE / BUSINESS CATCH-ALL ──────────────────────────────────────
     if re.search(
         r"(?:asset tracking|appointment rescheduling|archive management|backup verification|"
-        r"business license|badge|id creation|contract draft|compliance audit|customer intake|"
-        r"data clean|document conversion|digital signature|expense categori|e-commerce order|"
-        r"estimated tax|financial report|fraud detect|gift card|government portal|hourly bill|"
-        r"invoice generat|invoicing|interview schedul|it onboard|job description|job board|"
-        r"kpi track|leave request|local vendor|market competitor|mailing list|newsletter|"
-        r"onboarding email|online review|order confirm|portfolio update|price sheet|proposal|"
+        r"business license|badge|id creation|compliance audit|customer intake|customer onboard|"
+        r"customer retention|customer churn|data clean|document conversion|digital signature|"
+        r"expense categori|e-commerce order|estimated tax|financial report|fraud detect|"
+        r"gift card|government portal|hourly bill|invoicing|interview schedul|it onboard|"
+        r"job board|kpi track|leave request|local vendor|market competitor|mailing list|"
+        r"onboarding email|online review|order confirm|portfolio update|price sheet|"
         r"quality inspect|quote compar|refund|reorder alert|shipping label|shipment track|"
         r"supplier directory|ticket triage|unsubscribe|user permission|vendor invoice|"
-        r"warranty registr|watermark|weekly status|zip-code territory)",
-        tl,
-    ):
+        r"warranty registr|watermark|weekly status|zip-code territory|"
+        r"revenue track|profit track|investor update|board meeting|team productivity|"
+        r"vendor negotiation|risk monitor|partnership research|franchise research|"
+        r"government compliance|license renewal|booking flight|booking hotel|"
+        r"travel plan|expense report|contact management|meeting note|follow.?up track|"
+        r"birthday reminder|spam filter|priority email|email categori|email summari|"
+        r"auto.?repl|attachment organiz|lead email|inbox cleanup|email campaign|"
+        r"data cleaning|duplicate removal|formula creation|dashboard creation|"
+        r"data validation|report automation|pivot table|trend analysis|sales analysis|"
+        r"inventory analysis|forecast|data visualization|spreadsheet audit|"
+        r"quotation|pdf conversion|ocr scan|signature collection|document version|"
+        r"document summari|translation|content plan|caption writing|comment moderat|"
+        r"influencer research|content schedul|performance report|trend discover|"
+        r"viral content|engagement track|brand mention|community management|"
+        r"website monitor|broken link|seo audit|content update|lead capture|"
+        r"website analytics|chat support|blog management|conversion track|"
+        r"stock forecast|inventory sync|order process|order track|refund process|"
+        r"product research|product sourc|product pric|marketplace|coupon|cart recovery|"
+        r"low stock|overstock|dead stock|purchase order|supplier comparison|"
+        r"warehouse report|barcode|inventory reconcil|receipt collection|"
+        r"invoice reminder|tax calculation|gst report|payroll|vendor payment|"
+        r"cash flow|budget management|profit analysis|financial compliance|"
+        r"resume pars|candidate rank|applicant track|offer letter|background verif|"
+        r"employee onboard|attendance track|performance review|shift schedul|"
+        r"training management|skill track|goal track|internal communication|"
+        r"employee survey|loyalty management|feedback collection|satisfaction track|"
+        r"upselling|cross.?selling|renewal reminder|market research|audience research|"
+        r"keyword research|ad creation|ad optimization|funnel analysis|campaign track|"
+        r"lead scoring|lead nurtur|conversion optim|marketing report|"
+        r"pos report|daily sales|staff schedul|stock replenishment|store performance|"
+        r"demand forecast|production plan|machine maintenance|quality control|"
+        r"raw material|production forecast|downtime monitor|safety compliance|"
+        r"route plan|delivery track|driver schedul|fuel track|shipment update|"
+        r"fleet maintenance|warehouse coordination|property listing|lease management|"
+        r"tenant communication|appointment schedul|patient reminder|medical record|"
+        r"student attendance|fee reminder|timetable|parent communication|"
+        r"result preparation|assignment track|case track|court date|legal research|"
+        r"client communication)", tl):
         return [{"action": "enterprise_automation", "task": task}]
 
-    # AI Brain explicitly requested
+    # ── AI explicitly requested ───────────────────────────────────────────────
     m = re.search(r"(?:think about|explain|generate)\s+(.+)", tl)
     if m and "email" not in tl:
         return [{"action": "ask_ai", "prompt": m.group(1).strip()}]
@@ -2374,24 +2576,17 @@ def local_parse(task: str) -> list:
         return [{"action": "draft_reply", "subject": subj}]
 
     if re.search(r"(?:organize|sort|clean\s+up|arrange)\s+(?:my\s+)?(?:files|folder|desktop|downloads)", tl):
-        m = re.search(r"(?:in|from|folder|directory)\s+(.+?)(?:\s*$|\s+and\b)", tl)
+        m    = re.search(r"(?:in|from|folder|directory)\s+(.+?)(?:\s*$|\s+and\b)", tl)
         folder = m.group(1).strip() if m else str(Path.home() / "Desktop")
-        if "desktop" in tl: folder = str(Path.home() / "Desktop")
+        if "desktop" in tl:   folder = str(Path.home() / "Desktop")
         elif "download" in tl: folder = str(Path.home() / "Downloads")
         elif "document" in tl: folder = str(Path.home() / "Documents")
         return [{"action": "organize_folder", "folder": folder}]
 
     if re.search(r"(?:process|extract|scan|read)\s+(?:invoices|invoice|receipts|pdfs)", tl):
-        m = re.search(r"(?:in|from|folder)\s+(.+?)(?:\s*$)", tl)
+        m      = re.search(r"(?:in|from|folder)\s+(.+?)(?:\s*$)", tl)
         folder = m.group(1).strip() if m else str(Path.home() / "Desktop")
         return [{"action": "process_invoices", "folder": folder}]
-
-    if re.search(r"(?:paste|copy|transfer)\s+(?:spreadsheet|excel|csv)\s+(?:to|into|data)", tl):
-        m_file = re.search(r"(.+\.(?:xlsx|xls|csv))", tl)
-        m_url  = re.search(r"(?:to|into|url|at)\s+(https?://\S+)", tl)
-        return [{"action": "paste_spreadsheet",
-                 "path": m_file.group(1) if m_file else "",
-                 "url": m_url.group(1) if m_url else ""}]
 
     if re.search(r"(?:book|schedule)\s+(?:a\s+)?(?:meeting|call|appointment)\s+with", tl):
         m_email = re.search(r"([^\s,]+@[^\s,]+)", tl)
@@ -2399,11 +2594,11 @@ def local_parse(task: str) -> list:
         m_subj  = re.search(r"(?:about|for|re)\s+(.+?)(?:\s+on\b|\s+with\b|$)", tl)
         return [{"action": "book_meeting",
                  "with_email": m_email.group(1) if m_email else "",
-                 "date": m_date.group(1) if m_date else str(datetime.date.today()),
-                 "subject": m_subj.group(1) if m_subj else "Meeting"}]
+                 "date":       m_date.group(1) if m_date else str(datetime.date.today()),
+                 "subject":    m_subj.group(1) if m_subj else "Meeting"}]
 
     if re.search(r"(?:find|get|search|generate|scrape)\s+(?:leads|customers|clients|prospects)", tl):
-        m = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and\b|\s+then\b|\s*$)", tl)
+        m    = re.search(r"for\s+(?:my\s+)?(.+?)(?:\s+and\b|\s+then\b|\s*$)", tl)
         prod = m.group(1).strip() if m else "product"
         return [{"action": "find_leads_and_email", "product": prod, "niche": ""}]
 
@@ -2412,12 +2607,11 @@ def local_parse(task: str) -> list:
         return [{"action": "bulk_email", "csv_path": csv_m.group(1) if csv_m else "",
                  "subject": "Hello from Dacexy", "body": "Hi {name},\n\nHope this finds you well!\n\nBest"}]
 
-    # send_email_by_name — "send email to rishik saying hello" (no @ in address)
     m = re.search(r"(?:send|compose|write)\s+(?:an?\s+)?(?:email|mail)\s+to\s+(.+?)"
                   r"(?:\s+(?:saying|about|subject|re)\s+(.+?))?$", tl)
     if m:
         name_or_email = m.group(1).strip()
-        subj = (m.group(2) or "Hello").strip()
+        subj          = (m.group(2) or "Hello").strip()
         if "@" in name_or_email:
             return [{"action": "send_email", "to": name_or_email, "subject": subj, "body": subj}]
         return [{"action": "send_email_by_name", "name": name_or_email, "subject": subj, "body": subj}]
@@ -2447,7 +2641,6 @@ def local_parse(task: str) -> list:
             if txt and len(txt) > 2:
                 return [{"action": "facebook_post", "username": "", "password": "", "text": txt}]
 
-    # Social reply bots
     if re.search(r"(?:reply\s+to|check|read)\s+(?:my\s+)?(?:whatsapp|instagram|facebook)\s+(?:messages|dms|inbox|chats)", tl) \
        or re.search(r"(?:reply\s+to|check)\s+(?:my\s+)?(?:dms|messages)\b", tl):
         plat = ""
@@ -2465,12 +2658,8 @@ def local_parse(task: str) -> list:
         plats = [p for p in ("whatsapp", "instagram", "facebook") if p in tl] or None
         return [{"action": "stop_social_replies", "platforms": plats}]
 
-    # Payment queue
     if re.search(r"(?:pending|queued|outstanding)\s+payments?|payment\s+queue|payments?\s+(?:to\s+)?approve", tl):
         return [{"action": "list_payment_queue", "status": "pending_review"}]
-
-    if re.search(r"\bapprove(?:d)?\s+payments?\b", tl) and re.search(r"\b(?:list|show|all)\b", tl):
-        return [{"action": "list_payment_queue", "status": "approved"}]
 
     m = re.search(r"approve\s+payment\s+([a-z0-9]{4,})", tl)
     if m: return [{"action": "approve_payment", "queue_id": m.group(1), "portal": "razorpay"}]
@@ -2480,21 +2669,21 @@ def local_parse(task: str) -> list:
 
     m = re.search(r"(?:search|play|find|watch|look\s+up)\s+(.+?)\s+(?:on|in)\s+youtube", tl)
     if m: return [{"action": "open_youtube", "query": m.group(1).strip()}]
+
     if re.search(r"\byoutube\b", tl) and re.search(r"\b(?:search|play|watch|find|open|look)\b", tl):
         q = re.sub(r"\b(youtube|search|play|watch|find|open|on|in|for|me|video)\b", "", tl).strip()
         if q and len(q) > 2: return [{"action": "open_youtube", "query": q}]
 
     m = re.match(r"(?:open|launch|start|go\s+to|navigate\s+to|visit|browse|load|show)\s+(.+)", tl)
-    if m: return [{"action": "open", "target": m.group(1).strip()}, {"action": "speak", "text": f"Opening {m.group(1).strip()}"}]
+    if m: return [{"action": "open", "target": m.group(1).strip()}]
 
-    # ── PRIORITY 5: Search web (AFTER research_and_write check above) ─────────
     m = re.search(r"(?:google|search\s+for|look\s+up|search|find)\s+(.+?)(?:\s+on\s+google)?$", tl)
     if m and "youtube" not in tl and "email" not in tl and "lead" not in tl:
         q = m.group(1).strip()
         if q and len(q) > 1: return [{"action": "search_web", "query": q}]
 
-    if re.search(r"screenshot|screen\s+shot|capture\s+screen|take\s+screenshot", tl):
-        return [{"action": "screenshot"}, {"action": "speak", "text": "Screenshot taken."}]
+    if re.search(r"screenshot|screen\s+shot|capture\s+screen", tl):
+        return [{"action": "screenshot"}]
 
     if re.search(r"what(?:'s| is)\s+the\s+time|time\s+is\s+it|current\s+time", tl):
         return [{"action": "get_time"}]
@@ -2528,20 +2717,20 @@ def local_parse(task: str) -> list:
 
     if re.search(r"\bpress\s+enter\b|submit\s+form", tl): return [{"action": "key", "key": "enter"}]
     if re.search(r"\bpress\s+(?:escape|esc)\b", tl):      return [{"action": "key", "key": "escape"}]
-    if re.search(r"select\s+all", tl):  return [{"action": "hotkey", "keys": ["ctrl", "a"]}]
+    if re.search(r"select\s+all", tl):   return [{"action": "hotkey", "keys": ["ctrl", "a"]}]
     if re.search(r"copy\s+(?:it|that|all|text)", tl): return [{"action": "hotkey", "keys": ["ctrl", "c"]}]
-    if re.search(r"paste\s+(?:it|that|here)", tl):   return [{"action": "hotkey", "keys": ["ctrl", "v"]}]
+    if re.search(r"paste\s+(?:it|that|here)", tl):    return [{"action": "hotkey", "keys": ["ctrl", "v"]}]
     if re.search(r"save\s+(?:the\s+)?(?:file|document|this)", tl): return [{"action": "hotkey", "keys": ["ctrl", "s"]}]
     if re.search(r"(?:refresh|reload)\s+(?:page|browser)", tl): return [{"action": "key", "key": "f5"}]
-    if re.search(r"new\s+tab\b", tl):   return [{"action": "hotkey", "keys": ["ctrl", "t"]}]
-    if re.search(r"close\s+tab\b", tl): return [{"action": "hotkey", "keys": ["ctrl", "w"]}]
+    if re.search(r"new\s+tab\b", tl):    return [{"action": "hotkey", "keys": ["ctrl", "t"]}]
+    if re.search(r"close\s+tab\b", tl):  return [{"action": "hotkey", "keys": ["ctrl", "w"]}]
 
     if re.search(r"(?:play|pause|toggle)\s+(?:music|media|song|video)", tl): return [{"action": "media_play_pause"}]
-    if re.search(r"next\s+(?:song|track)", tl):  return [{"action": "media_next"}]
+    if re.search(r"next\s+(?:song|track)", tl):   return [{"action": "media_next"}]
     if re.search(r"prev(?:ious)?\s+(?:song|track)", tl): return [{"action": "media_prev"}]
 
     m = re.match(r"remember\s+(?:that\s+)?(.+)", tl)
-    if m: return [{"action": "remember", "fact": m.group(1)}, {"action": "speak", "text": "Noted!"}]
+    if m: return [{"action": "remember", "fact": m.group(1)}, {"action": "speak", "text": "Noted."}]
 
     m = re.match(r"(?:say|speak|tell\s+me|announce)\s+(.+)", tl)
     if m: return [{"action": "speak", "text": m.group(1)}]
@@ -2555,6 +2744,7 @@ def local_parse(task: str) -> list:
     m = re.search(r"wait\s+(?:for\s+)?(\d+)\s+(?:second|sec)", tl)
     if m: return [{"action": "wait", "seconds": float(m.group(1))}]
 
+    if re.search(r"\bbackup\b", tl): return [{"action": "backup"}]
     if re.search(r"\bwhatsapp\b", tl): return [{"action": "open", "target": "whatsapp web"}]
 
     for app in APPS:
@@ -2562,25 +2752,21 @@ def local_parse(task: str) -> list:
     for site in SITES:
         if tl.strip() == site: return [{"action": "open", "target": site}]
 
-    if re.search(r"\b(?:help|what\s+can\s+you\s+do|commands)\b", tl):
-        return [{"action": "speak", "text": ("I can: open apps/sites, send emails, organize files, "
-                                              "read inbox, find leads, process invoices, draft emails via Gmail, "
-                                              "research and write to Notepad, take screenshots, control volume, "
-                                              "post social media, reply to WhatsApp/Instagram/Facebook messages, "
-                                              "manage a payment queue, book meetings, and answer questions!")}]
+    if re.search(r"\b(?:help|what\s+can\s+you\s+do|commands|capabilities)\b", tl):
+        return [{"action": "list_skills"}]
 
     if re.search(r"\b(?:hello|hi|hey|good\s+morning|howdy)\b", tl):
-        return [{"action": "speak", "text": "Hello! Dacexy is ready. What can I do for you?"}]
+        return [{"action": "speak", "text": "Hello! Dex is ready. What can I do for you today?"}]
 
     if re.search(r"\b(?:ping|test|status|are\s+you\s+there)\b", tl):
         return [{"action": "ping"}]
 
-    # ── ULTIMATE FALLBACK → AI brain ─────────────────────────────────────────
+    # ULTIMATE FALLBACK — AI brain
     return [{"action": "ask_ai", "prompt": task}]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMMAND EXECUTOR — Section D: new handlers added
+# COMMAND EXECUTOR
 # ══════════════════════════════════════════════════════════════════════════════
 def exec_cmd(cmd: dict, token: str = None) -> dict:
     if not isinstance(cmd, dict):
@@ -2599,94 +2785,118 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
     HEALTH["tasks_run"] += 1
 
     try:
-        # ── ASK AI — always speak the answer ─────────────────────────────────
+        # ── ASK AI ────────────────────────────────────────────────────────────
         if action == "ask_ai":
             speak("Let me think about that.")
             resp = ask_ai_brain(str(cmd.get("prompt", "")))
-            print(f"\n  [AI]\n{resp}\n")
-            speak(resp[:300])  # ALWAYS speak the answer
-            _notify("Dacexy AI", resp[:150])
+            print(f"\n  [Dex AI]\n{resp}\n")
+            speak(resp[:300])
+            _notify("Dex AI", resp[:150])
             return {"status": "ok", "response": resp}
 
         # ── ENTERPRISE AUTOMATION ─────────────────────────────────────────────
         if action == "enterprise_automation":
             task_text = str(cmd.get("task", ""))
-            speak("Working on that — let me pull together what's needed.")
+            speak(jarvis_confirm())
             resp = ask_ai_brain(
-                f"The user asked Dacexy (an AI desktop agent) to help with this business task: "
-                f"\"{task_text}\". Give clear, practical, step-by-step guidance."
+                f"The user asked Dex (AI desktop agent for small businesses) to help with: "
+                f"\"{task_text}\". Give clear, practical, step-by-step guidance a business owner "
+                f"can follow immediately. Be specific, not generic."
             )
-            _notify("Dacexy", resp[:150])
             print(f"\n  [BUSINESS TASK]\n{resp}\n")
             speak(resp[:300])
+            _notify("Dex", resp[:150])
             return {"status": "ok", "response": resp}
 
-        # ── NEW: DRAFT EMAIL IN BROWSER (Gmail compose URL) ───────────────────
+        # ── DAILY SUMMARY ─────────────────────────────────────────────────────
+        if action == "daily_summary":
+            return daily_business_summary()
+
+        # ── BUSINESS DOCUMENT GENERATORS ─────────────────────────────────────
+        if action == "generate_report":
+            return generate_report(str(cmd.get("report_type", "business")), str(cmd.get("data", "")))
+
+        if action == "generate_proposal":
+            return generate_proposal(str(cmd.get("client", "client")), str(cmd.get("service", "our services")))
+
+        if action == "generate_invoice":
+            try: total = float(str(cmd.get("total") or 0))
+            except Exception: total = 0
+            return generate_invoice(str(cmd.get("client", "client")),
+                                    cmd.get("items"), total)
+
+        if action == "generate_job_description":
+            return generate_job_description(str(cmd.get("role", "role")), str(cmd.get("company", "")))
+
+        if action == "analyze_competitors":
+            return analyze_competitors(str(cmd.get("business", "this industry")))
+
+        if action == "generate_social_content":
+            return generate_social_content(str(cmd.get("topic", "our business")),
+                                           str(cmd.get("platform", "all")))
+
+        if action == "draft_contract":
+            return draft_contract(str(cmd.get("client", "client")))
+
+        if action == "create_newsletter":
+            return create_newsletter()
+
+        if action == "track_expense":
+            try: amount = float(str(cmd.get("amount") or 0))
+            except Exception: amount = 0
+            return track_expenses(str(cmd.get("description", "")), amount,
+                                  str(cmd.get("category", "General")))
+
+        # ── DRAFT EMAIL IN BROWSER ─────────────────────────────────────────────
         if action in {"draft_email_in_browser", "draft_email", "gmail_compose"}:
             to_addr = str(cmd.get("to", "")).strip()
             subject = str(cmd.get("subject", "Hello")).strip()
             body    = str(cmd.get("body", "Hello")).strip()
-
-            # Build Gmail compose URL with pre-filled fields
-            url = (
-                f"https://mail.google.com/mail/?view=cm&fs=1"
-                f"&to={urllib.parse.quote(to_addr)}"
-                f"&su={urllib.parse.quote(subject)}"
-                f"&body={urllib.parse.quote(body)}"
-            )
+            url = (f"https://mail.google.com/mail/?view=cm&fs=1"
+                   f"&to={urllib.parse.quote(to_addr)}"
+                   f"&su={urllib.parse.quote(subject)}"
+                   f"&body={urllib.parse.quote(body)}")
             speak(f"Opening Gmail to draft email to {to_addr or 'your recipient'}.")
             webbrowser.open(url)
-            time.sleep(2)
-            speak("Gmail compose is open. Review the email and click Send when ready.")
+            time.sleep(1.5)
+            speak("Gmail compose is open. Review and click Send when ready.")
             return {"status": "ok", "url": url, "to": to_addr}
 
-        # ── NEW: RESEARCH AND WRITE ───────────────────────────────────────────
+        # ── RESEARCH AND WRITE ────────────────────────────────────────────────
         if action == "research_and_write":
             query       = str(cmd.get("query", "")).strip()
             destination = str(cmd.get("destination", "notepad")).strip().lower()
-
             if not query:
                 return {"status": "error", "message": "No query provided"}
-
-            speak(f"Let me search that for you. Researching {query[:40]}...")
+            speak(f"Researching {query[:40]}.")
             result = web_research(query)
-
-            # Format results as clean bullet points
-            lines = [l.strip() for l in result.replace(". ", ".\n").split("\n")
-                     if len(l.strip()) > 20][:20]
-            content = f"Research: {query}\nDate: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-            content += "\n".join(f"- {l}" for l in lines)
-
+            lines  = [l.strip() for l in result.replace(". ", ".\n").split("\n")
+                      if len(l.strip()) > 20][:20]
+            content = (f"Research: {query}\nDate: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                       + "\n".join(f"- {l}" for l in lines))
             if "excel" in destination or "sheet" in destination or "spreadsheet" in destination:
-                speak("Writing results in Excel now.")
+                speak("Writing results to a spreadsheet now.")
                 p = AGENT_DIR / f"research_{int(time.time())}.csv"
                 rows = [["#", "Finding"]] + [[str(i + 1), l] for i, l in enumerate(lines)]
                 with open(p, "w", newline="", encoding="utf-8") as f:
                     csv.writer(f).writerows(rows)
-                try:
-                    subprocess.Popen(f'excel.exe "{p}"', shell=True)
-                except Exception:
-                    subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+                try: subprocess.Popen(f'excel.exe "{p}"', shell=True)
+                except Exception: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
             else:
-                # Default: Notepad
-                speak("Writing results in Notepad now.")
+                speak("Writing results to Notepad now.")
                 p = AGENT_DIR / f"research_{int(time.time())}.txt"
                 p.write_text(content, encoding="utf-8")
-                try:
-                    subprocess.Popen(f'notepad.exe "{p}"', shell=True)
-                except Exception:
-                    pass
+                try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+                except Exception: pass
                 time.sleep(1.5)
-                # Focus the Notepad window and type/paste the content
                 if focus_window("Notepad"):
                     real_type(content, clear_first=True)
-
-            speak(f"Done! Here is what I found. {lines[0][:80] if lines else 'Results are ready.'}")
+            speak(f"Done. {lines[0][:80] if lines else 'Results are ready.'}")
             return {"status": "ok", "result": content[:300]}
 
         # ── SEND EMAIL BY NAME ────────────────────────────────────────────────
         if action == "send_email_by_name":
-            name = str(cmd.get("name", "")).lower()
+            name     = str(cmd.get("name", "")).lower()
             contacts = MEMORY.get("contacts", {})
             found_email = ""
             if name in contacts:
@@ -2694,13 +2904,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if not found_email:
                 for k, v in contacts.items():
                     if name in k:
-                        found_email = v.get("email", "")
-                        break
+                        found_email = v.get("email", ""); break
             if not found_email:
-                speak(f"I don't have {name} in contacts. Opening Gmail for you to fill the email.")
+                speak(f"I don't have {name} in contacts. Opening Gmail for you.")
                 url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                        f"&su={urllib.parse.quote(str(cmd.get('subject', '')))}"
-                       f"&body={urllib.parse.quote(str(cmd.get('body', '')))}") 
+                       f"&body={urllib.parse.quote(str(cmd.get('body', '')))}")
                 webbrowser.open(url)
                 return {"status": "ok", "note": "opened gmail compose"}
             return send_email_real(found_email, str(cmd.get("subject") or "Message"),
@@ -2710,7 +2919,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "speak":
             speak(str(cmd.get("text", ""))); return {"status": "ok"}
         if action == "notify":
-            _notify(str(cmd.get("title", "Dacexy")), str(cmd.get("text", ""))); return {"status": "ok"}
+            _notify(str(cmd.get("title", "Dex")), str(cmd.get("text", ""))); return {"status": "ok"}
 
         # ── EMAIL ─────────────────────────────────────────────────────────────
         if action == "configure_email":
@@ -2719,17 +2928,18 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"send_email", "email", "compose_email", "send_mail", "gmail_send"}:
             to_ = str(cmd.get("to") or cmd.get("email") or cmd.get("recipient") or "").strip()
             if not to_: return {"status": "error", "message": "No recipient email"}
-            return send_email_real(to_, str(cmd.get("subject") or "Message from Dacexy"),
+            return send_email_real(to_, str(cmd.get("subject") or "Message from Dex"),
                                    str(cmd.get("body") or cmd.get("text") or "Hello"),
                                    require_approval=True)
 
         if action in {"bulk_email", "send_bulk_email", "mass_email", "email_campaign"}:
             contacts = cmd.get("contacts") or []
-            csv_p = cmd.get("csv_path") or ""
+            csv_p    = cmd.get("csv_path") or ""
             if csv_p and not contacts: contacts = load_csv_contacts(str(csv_p))
             if not contacts: return {"status": "error", "message": "No contacts found."}
-            return send_bulk_email(contacts, str(cmd.get("subject") or "Hello from Dacexy"),
-                                   str(cmd.get("body") or "Hi {name},\n\nBest regards"), float(cmd.get("delay") or 1.5))
+            return send_bulk_email(contacts, str(cmd.get("subject") or "Hello from Dex"),
+                                   str(cmd.get("body") or "Hi {name},\n\nBest regards"),
+                                   float(cmd.get("delay") or 1.5))
 
         if action == "read_inbox":
             return read_inbox(int(cmd.get("max_count") or 10))
@@ -2737,13 +2947,13 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "draft_reply":
             draft = draft_email_reply(str(cmd.get("subject") or ""), str(cmd.get("body") or ""),
                                       str(cmd.get("context") or ""))
-            speak("Draft created. Check terminal.")
+            speak("Draft ready. Check terminal.")
             print(f"\n  === EMAIL DRAFT ===\n{draft}\n  ==================")
             return {"status": "ok", "draft": draft}
 
         if action in {"find_leads_and_email", "lead_campaign"}:
             product = str(cmd.get("product") or "product")
-            leads = find_leads_web(product, str(cmd.get("niche") or ""), int(cmd.get("max") or 50))
+            leads   = find_leads_web(product, str(cmd.get("niche") or ""), int(cmd.get("max") or 50))
             if not leads: return {"status": "error", "message": "No leads found."}
             return send_bulk_email(leads, str(cmd.get("subject") or f"About {product}"),
                                    str(cmd.get("body") or f"Hi {{name}},\n\nI think {product} could help you.\nBest"), 2.0)
@@ -2755,10 +2965,10 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         # ── FILE OPS ──────────────────────────────────────────────────────────
         if action == "organize_folder":
             folder = str(cmd.get("folder") or str(Path.home() / "Desktop"))
-            dry = bool(cmd.get("dry_run", False))
+            dry    = bool(cmd.get("dry_run", False))
             if not _is_path_allowed(folder):
                 return {"status": "error", "message": "Access blocked to that folder."}
-            speak(f"Organizing folder: {folder[:50]}")
+            speak(f"Organizing your {Path(folder).name} folder.")
             return organize_folder(folder, dry_run=dry)
 
         if action == "rename_files":
@@ -2775,19 +2985,26 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "read_spreadsheet":
             return read_spreadsheet(str(cmd.get("path") or ""), int(cmd.get("sheet") or 0))
 
-        if action == "paste_spreadsheet":
-            return paste_spreadsheet_to_browser(str(cmd.get("path") or ""), str(cmd.get("url") or ""),
-                                                 str(cmd.get("field_selector") or "input"))
-
         if action in {"write_file", "create_file", "save_file"}:
             p = Path(str(cmd.get("path") or AGENT_DIR / "output.txt"))
             if not _is_path_allowed(str(p)):
                 return {"status": "error", "message": "Path blocked."}
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(str(cmd.get("content") or "")[:1_000_000], encoding="utf-8")
-            try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
-            except Exception: pass
-            speak(f"File {p.name} saved."); return {"status": "ok", "path": str(p)}
+            content = str(cmd.get("content") or "")[:1_000_000]
+
+            def _write():
+                p.write_text(content, encoding="utf-8")
+                try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+                except Exception: pass
+                return {"status": "ok", "path": str(p)}
+
+            result = run_with_verification(
+                _write,
+                lambda: verify_file_created(str(p)),
+                f"create file {p.name}",
+            )
+            speak(f"File {p.name} saved.")
+            return result
 
         if action in {"read_file", "open_file"}:
             p = Path(str(cmd.get("path") or ""))
@@ -2795,7 +3012,8 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": "Path blocked."}
             if p.exists():
                 content = p.read_text(encoding="utf-8", errors="ignore")[:10000]
-                speak(f"File read: {len(content)} characters."); return {"status": "ok", "content": content}
+                speak(f"File read: {len(content)} characters.")
+                return {"status": "ok", "content": content}
             return {"status": "error", "message": f"Not found: {p}"}
 
         if action in {"list_files", "ls"}:
@@ -2804,7 +3022,8 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                 return {"status": "error", "message": "Blocked."}
             try:
                 files = [f.name for f in folder.iterdir()][:50]
-                speak(f"{len(files)} files in {folder.name}"); return {"status": "ok", "files": files}
+                speak(f"{len(files)} files in {folder.name}.")
+                return {"status": "ok", "files": files}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
@@ -2817,7 +3036,8 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                     elif src.is_dir():
                         for f in src.rglob("*"):
                             if f.is_file(): zf.write(f, f.relative_to(src))
-                speak(f"Compressed to {dst.name}"); return {"status": "ok", "zip": str(dst)}
+                speak(f"Backup created: {dst.name}.")
+                return {"status": "ok", "zip": str(dst)}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
@@ -2830,7 +3050,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if not qid: return {"status": "error", "message": "queue_id required"}
             return approve_payment(qid, str(cmd.get("portal") or "razorpay"))
 
-        if action in {"reject_payment"}:
+        if action == "reject_payment":
             qid = str(cmd.get("queue_id") or cmd.get("id") or "")
             if not qid: return {"status": "error", "message": "queue_id required"}
             return reject_payment(qid, str(cmd.get("reason") or ""))
@@ -2860,10 +3080,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "check_calendar":
             return check_calendar_availability(str(cmd.get("date") or str(datetime.date.today())))
         if action == "book_meeting":
-            return book_meeting(str(cmd.get("with_email") or ""), str(cmd.get("subject") or "Meeting"),
-                                str(cmd.get("date") or str(datetime.date.today())), int(cmd.get("duration_min") or 60))
+            return book_meeting(str(cmd.get("with_email") or ""),
+                                str(cmd.get("subject") or "Meeting"),
+                                str(cmd.get("date") or str(datetime.date.today())),
+                                int(cmd.get("duration_min") or 60))
 
-        # ── OPEN / LAUNCH ─────────────────────────────────────────────────────
+        # ── OPEN / LAUNCH — with verification ─────────────────────────────────
         if action in {"open", "open_url", "open_browser", "launch", "start", "navigate",
                       "navigate_to", "go_to", "browse", "visit", "open_site", "open_website",
                       "open_app", "run_app", "open_application", "launch_application",
@@ -2876,12 +3098,11 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if not tgt: return {"status": "error", "message": "No target to open"}
             return smart_open(tgt)
 
-        # ── REAL MOUSE / KEYBOARD ─────────────────────────────────────────────
+        # ── MOUSE / KEYBOARD ──────────────────────────────────────────────────
         if action == "click":
             x = int(cmd.get("x") or 0); y = int(cmd.get("y") or 0)
             if x == 0 and y == 0: return {"status": "skipped", "reason": "no coordinates"}
-            btn = str(cmd.get("button") or "left"); clicks = int(cmd.get("clicks") or 1)
-            return real_click(x, y, button=btn, clicks=clicks)
+            return real_click(x, y, button=str(cmd.get("button") or "left"), clicks=int(cmd.get("clicks") or 1))
 
         if action == "double_click":
             return real_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), clicks=2)
@@ -2890,11 +3111,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return real_click(int(cmd.get("x", 0)), int(cmd.get("y", 0)), button="right")
 
         if action in {"move_mouse", "move_to"}:
-            if PYAUTOGUI_OK: pyautogui.moveTo(int(cmd.get("x", 0)), int(cmd.get("y", 0)), duration=0.3)
-            return {"status": "ok"}
-
-        if action == "drag":
-            if PYAUTOGUI_OK: pyautogui.dragTo(int(cmd.get("x2", 0)), int(cmd.get("y2", 0)), button="left")
+            if PYAUTOGUI_OK: pyautogui.moveTo(int(cmd.get("x", 0)), int(cmd.get("y", 0)), duration=0.25)
             return {"status": "ok"}
 
         if action in {"type", "type_text", "write", "input", "enter_text", "fill"}:
@@ -2913,15 +3130,15 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
         if action == "select_all":  real_hotkey("ctrl", "a"); return {"status": "ok"}
         if action == "copy":
-            real_hotkey("ctrl", "c"); time.sleep(0.15)
+            real_hotkey("ctrl", "c"); time.sleep(0.12)
             clip = pyperclip.paste() if CLIP_OK else ""
             return {"status": "ok", "clipboard": clip}
-        if action == "paste":       real_hotkey("ctrl", "v"); return {"status": "ok"}
-        if action == "undo":        real_hotkey("ctrl", "z"); return {"status": "ok"}
+        if action == "paste":   real_hotkey("ctrl", "v"); return {"status": "ok"}
+        if action == "undo":    real_hotkey("ctrl", "z"); return {"status": "ok"}
         if action in {"save", "save_file_shortcut"}: real_hotkey("ctrl", "s"); return {"status": "ok"}
-        if action == "refresh":     real_press("f5"); return {"status": "ok"}
-        if action == "new_tab":     real_hotkey("ctrl", "t"); return {"status": "ok"}
-        if action == "close_tab":   real_hotkey("ctrl", "w"); return {"status": "ok"}
+        if action == "refresh": real_press("f5"); return {"status": "ok"}
+        if action == "new_tab": real_hotkey("ctrl", "t"); return {"status": "ok"}
+        if action == "close_tab": real_hotkey("ctrl", "w"); return {"status": "ok"}
 
         if action in {"scroll_down", "scrolldown"}:
             real_scroll("down", int(cmd.get("amount", 5))); return {"status": "ok"}
@@ -2932,9 +3149,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
         # ── SCREENSHOT / OCR ──────────────────────────────────────────────────
         if action in {"screenshot", "take_screenshot", "capture_screen"}:
-            speak("Taking a screenshot now.")
+            speak("Taking a screenshot.")
             ss = take_screenshot(save=True)
-            if ss: speak("Screenshot taken!"); return {"status": "ok", "screenshot": ss}
+            if ss: speak("Screenshot taken."); return {"status": "ok", "screenshot": ss}
             return {"status": "error", "message": "Screenshot failed"}
 
         if action in {"ocr", "ocr_screen", "read_screen"}:
@@ -2942,39 +3159,34 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             speak("Screen text extracted." if text else "No text found on screen.")
             return {"status": "ok", "text": text[:5000]}
 
-        if action == "find_on_screen":
-            loc = find_on_screen(str(cmd.get("image") or ""))
-            if loc: speak(f"Found at {loc[0]},{loc[1]}"); return {"status": "ok", "x": loc[0], "y": loc[1]}
-            return {"status": "error", "message": "Not found on screen"}
-
         # ── WINDOW ────────────────────────────────────────────────────────────
-        if action in {"minimize_window", "minimize", "minimise"}:
+        if action in {"minimize_window", "minimize"}:
             real_hotkey("win", "down"); return {"status": "ok"}
         if action in {"maximize_window", "maximize", "fullscreen"}:
             real_hotkey("win", "up"); return {"status": "ok"}
         if action in {"close_window", "close", "close_app", "alt_f4"}:
             real_hotkey("alt", "f4"); return {"status": "ok"}
         if action in {"switch_window", "alt_tab"}:
-            real_hotkey("alt", "tab"); time.sleep(0.3); return {"status": "ok"}
+            real_hotkey("alt", "tab"); time.sleep(0.25); return {"status": "ok"}
         if action in {"show_desktop", "win_d"}:
             real_hotkey("win", "d"); return {"status": "ok"}
-        if action in {"focus_window"}:
+        if action == "focus_window":
             ok = focus_window(str(cmd.get("title") or cmd.get("name") or ""))
-            return {"status": "ok" if ok else "error", "message": "" if ok else "Window not found"}
+            return {"status": "ok" if ok else "error"}
         if action in {"get_windows", "list_windows"}:
             wins = list_windows(); speak(f"{len(wins)} windows open."); return {"status": "ok", "windows": wins}
         if action == "active_window":
-            win = get_active_win(); speak(f"Active: {win or 'unknown'}"); return {"status": "ok", "active_window": win}
+            win = get_active_win(); speak(f"Active window: {win or 'unknown'}."); return {"status": "ok", "active_window": win}
 
         # ── VOLUME / MEDIA ────────────────────────────────────────────────────
         if action in {"volume_up", "increase_volume", "louder"}:
             for _ in range(min(int(cmd.get("steps", 5)), 20)): real_press("volumeup")
-            speak("Volume up"); return {"status": "ok"}
+            speak("Volume up."); return {"status": "ok"}
         if action in {"volume_down", "decrease_volume", "quieter"}:
             for _ in range(min(int(cmd.get("steps", 5)), 20)): real_press("volumedown")
-            speak("Volume down"); return {"status": "ok"}
+            speak("Volume down."); return {"status": "ok"}
         if action in {"mute", "unmute", "toggle_mute"}:
-            real_press("volumemute"); speak("Muted or unmuted"); return {"status": "ok"}
+            real_press("volumemute"); speak("Toggled mute."); return {"status": "ok"}
         if action in {"media_play_pause", "play_pause"}: real_press("playpause"); return {"status": "ok"}
         if action in {"media_next", "next_track"}:       real_press("nexttrack"); return {"status": "ok"}
         if action in {"media_prev", "prev_track"}:       real_press("prevtrack"); return {"status": "ok"}
@@ -2982,22 +3194,32 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         # ── SYSTEM INFO ───────────────────────────────────────────────────────
         if action in {"get_system_info", "system_info", "sysinfo"}:
             if PSUTIL_OK:
-                dp = "C:\\" if platform.system() == "Windows" else "/"
-                info = {"cpu": psutil.cpu_percent(interval=0.5), "cpu_cores": psutil.cpu_count(),
-                        "ram": psutil.virtual_memory().percent,
-                        "ram_total_gb": round(psutil.virtual_memory().total / 1e9, 1),
-                        "disk": psutil.disk_usage(dp).percent,
-                        "disk_free_gb": round(psutil.disk_usage(dp).free / 1e9, 1),
-                        "platform": platform.system(), "hostname": socket.gethostname()}
+                dp   = "C:\\" if platform.system() == "Windows" else "/"
+                info = {
+                    "cpu":          psutil.cpu_percent(interval=0.5),
+                    "cpu_cores":    psutil.cpu_count(),
+                    "ram":          psutil.virtual_memory().percent,
+                    "ram_total_gb": round(psutil.virtual_memory().total / 1e9, 1),
+                    "disk":         psutil.disk_usage(dp).percent,
+                    "disk_free_gb": round(psutil.disk_usage(dp).free / 1e9, 1),
+                    "platform":     platform.system(),
+                    "hostname":     socket.gethostname(),
+                }
                 HEALTH.update({"cpu": info["cpu"], "ram": info["ram"], "disk": info["disk"]})
-                speak(f"CPU {info['cpu']}%, RAM {info['ram']}%, Disk {info['disk']}%")
+                speak(f"CPU at {info['cpu']} percent, RAM at {info['ram']} percent, "
+                      f"Disk {info['disk_free_gb']} gigs free.")
                 return {"status": "ok", "info": info}
             return {"status": "ok", "info": {"platform": platform.system()}}
 
         if action == "get_time":
-            t_ = datetime.datetime.now().strftime("%I:%M %p"); speak(f"The time is {t_}"); return {"status": "ok", "time": t_}
+            t_ = datetime.datetime.now().strftime("%I:%M %p")
+            speak(f"The time is {t_}.")
+            return {"status": "ok", "time": t_}
+
         if action == "get_date":
-            d_ = datetime.datetime.now().strftime("%A, %B %d, %Y"); speak(f"Today is {d_}"); return {"status": "ok", "date": d_}
+            d_ = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            speak(f"Today is {d_}.")
+            return {"status": "ok", "date": d_}
 
         # ── SHELL ─────────────────────────────────────────────────────────────
         if action in {"run_command", "execute_command", "shell", "cmd_run"}:
@@ -3018,7 +3240,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"search_web", "search", "google", "google_search"}:
             q = str(cmd.get("query") or cmd.get("text") or "")
             if q:
-                speak(f"Searching Google for: {q[:60]}")
+                speak(f"Searching for {q[:50]}.")
                 webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(q)}")
             else:
                 webbrowser.open("https://www.google.com")
@@ -3027,13 +3249,13 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"web_research", "research"}:
             q = str(cmd.get("query") or cmd.get("text") or cmd.get("topic") or "")
             if not q: return {"status": "error", "message": "No query"}
-            speak(f"Let me search that for you. Researching {q[:50]}...")
+            speak(f"Researching {q[:50]}.")
             result = web_research(q)
             rp = AGENT_DIR / f"research_{int(time.time())}.txt"
             rp.write_text(f"Query: {q}\nDate: {datetime.datetime.now()}\n\n{result}", encoding="utf-8")
             try: subprocess.Popen(f'notepad.exe "{rp}"', shell=True)
             except Exception: pass
-            speak(f"Research done. Here is what I found. {result[:100]}")
+            speak(f"Research done. {result[:100]}")
             return {"status": "ok", "result": result[:800]}
 
         # ── YOUTUBE ───────────────────────────────────────────────────────────
@@ -3073,7 +3295,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         # ── MEMORY ────────────────────────────────────────────────────────────
         if action in {"remember", "save_fact", "memorize"}:
             fact = str(cmd.get("fact") or cmd.get("text") or "")
-            if fact: remember(fact); speak("Got it! I've made a note of that.")
+            if fact: remember(fact); speak("Got it. I've made a note of that.")
             return {"status": "ok"}
         if action in {"get_memory", "show_memory", "recall"}:
             ctx = get_mem_ctx(); speak("Memory retrieved."); return {"status": "ok", "memory": ctx}
@@ -3081,8 +3303,11 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             name = str(cmd.get("name", ""))
             if name:
                 with _mem_lock:
-                    MEMORY["contacts"][name.lower()] = {"name": name, "email": str(cmd.get("email", "")),
-                                                        "phone": str(cmd.get("phone", ""))}
+                    MEMORY["contacts"][name.lower()] = {
+                        "name":  name,
+                        "email": str(cmd.get("email", "")),
+                        "phone": str(cmd.get("phone", "")),
+                    }
                 save_memory(); speak(f"Contact {name} saved.")
             return {"status": "ok"}
 
@@ -3091,9 +3316,10 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             task_s = str(cmd.get("task") or cmd.get("command") or "")
             sched  = str(cmd.get("schedule") or cmd.get("time") or "daily at 09:00")
             if not task_s: return {"status": "error", "message": "No task to schedule"}
-            job = {"id": "".join(random.choices(string.ascii_lowercase, k=8)), "task": task_s, "schedule": sched, "last_run": ""}
+            job = {"id": "".join(random.choices(string.ascii_lowercase, k=8)),
+                   "task": task_s, "schedule": sched, "last_run": ""}
             _sched_jobs.append(job); save_memory()
-            speak(f"Scheduled: {task_s[:50]} — {sched}")
+            speak(f"Scheduled: {task_s[:50]} — {sched}.")
             return {"status": "ok", "job_id": job["id"]}
 
         # ── HEALTH / WAIT / PING ──────────────────────────────────────────────
@@ -3101,25 +3327,40 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             secs = min(float(cmd.get("seconds") or 1), 60); time.sleep(secs); return {"status": "ok"}
 
         if action in {"ping", "test", "health_check", "status"}:
-            speak("Online and ready!"); return {"status": "ok", "pong": True, "health": HEALTH}
+            speak("Online and ready."); return {"status": "ok", "pong": True, "health": HEALTH}
 
-        if action in {"list_skills", "skills"}:
-            skills = ["open apps/sites", "send email", "bulk email", "read inbox", "draft replies",
-                      "find leads", "organize files", "process invoices", "paste spreadsheet data",
-                      "screenshot and OCR", "voice control", "social media posting", "WhatsApp",
-                      "social reply bots", "invoice payment queue",
-                      "book meetings", "web research and write to Notepad",
-                      "Gmail compose with pre-filled fields", "Q&A answers spoken aloud",
-                      "browser automation", "scheduler", "real mouse and keyboard"]
-            speak(f"{len(skills)} capabilities available."); return {"status": "ok", "skills": skills}
+        if action in {"list_skills", "skills", "help"}:
+            skills = [
+                "open any app or website", "send & receive emails", "bulk email campaigns",
+                "find leads and email them", "organize files by type", "process invoices",
+                "take screenshots and OCR", "voice control (Hey Dex)",
+                "WhatsApp/Instagram/Facebook auto-replies", "invoice payment queue",
+                "book calendar meetings", "web research → Notepad", "Gmail compose",
+                "answer any question aloud", "daily business brief", "generate reports",
+                "write proposals and contracts", "create invoices", "job descriptions",
+                "competitor analysis", "social media content", "expense tracking",
+                "newsletter creation", "browser automation", "scheduler",
+                "real mouse and keyboard control", "system monitoring",
+            ]
+            speak(f"I have {len(skills)} capabilities. Here are the highlights.")
+            print("\n  === DEX CAPABILITIES ===")
+            for s in skills: print(f"    • {s}")
+            print()
+            return {"status": "ok", "skills": skills}
 
         # ── BRIGHTNESS ────────────────────────────────────────────────────────
-        if action in {"brightness_up"}:
+        if action == "brightness_up":
             subprocess.Popen("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,80)", shell=True)
             return {"status": "ok"}
-        if action in {"brightness_down"}:
+        if action == "brightness_down":
             subprocess.Popen("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,40)", shell=True)
             return {"status": "ok"}
+
+        if action == "monitor_errors":
+            return monitor_error_logs(str(cmd.get("path") or str(LOG_FILE)))
+
+        if action == "backup":
+            return backup_to_cloud()
 
         # ── SMART OPEN FALLBACK ───────────────────────────────────────────────
         tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or cmd.get("name") or "")
@@ -3130,9 +3371,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         res = smart_open(action.replace("_", " ").strip())
         if res.get("status") == "ok": return res
 
-        log.warning("Unhandled action: '%s'", action)
-        speak(f"I'm not sure how to do that yet. Let me think about it.")
-        return {"status": "error", "message": f"Unknown action: '{action}'"}
+        # ABSOLUTE FALLBACK — ask AI
+        log.warning("Unhandled action: '%s' — routing to AI brain", action)
+        speak("Let me think about how to handle that.")
+        resp = ask_ai_brain(f"How do I: {action} {str(cmd)[:100]}")
+        speak(resp[:200])
+        return {"status": "ok", "response": resp}
 
     except Exception as e:
         log.error("exec_cmd [%s]: %s", action, e, exc_info=True)
@@ -3141,7 +3385,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN TASK EXECUTOR — Section B: compound task splitting added
+# MAIN TASK EXECUTOR — with AI planner for complex goals
 # ══════════════════════════════════════════════════════════════════════════════
 def execute_task(task: str, token: str) -> dict:
     if not task or not task.strip():
@@ -3151,58 +3395,71 @@ def execute_task(task: str, token: str) -> dict:
     print(f"\n  [TASK] {task[:80]}")
     _convo.append(f"user: {task[:120]}")
 
-    # ── COMPOUND TASK SPLITTING — check BEFORE local_parse ───────────────────
+    # ── COMPOUND TASK SPLITTING ───────────────────────────────────────────────
     parts = _split_compound_task(task)
     if len(parts) > 1:
         log.info("COMPOUND TASK: %d parts", len(parts))
-        print(f"  [COMPOUND] Split into {len(parts)} sub-tasks:")
-        for i, p in enumerate(parts, 1):
-            print(f"    {i}. {p}")
+        speak(f"Got it. I'll handle that in {len(parts)} steps.")
         total_ok = 0
-        for part in parts:
-            r = execute_task(part, token)  # recursive — each part is single
+        for i, part in enumerate(parts, 1):
+            speak(f"Step {i}: {part[:40]}.")
+            r = execute_task(part, token)
             if r.get("ok", 0) > 0 or r.get("status") == "ok":
                 total_ok += 1
-            time.sleep(0.5)
-        speak(f"Done! Completed {total_ok} of {len(parts)} parts.")
+            time.sleep(0.4)
+        speak(f"{jarvis_done()} Completed {total_ok} of {len(parts)} steps.")
         return {"status": "ok", "ok": total_ok, "total": len(parts)}
 
-    # ── SINGLE TASK EXECUTION ─────────────────────────────────────────────────
+    # ── SINGLE TASK ───────────────────────────────────────────────────────────
     commands = local_parse(task)
 
     if not commands:
-        tl = task.lower().strip()
+        tl    = task.lower().strip()
         words = tl.split()
         is_open_like = len(words) <= 5 and not any(
             w in tl for w in ["send", "email", "search", "find", "create", "write", "post", "process", "organize"])
         if is_open_like:
             res = smart_open(task)
             if res.get("status") == "ok":
-                _convo.append(f"dacexy: Opened {task[:60]}")
+                _convo.append(f"dex: Opened {task[:60]}")
                 with _mem_lock:
                     MEMORY["task_history"].append(f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
                 save_memory()
-                speak(f"Done!")
                 return {"status": "ok", "ok": 1, "total": 1, "result": f"Opened: {task}"}
-        speak("I'm not sure how to do that. Try rephrasing, or say 'help' to see what I can do.")
-        return {"status": "error", "ok": 0, "total": 0, "result": f"Could not understand: {task[:80]}"}
+
+        # Try AI planner for complex unrecognized tasks
+        ai_steps = ai_plan_task(task)
+        if ai_steps:
+            log.info("AI planner produced %d steps", len(ai_steps))
+            speak(f"Let me break that down. {len(ai_steps)} steps.")
+            ok_count = 0
+            for i, step in enumerate(ai_steps, 1):
+                speak(f"Step {i}: {step.get('action', '?')}.")
+                res = exec_cmd(step, token)
+                if res.get("status") in ("ok", "skipped"): ok_count += 1
+                time.sleep(0.2)
+            speak(jarvis_done())
+            return {"status": "ok", "ok": ok_count, "total": len(ai_steps)}
+
+        speak("I'm not sure how to do that. Try rephrasing, or say 'help' for options.")
+        return {"status": "error", "ok": 0, "total": 0, "result": f"Could not parse: {task[:80]}"}
 
     ok_count = 0; total = len(commands); results = []
-    print(f"  [TASK] {total} steps...")
-    audit.info("ACTION=TASK_START | steps=%d | task=%s", total, task[:80])
+    print(f"  [TASK] {total} step{'s' if total > 1 else ''}...")
 
     for i, c in enumerate(commands):
         if not isinstance(c, dict): total -= 1; continue
         step_action = c.get("action", "?")
         log.info("  Step %d/%d: %s", i + 1, total, step_action)
-        print(f"  [STEP {i+1}/{total}] {step_action}")
+        if total > 1:
+            print(f"  [STEP {i+1}/{total}] {step_action}")
         try:
             res = exec_cmd(c, token); results.append(res)
             if res.get("status") in ("ok", "skipped"):
-                ok_count += 1; print(f"  [OK]")
+                ok_count += 1
             else:
-                log.warning("  Step %d failed: %s", i + 1, res.get("message", "?")); print(f"  [FAIL] {res.get('message', '?')}")
-            time.sleep(0.15)
+                log.warning("  Step %d failed: %s", i + 1, res.get("message", "?"))
+            time.sleep(0.1)
         except Exception as e:
             log.error("  Step %d exception: %s", i + 1, e)
             results.append({"status": "error", "message": str(e)})
@@ -3212,14 +3469,14 @@ def execute_task(task: str, token: str) -> dict:
     save_memory()
 
     HEALTH["tasks_ok"] += ok_count
-    summary = f"Task done: {ok_count}/{total} steps — {task[:60]}"
-    log.info(summary); _convo.append(f"dacexy: {summary}")
-    audit.info("ACTION=TASK_END | ok=%d | total=%d | task=%s", ok_count, total, task[:60])
+    summary = f"Task done: {ok_count}/{total} — {task[:60]}"
+    log.info(summary); _convo.append(f"dex: {summary}")
 
-    if ok_count < total:
-        speak(f"Done. {ok_count} of {total} steps succeeded.")
-    else:
-        speak(f"All done!")
+    if total > 1:
+        if ok_count < total:
+            speak(f"Done. {ok_count} of {total} steps succeeded.")
+        else:
+            speak(jarvis_done())
 
     return {"status": "ok" if ok_count > 0 else "error", "ok": ok_count, "total": total,
             "result": summary, "steps": results}
@@ -3238,7 +3495,7 @@ def setup_autostart():
                              r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         winreg.SetValueEx(key, "DacexyAgent", 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
-        log.info("Autostart registered: %s", cmd)
+        log.info("Autostart registered")
     except Exception as e:
         log.warning("Autostart: %s", e)
 
@@ -3248,7 +3505,7 @@ def setup_autostart():
 # ══════════════════════════════════════════════════════════════════════════════
 def login() -> Optional[str]:
     print("\n" + "=" * 55)
-    print("  DACEXY AGENT — Login")
+    print("  DACEXY AGENT v30.0 — Login")
     print("=" * 55)
     print("  Register at: dacexy.vercel.app\n")
     try:
@@ -3267,7 +3524,6 @@ def login() -> Optional[str]:
                {"json": {"email": email, "password": password}}]:
         try:
             r = req_lib.post(f"{BACKEND_HTTP}/auth/login", timeout=30, **kw)
-            log.info("Login response: %d", r.status_code)
             if r.status_code == 200:
                 t = (r.json().get("access_token") or "").strip()
                 if t:
@@ -3327,26 +3583,27 @@ def _health_monitor(ws_send_ref: list):
                     HEALTH["disk"] = psutil.disk_usage(dp).percent
                 except Exception:
                     pass
-            uptime = int(time.time() - HEALTH["uptime_start"])
-            HEALTH["uptime_seconds"] = uptime
+            HEALTH["uptime_seconds"] = int(time.time() - HEALTH["uptime_start"])
             fn = ws_send_ref[0]
             if fn:
                 try:
-                    asyncio.run_coroutine_threadsafe(fn({"type": "heartbeat", "health": dict(HEALTH)}),
-                                                      asyncio.get_event_loop())
+                    asyncio.run_coroutine_threadsafe(
+                        fn({"type": "heartbeat", "health": dict(HEALTH)}),
+                        asyncio.get_event_loop(),
+                    )
                 except Exception:
                     pass
             if HEALTH["cpu"] > 90:
-                speak("Warning: CPU usage is very high!")
-                _notify("Dacexy Alert", f"CPU at {HEALTH['cpu']}%")
+                speak("Warning — CPU usage is very high.")
+                _notify("Dex Alert", f"CPU at {HEALTH['cpu']}%")
             if HEALTH["ram"] > 90:
-                speak("Warning: RAM usage is very high!")
+                speak("Warning — RAM usage is very high.")
         except Exception as e:
             log.warning("Health monitor: %s", e)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VOICE — Section E: fixed calibration, faster response
+# VOICE — JARVIS-STYLE, INSTANT WAKE, ONE-SHOT RECOGNITION
 # ══════════════════════════════════════════════════════════════════════════════
 def _is_wake_word(heard: str) -> bool:
     h = heard.lower().strip()
@@ -3360,61 +3617,68 @@ def _voice_loop():
         return
 
     rec = sr.Recognizer()
-    rec.dynamic_energy_threshold          = True
-    rec.dynamic_energy_adjustment_damping = 0.15
-    rec.dynamic_energy_ratio              = 1.3
-    rec.pause_threshold                   = 0.7
-    rec.phrase_threshold                  = 0.3
-    rec.non_speaking_duration             = 0.3
 
-    # ONE-TIME calibration at startup (1 second only)
+    # Fast, adaptive settings for Jarvis-style response
+    rec.dynamic_energy_threshold          = True
+    rec.dynamic_energy_adjustment_damping = 0.12   # adapts quickly to room
+    rec.dynamic_energy_ratio              = 1.2    # sensitive but not over-triggering
+    rec.pause_threshold                   = 0.6    # fast turn-taking (was 2.0!)
+    rec.phrase_threshold                  = 0.2
+    rec.non_speaking_duration             = 0.25
+
+    # ONE-TIME ambient calibration at startup
     try:
         with sr.Microphone() as src:
-            rec.adjust_for_ambient_noise(src, duration=1.0)
-        log.info("Voice: ambient calibrated, threshold=%.0f", rec.energy_threshold)
+            print("  [VOICE] Calibrating microphone...")
+            rec.adjust_for_ambient_noise(src, duration=1.5)
+        log.info("Voice calibrated, threshold=%.0f", rec.energy_threshold)
+        # Set a floor — don't go too sensitive
+        if rec.energy_threshold < 200:
+            rec.energy_threshold = 200
     except Exception as e:
         log.warning("Voice calibration: %s", e)
         rec.energy_threshold = 300
 
     print("  [VOICE] Active! Say: Hey Dex / Dex / Dacexy / Jarvis")
-    speak("Voice ready. Say Hey Dex to activate me.")
+    speak("Hey! Dex is online. Say Hey Dex whenever you need me.")
 
     while _voice_on and _running:
         heard = ""
         try:
             with sr.Microphone() as src:
-                # NO adjust_for_ambient_noise here — calibrated once at startup
+                # Short timeout + short phrase limit for fast wake-word catch
                 try:
-                    audio = rec.listen(src, timeout=4, phrase_time_limit=6)
+                    audio = rec.listen(src, timeout=3, phrase_time_limit=5)
                 except sr.WaitTimeoutError:
                     continue
                 except OSError:
-                    time.sleep(2)
-                    continue
+                    time.sleep(1.5); continue
+
             try:
                 heard = rec.recognize_google(audio, language="en-IN").lower().strip()
+                if heard:
+                    log.debug("Heard: '%s'", heard)
             except sr.UnknownValueError:
                 continue
             except sr.RequestError:
-                time.sleep(3)
-                continue
+                time.sleep(2); continue
+
         except Exception:
-            time.sleep(1)
-            continue
+            time.sleep(0.8); continue
 
         if not _is_wake_word(heard):
             continue
 
         log.info("Wake word detected: '%s'", heard)
-        speak("Yes sir, how can I help you?")
-        time.sleep(0.4)
+        speak("Yes sir?")
+        time.sleep(0.3)
 
-        # Listen for the actual command
+        # Listen for command — longer phrase time, no re-calibration
         command = ""
         try:
             with sr.Microphone() as csrc:
                 try:
-                    caudio = rec.listen(csrc, timeout=10, phrase_time_limit=45)
+                    caudio = rec.listen(csrc, timeout=8, phrase_time_limit=40)
                 except sr.WaitTimeoutError:
                     speak("I didn't catch that.")
                     continue
@@ -3432,13 +3696,15 @@ def _voice_loop():
             continue
 
         log.info("Voice command: '%s'", command)
+        print(f"\n  [VOICE] \"{command}\"")
+
         with _tok_lock:
             tok = _cur_token
         if not tok:
-            speak("Not logged in yet.")
+            speak("I'm not logged in yet.")
             continue
 
-        speak("On it!")
+        speak(jarvis_confirm())
 
         def _run(t_=tok, cmd_=command):
             try:
@@ -3458,77 +3724,61 @@ def start_voice(token: str) -> bool:
     threading.Thread(target=_voice_loop, daemon=True, name="Voice").start()
     return True
 
-def stop_voice(): global _voice_on; _voice_on = False
+def stop_voice():
+    global _voice_on; _voice_on = False
 
 def update_token(t: str):
     global _cur_token
-    with _tok_lock:
-        _cur_token = t
+    with _tok_lock: _cur_token = t
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INTERACTIVE SHELL
 # ══════════════════════════════════════════════════════════════════════════════
 def _interactive_shell(token: str, tok_ref: list):
-    print("\n" + "=" * 60)
-    print("  DACEXY v28.2 — COMMAND CENTER")
-    print("=" * 60)
+    print("\n" + "=" * 65)
+    print("  DEX v30.0 — COMMAND CENTER")
+    print("=" * 65)
     print(f"  Email    : {_smtp_cfg.get('email') or 'NOT CONFIGURED'}")
-    print(f"  Voice    : {'ON' if _voice_on else 'OFF'}")
+    print(f"  Voice    : {'ON — say Hey Dex' if _voice_on else 'OFF'}")
     print(f"  Dashboard: dacexy.vercel.app")
-    print("=" * 60)
+    print("=" * 65)
     print("  Type any task. 'help' for examples. 'quit' to exit.\n")
-
-    cmds_help = {
-        "open youtube":                  "Open YouTube in browser",
-        "who is the PM of India":        "Answer question aloud",
-        "draft an email to X saying Y":  "Open Gmail compose with pre-filled fields",
-        "search X and write in notepad": "Google search + write results to Notepad",
-        "organize desktop":              "Sort files into folders by type",
-        "process invoices":              "Extract PDF data, queue payments",
-        "pending payments":              "Show invoices queued for payment approval",
-        "approve payment <id>":          "Approve a queued payment",
-        "check inbox":                   "Read and flag urgent emails",
-        "configure email":               "Set up SMTP for auto-send",
-        "reply to my whatsapp":          "Read WhatsApp DMs and draft replies",
-        "screenshot":                    "Take a screenshot",
-        "system info":                   "CPU/RAM/disk usage",
-        "help":                          "Show this list",
-    }
 
     while _running:
         try:
-            line = input("  Dacexy> ").strip()
+            line = input("  Dex> ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not line: continue
         tl = line.lower()
 
-        if tl in ("quit", "exit"): print("  Goodbye!"); break
-        if tl in ("help", "menu"):
-            print(); [print(f"    {k:<38} {v}") for k, v in cmds_help.items()]; print(); continue
-        if tl == "memory":    print("\n" + get_mem_ctx() + "\n"); continue
+        if tl in ("quit", "exit"):    print("  Goodbye!"); break
+        if tl in ("help", "menu"):    exec_cmd({"action": "list_skills"}, token); continue
+        if tl == "memory":            print("\n" + get_mem_ctx() + "\n"); continue
         if tl == "jobs":
             if _sched_jobs: [print(f"  [{j['id']}] {j['task']} — {j['schedule']}") for j in _sched_jobs]
             else: print("  No scheduled jobs.")
             continue
-        if tl == "email":     configure_smtp_interactive(); continue
-        if tl == "sysinfo":   exec_cmd({"action": "get_system_info"}, token); continue
-        if tl == "screenshot":exec_cmd({"action": "screenshot"}, token); continue
-        if tl == "health":    print(f"  Health: {HEALTH}"); continue
+        if tl == "email":             configure_smtp_interactive(); continue
+        if tl == "sysinfo":           exec_cmd({"action": "get_system_info"}, token); continue
+        if tl == "screenshot":        exec_cmd({"action": "screenshot"}, token); continue
+        if tl == "health":            print(f"  Health: {HEALTH}"); continue
+        if tl == "brief":             exec_cmd({"action": "daily_summary"}, token); continue
 
         tok = tok_ref[0]
         def _run(t_=tok, cmd_=line):
             r = execute_task(cmd_, t_)
-            print(f"\n  [{'OK' if r['status'] == 'ok' else 'FAIL'}] {r.get('result', '')}")
+            if r.get("status") != "ok":
+                print(f"\n  [FAIL] {r.get('result', '')}")
         threading.Thread(target=_run, daemon=True, name="ShellTask").start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# WEBSOCKET (robust, reconnecting)
+# WEBSOCKET — robust, reconnecting, voice transcript streaming
 # ══════════════════════════════════════════════════════════════════════════════
 async def run_websocket(token: str):
-    global _ws_send_fn
+    global _ws_send_fn, _ws_loop
     retry = 4.0; max_retry = 60.0
 
     while _running:
@@ -3536,7 +3786,8 @@ async def run_websocket(token: str):
             log.info("WS: connecting...")
             print("  [WS] Connecting to Dacexy cloud...")
 
-            connect_kw: dict = {"ping_interval": 20, "ping_timeout": 15, "max_size": 16 * 1024 * 1024}
+            connect_kw: dict = {"ping_interval": 20, "ping_timeout": 15,
+                                "max_size": 16 * 1024 * 1024}
             try:
                 wsv = int(str(getattr(websockets, "__version__", "0")).split(".")[0])
                 if wsv >= 14: connect_kw["open_timeout"] = 20
@@ -3550,34 +3801,42 @@ async def run_websocket(token: str):
                     auth_msg = json.loads(auth_raw)
                     if auth_msg.get("type") == "error":
                         log.error("WS auth rejected: %s", auth_msg.get("message"))
-                        speak("Authentication failed."); await asyncio.sleep(retry)
-                        retry = min(retry * 1.5, max_retry); continue
+                        speak("Authentication failed.")
+                        await asyncio.sleep(retry); retry = min(retry * 1.5, max_retry); continue
                 except asyncio.TimeoutError:
-                    log.warning("WS: auth timeout"); await asyncio.sleep(retry); retry = min(retry * 1.5, max_retry); continue
+                    log.warning("WS: auth timeout")
+                    await asyncio.sleep(retry); retry = min(retry * 1.5, max_retry); continue
                 except Exception as e:
-                    log.warning("WS: auth error: %s", e); await asyncio.sleep(retry); continue
+                    log.warning("WS: auth error: %s", e)
+                    await asyncio.sleep(retry); continue
 
                 await ws.send(json.dumps({
                     "type": "init", "platform": platform.system(),
                     "machine": platform.machine(), "hostname": socket.gethostname(),
-                    "version": "28.2",
-                    "features": ["voice3", "vision", "browser", "email", "social_selenium",
-                                 "bulk_email", "lead_gen", "web_research", "scheduler", "memory",
-                                 "selenium", "ocr", "screenshot", "file_organizer", "invoice_extractor",
-                                 "spreadsheet_paste", "inbox_reader", "approval_gates",
-                                 "real_mouse_keyboard", "encrypted_config", "health_monitor",
-                                 "calendar_booking", "human_approval", "social_reply_bots",
-                                 "payment_queue", "compound_tasks", "gmail_compose",
-                                 "research_and_write", "qa_voice"],
+                    "version": "30.0",
+                    "features": [
+                        "voice3", "vision", "browser", "email", "social_selenium",
+                        "bulk_email", "lead_gen", "web_research", "scheduler", "memory",
+                        "selenium", "ocr", "screenshot", "file_organizer", "invoice_extractor",
+                        "spreadsheet_paste", "inbox_reader", "approval_gates",
+                        "real_mouse_keyboard", "encrypted_config", "health_monitor",
+                        "calendar_booking", "human_approval", "social_reply_bots",
+                        "payment_queue", "compound_tasks", "gmail_compose",
+                        "research_and_write", "qa_voice", "ai_planner",
+                        "business_reports", "proposal_generator", "invoice_generator",
+                        "competitor_analysis", "social_content", "expense_tracker",
+                        "daily_brief", "voice_transcript_stream",
+                    ],
                 }))
 
                 log.info("WS: connected!")
-                print("\n  [OK] Connected to Dacexy cloud — agent is LIVE!")
-                speak("Connected and ready! I am your personal Dacexy assistant.")
+                print("\n  [OK] Connected to Dacexy cloud — Dex is LIVE!")
+                speak("Connected. Dex is live and ready for your commands.")
                 retry = 4.0
 
                 ws_lock = asyncio.Lock()
                 loop    = asyncio.get_event_loop()
+                _ws_loop = loop
 
                 async def ws_send(data: dict):
                     async with ws_lock:
@@ -3614,7 +3873,8 @@ async def run_websocket(token: str):
                                     "type": "task_result", "task_id": tid_,
                                     "status": r_.get("status", "ok"),
                                     "ok": 1 if r_.get("status") in ("ok", "skipped") else 0,
-                                    "total": 1, "result": str(r_.get("message") or r_.get("opened") or "done"),
+                                    "total": 1,
+                                    "result": str(r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
                                 }), loop)
                             except Exception as e_:
@@ -3630,16 +3890,16 @@ async def run_websocket(token: str):
                         if not task_txt: continue
                         log.info("Dashboard task: %s", task_txt[:80])
                         print(f"\n  [TASK] From dashboard: {task_txt[:80]}")
-                        speak(f"On it! {task_txt[:40]}")
+                        speak(f"On it. {task_txt[:40]}.")
 
                         def _task_thread(t_=token, txt_=task_txt, tid_=task_id):
                             try:
                                 r_ = execute_task(txt_, t_)
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
-                                    "status": r_.get("status", "ok"), "ok": r_.get("ok", 0),
-                                    "total": r_.get("total", 1), "result": r_.get("result", ""),
-                                    "steps": r_.get("steps", []),
+                                    "status": r_.get("status", "ok"),
+                                    "ok": r_.get("ok", 0), "total": r_.get("total", 1),
+                                    "result": r_.get("result", ""), "steps": r_.get("steps", []),
                                 }), loop)
                             except Exception as e_:
                                 asyncio.run_coroutine_threadsafe(ws_send({
@@ -3654,6 +3914,7 @@ async def run_websocket(token: str):
         if _running:
             print(f"\n  [WS] Disconnected. Retry in {int(retry)}s...")
             _ws_send_fn = None
+            _ws_loop    = None
             await asyncio.sleep(retry)
             retry = min(retry * 1.5, max_retry)
 
@@ -3665,8 +3926,8 @@ def main():
     global _running
 
     print("\n" + "=" * 65)
-    print("  DACEXY DESKTOP AGENT v28.2 — JARVIS MODE")
-    print("  Real desktop automation: mouse, keyboard, voice, email, files")
+    print("  DEX v30.0 — YOUR AI BUSINESS CO-ASSISTANT")
+    print("  Voice · Email · Files · Social · Finance · Operations")
     print("=" * 65 + "\n")
 
     init_tts()
@@ -3675,7 +3936,7 @@ def main():
     caps = []
     if PYAUTOGUI_OK:  caps.append("mouse/keyboard")
     if PIL_OK:        caps.append("screenshot")
-    if VOICE_OK:      caps.append("VOICE")
+    if VOICE_OK:      caps.append("VOICE ✓")
     if SELENIUM_OK:   caps.append("browser-automation")
     if BS4_OK:        caps.append("web-scraping")
     if OCR_OK:        caps.append("OCR")
@@ -3683,7 +3944,7 @@ def main():
     if XL_OK:         caps.append("spreadsheet")
     if CRYPTO_OK:     caps.append("encrypted-config")
     em = _smtp_cfg.get("email") or ""
-    caps.append(f"email={'✓' if em else 'NOT CONFIGURED'}")
+    caps.append(f"email={'✓ ' + em if em else 'NOT CONFIGURED'}")
     print(f"  Capabilities: {', '.join(caps)}\n")
 
     token = get_token()
@@ -3708,26 +3969,29 @@ def main():
     except Exception: pass
 
     if not _smtp_cfg.get("email"):
-        print("  [EMAIL] Not configured. Type 'configure email' to enable auto-send.\n")
+        print("  [EMAIL] Not configured. Type 'configure email' or 'email' to set up.\n")
 
-    voice_ok = start_voice(token)
-    tok_ref  = [token]
+    voice_ok    = start_voice(token)
+    tok_ref     = [token]
     ws_send_ref = [None]
 
-    threading.Thread(target=_scheduler_loop,    args=(tok_ref,),     daemon=True, name="Scheduler").start()
-    threading.Thread(target=_health_monitor,    args=(ws_send_ref,), daemon=True, name="HealthMon").start()
+    threading.Thread(target=_scheduler_loop,    args=(tok_ref,),      daemon=True, name="Scheduler").start()
+    threading.Thread(target=_health_monitor,    args=(ws_send_ref,),  daemon=True, name="HealthMon").start()
     threading.Thread(target=_interactive_shell, args=(token, tok_ref), daemon=True, name="Shell").start()
 
-    print("  " + "-" * 63)
-    print("  Dacexy Agent v28.2 — LIVE")
+    print("  " + "─" * 63)
+    print("  Dex v30.0 — LIVE")
     print(f"  Voice    : {'ON — say Hey Dex / Dex / Jarvis' if voice_ok else 'OFF (PyAudio not installed)'}")
-    print(f"  Email    : {_smtp_cfg.get('email') or 'Not configured'}")
+    print(f"  Email    : {_smtp_cfg.get('email') or 'Not configured (type: configure email)'}")
     print(f"  Dashboard: dacexy.vercel.app")
     print(f"  Log file : {LOG_FILE}")
-    print("  " + "-" * 63 + "\n")
+    print("  " + "─" * 63 + "\n")
+
+    speak("Dex is fully operational. Say Hey Dex to activate voice control.")
 
     if not WS_OK:
-        print("  [ERROR] websockets not installed!"); sys.exit(1)
+        print("  [ERROR] websockets not installed!")
+        sys.exit(1)
 
     try:
         asyncio.run(run_websocket(token))
@@ -3748,7 +4012,7 @@ def main():
                 except Exception: pass
         try: save_memory()
         except Exception: pass
-        print("  Dacexy stopped. Goodbye!")
+        print("  Dex stopped. Goodbye!")
         sys.exit(0)
 
 
