@@ -128,6 +128,7 @@ print("  [BOOT] Dependencies ready.\n")
 # STANDARD LIBRARY
 # ══════════════════════════════════════════════════════════════════════════════
 import asyncio, base64, csv, ctypes, datetime, fnmatch, hashlib, hmac
+import argparse
 import io, json, logging, os, pathlib, platform, queue, random, re, shutil
 import smtplib, socket, string, struct, threading, time, urllib.parse
 import webbrowser, zipfile
@@ -1584,7 +1585,9 @@ def send_email_real(to: str, subject: str, body: str, require_approval: bool = T
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
         speak(f"Gmail opened for {to}. SMTP not configured for auto-send.")
-        return {"status": "ok", "action": "browser", "note": "SMTP not configured"}
+        draft = _agent_output_path(f"email_send_pending_{int(time.time())}.eml")
+        draft.write_text(f"To: {to}\nSubject: {subject}\n\n{body}", encoding="utf-8")
+        return {"status": "error", "verified": False, "action": "browser", "note": "SMTP not configured; draft opened in Gmail and saved locally.", "draft_file": str(draft)}
     try:
         msg = _build_msg(em, to, subject, body)
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
@@ -1598,7 +1601,7 @@ def send_email_real(to: str, subject: str, body: str, require_approval: bool = T
         url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}")
         webbrowser.open(url)
-        return {"status": "ok", "action": "browser_fallback", "note": str(e)}
+        return {"status": "error", "verified": False, "action": "browser_fallback", "note": str(e)}
 
 
 def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay: float = 1.5) -> dict:
@@ -2201,13 +2204,13 @@ def smart_open(target: str) -> dict:
                 return {"status": "ok", "opened": url}
         if tl in APPS:
             expected_app = tl
-            subprocess.Popen(APPS[tl], shell=True)
+            _launch_windows_app(APPS[tl])
             speak(f"Opening {tl}.")
             return {"status": "ok", "opened": APPS[tl]}
         for app, exe in APPS.items():
             if app in tl:
                 expected_app = app
-                subprocess.Popen(exe, shell=True)
+                _launch_windows_app(exe)
                 speak(f"Opening {app}.")
                 return {"status": "ok", "opened": exe}
         if tl.startswith(("http://", "https://")):
@@ -2276,6 +2279,31 @@ def smart_open(target: str) -> dict:
 def ask_ai_brain(prompt: str, mem_ctx: bool = True) -> str:
     ctx = get_mem_ctx() if mem_ctx else ""
     full_prompt = f"Context:\n{ctx}\n\nUser: {prompt}" if ctx else prompt
+    deepseek_key = (os.getenv("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_KEY") or "").strip()
+    if deepseek_key and REQUESTS_OK:
+        try:
+            resp = req_lib.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {deepseek_key}", "Content-Type": "application/json"},
+                json={
+                    "model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                    "messages": [
+                        {"role": "system", "content": "You are Dex's reasoning brain. Produce concise, executable, business-useful answers. Do not claim desktop actions were completed unless the executor verified them."},
+                        {"role": "user", "content": full_prompt},
+                    ],
+                    "temperature": 0.2,
+                    "stream": False,
+                },
+                timeout=60,
+            )
+            if resp.status_code < 400:
+                data = resp.json()
+                text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if text and text.strip():
+                    return text.strip()
+            log.warning("DeepSeek brain returned %s: %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            log.warning("DeepSeek brain failed: %s", e)
     try:
         import g4f
         response = g4f.ChatCompletion.create(
@@ -2535,6 +2563,40 @@ def _agent_output_path(filename: str) -> Path:
     return DATA_DIR / safe
 
 
+def _launch_windows_app(exe: str) -> bool:
+    candidates = [exe]
+    exe_name = Path(exe).name.lower()
+    local_app = os.getenv("LOCALAPPDATA", "")
+    program_files = [os.getenv("PROGRAMFILES", ""), os.getenv("PROGRAMFILES(X86)", "")]
+    known = {
+        "chrome.exe": [
+            Path(program_files[0]) / "Google" / "Chrome" / "Application" / "chrome.exe" if program_files[0] else None,
+            Path(program_files[1]) / "Google" / "Chrome" / "Application" / "chrome.exe" if program_files[1] else None,
+            Path(local_app) / "Google" / "Chrome" / "Application" / "chrome.exe" if local_app else None,
+        ],
+        "msedge.exe": [
+            Path(program_files[0]) / "Microsoft" / "Edge" / "Application" / "msedge.exe" if program_files[0] else None,
+            Path(program_files[1]) / "Microsoft" / "Edge" / "Application" / "msedge.exe" if program_files[1] else None,
+        ],
+        "winword.exe": [Path(program_files[0]) / "Microsoft Office" / "root" / "Office16" / "WINWORD.EXE" if program_files[0] else None],
+        "excel.exe": [Path(program_files[0]) / "Microsoft Office" / "root" / "Office16" / "EXCEL.EXE" if program_files[0] else None],
+    }
+    for item in known.get(exe_name, []):
+        if item and Path(item).exists():
+            candidates.insert(0, str(item))
+    for candidate in candidates:
+        try:
+            subprocess.Popen(candidate, shell=True)
+            return True
+        except Exception:
+            continue
+    try:
+        subprocess.Popen(f'cmd /c start "" "{exe}"', shell=True)
+        return True
+    except Exception:
+        return False
+
+
 def create_excel_workbook(name: str = "", columns: list = None, rows: list = None) -> dict:
     if not XL_OK or not openpyxl:
         return {"status": "error", "message": "openpyxl is required to create Excel files"}
@@ -2556,8 +2618,10 @@ def create_excel_workbook(name: str = "", columns: list = None, rows: list = Non
     wb.save(path)
     verified = path.exists() and path.stat().st_size > 0
     if verified:
-        try: subprocess.Popen(f'excel.exe "{path}"', shell=True)
-        except Exception: pass
+        try: os.startfile(str(path))
+        except Exception:
+            try: _launch_windows_app(f'excel.exe "{path}"')
+            except Exception: pass
         update_runtime_state(active_application="excel", active_file=str(path), active_folder=str(path.parent),
                              last_action="create_excel", last_result=str(path), last_verified=True)
         speak(f"Excel sheet created and saved as {path.name}.")
@@ -2636,6 +2700,43 @@ def generate_ad_document(topic: str) -> dict:
     return create_word_document(f"advertisement_{int(time.time())}", f"Advertisement: {topic}", content)
 
 
+def summarize_pdf_file(path: str = "") -> dict:
+    if not PDF_OK or not pdfplumber:
+        return {"status": "error", "verified": False, "message": "pdfplumber is required to summarize PDFs"}
+    pdf_path = Path(path.strip().strip('"')) if path else None
+    if not pdf_path or not pdf_path.exists():
+        candidates = sorted(Path.home().joinpath("Downloads").glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            candidates = sorted(DATA_DIR.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+        pdf_path = candidates[0] if candidates else None
+    if not pdf_path or not pdf_path.exists():
+        return {"status": "error", "verified": False, "message": "No PDF path supplied and no recent PDF found"}
+    try:
+        pages = []
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page in pdf.pages[:20]:
+                pages.append(page.extract_text() or "")
+        text = "\n".join(pages).strip()
+        if not text:
+            return {"status": "error", "verified": False, "message": f"No readable text found in {pdf_path.name}"}
+        summary = ask_ai_brain(
+            "Summarize this PDF for a business owner. Include key points, numbers, risks, and next actions.\n\n" + text[:12000]
+        )
+        out = _agent_output_path(f"pdf_summary_{pdf_path.stem}_{int(time.time())}.txt")
+        out.write_text(f"PDF: {pdf_path}\n\n{summary}", encoding="utf-8")
+        verified = out.exists() and out.stat().st_size > 0
+        if verified:
+            try: subprocess.Popen(f'notepad.exe "{out}"', shell=True)
+            except Exception: pass
+            update_runtime_state(active_application="notepad", active_file=str(out), active_folder=str(out.parent),
+                                 last_action="summarize_pdf", last_result=str(out), last_verified=True)
+            speak(f"PDF summarized and saved as {out.name}.")
+            return {"status": "ok", "verified": True, "path": str(out), "source": str(pdf_path), "summary": summary[:1000]}
+        return {"status": "error", "verified": False, "message": "PDF summary file was not created"}
+    except Exception as e:
+        return {"status": "error", "verified": False, "message": str(e)}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPOUND TASK SPLITTER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2649,6 +2750,8 @@ def _split_compound_task(task: str) -> list:
     if "gmail" in tl and re.search(r"\b(?:draft|compose|write|send)\b", tl) and re.search(r"\b(?:message|massage|email|mail)\b", tl):
         return [task]
     if "excel" in tl and re.search(r"\b(?:create|make|write|generate)\b", tl):
+        return [task]
+    if "word" in tl and re.search(r"\b(?:create|make|write|generate)\b", tl):
         return [task]
     for sep in [" then ", " and then ", " after that ", " next ", " also "]:
         if sep in tl:
@@ -2681,10 +2784,32 @@ def local_parse(task: str) -> list:
         return [{"action": "draft_email_in_browser", "to": to_match.group(1) if to_match else "",
                  "subject": body[:60] or "Hello", "body": body}]
 
+    if re.fullmatch(r"(?:draft|compose|write)\s+(?:an?\s+)?(?:email|mail)", tl):
+        return [{"action": "draft_email_in_browser", "to": "", "subject": "Draft email", "body": "Hello"}]
+
+    if re.fullmatch(r"send\s+(?:an?\s+)?(?:email|mail)(?:\s+with\s+approval)?", tl):
+        return [{"action": "draft_email_in_browser", "to": "", "subject": "Email pending approval", "body": "Hello"}]
+
     if "excel" in tl and re.search(r"\b(?:create|make|write|generate)\b", tl) and re.search(r"\b(?:sales|sheet|spreadsheet|workbook)\b", tl):
         name = f"sales_sheet_{datetime.date.today().isoformat()}.xlsx" if "sales" in tl else f"spreadsheet_{int(time.time())}.xlsx"
         return [{"action": "create_excel", "name": name,
                  "columns": ["Date", "Customer", "Product", "Quantity", "Amount", "Payment Status", "Notes"]}]
+
+    if "word" in tl and re.search(r"\b(?:create|make|write|generate)\b", tl) and re.search(r"\b(?:document|doc|report)\b", tl):
+        topic_match = re.search(r"\b(?:on|about|for)\s+(.+)$", t, flags=re.I)
+        topic = topic_match.group(1).strip() if topic_match else "Business Document"
+        return [{"action": "create_word_report", "topic": topic}]
+
+    m = re.match(r"(?:create|make|write)\s+([a-z0-9 _.-]+\.(?:txt|md|csv|json|html|docx|xlsx))(?:\s+(?:saying|with|containing)\s+(.+))?$", tl)
+    if m:
+        filename = m.group(1).strip()
+        content = (m.group(2) or f"Created by Dex on {datetime.datetime.now().isoformat(timespec='seconds')}").strip()
+        return [{"action": "create_file", "path": str(DATA_DIR / filename), "content": content}]
+
+    m = re.search(r"(?:summarize|summarise)\s+(?:pdf|file|document)?\s*(.+\.pdf)?", t, flags=re.I)
+    if m and ("pdf" in tl or (m.group(1) or "").lower().endswith(".pdf")):
+        pdf_path = (m.group(1) or "").strip().strip('"')
+        return [{"action": "summarize_pdf", "path": pdf_path}]
 
     m = re.search(r"(?:search|find)\s+(.+?)\s+(?:and\s+)?(?:save|write)\s+(?:the\s+)?(?:list|results)?\s*(?:in|to)\s+notepad", tl)
     if m:
@@ -3166,6 +3291,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "generate_ad_document":
             return generate_ad_document(str(cmd.get("topic") or "my business"))
 
+        if action in {"summarize_pdf", "summarise_pdf", "pdf_summary"}:
+            return summarize_pdf_file(str(cmd.get("path") or ""))
+
         # ── DRAFT EMAIL IN BROWSER ─────────────────────────────────────────────
         if action in {"draft_email_in_browser", "draft_email", "gmail_compose"}:
             to_addr = str(cmd.get("to", "")).strip()
@@ -3342,9 +3470,13 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if not _is_path_allowed(str(p)):
                 return {"status": "error", "message": "Path blocked."}
             if p.exists():
+                if p.suffix.lower() == ".pdf":
+                    return summarize_pdf_file(str(p))
+                if p.suffix.lower() in (".xlsx", ".xls", ".csv"):
+                    return read_spreadsheet(str(p))
                 content = p.read_text(encoding="utf-8", errors="ignore")[:10000]
                 speak(f"File read: {len(content)} characters.")
-                return {"status": "ok", "content": content}
+                return {"status": "ok", "verified": True, "content": content}
             return {"status": "error", "message": f"Not found: {p}"}
 
         if action in {"list_files", "ls"}:
@@ -3570,12 +3702,17 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         # ── WEB SEARCH / RESEARCH ─────────────────────────────────────────────
         if action in {"search_web", "search", "google", "google_search"}:
             q = str(cmd.get("query") or cmd.get("text") or "")
-            if q:
-                speak(f"Searching for {q[:50]}.")
-                webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(q)}")
-            else:
-                webbrowser.open("https://www.google.com")
-            return {"status": "ok"}
+            target_url = f"https://www.google.com/search?q={urllib.parse.quote(q)}" if q else "https://www.google.com"
+            def _do_search():
+                speak(f"Searching for {q[:50]}." if q else "Opening Google.")
+                webbrowser.open(target_url)
+                return {"status": "ok", "url": target_url}
+            return run_with_verification(
+                _do_search,
+                lambda: verify_window_contains("google") or verify_screen_ocr("google"),
+                f"search google {q[:50]}",
+                correction_func=lambda: webbrowser.open(target_url),
+            )
 
         if action in {"web_research", "research"}:
             q = str(cmd.get("query") or cmd.get("text") or cmd.get("topic") or "")
@@ -4222,7 +4359,7 @@ async def run_websocket(token: str):
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
                                     "status": r_.get("status", "ok"),
-                                    "ok": 1 if r_.get("status") in ("ok", "skipped") else 0,
+                                    "ok": 1 if r_.get("status") in ("ok", "skipped") and r_.get("verified", True) is not False else 0,
                                     "total": 1,
                                     "result": str(r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
@@ -4275,6 +4412,14 @@ async def run_websocket(token: str):
 def main():
     global _running
 
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--command", help="Run one command through the verified executor and exit.")
+    parser.add_argument("--no-login", action="store_true", help="Skip dashboard login/cloud for local validation.")
+    parser.add_argument("--no-voice", action="store_true", help="Disable spoken output for command-line validation.")
+    args, _unknown = parser.parse_known_args()
+    if args.no_voice:
+        globals()["TTS_LIB_OK"] = False
+
     print("\n" + "=" * 65)
     print("  DEX v30.0 — YOUR AI BUSINESS CO-ASSISTANT")
     print("  Voice · Email · Files · Social · Finance · Operations")
@@ -4283,6 +4428,26 @@ def main():
     init_tts()
     load_memory()
     _load_runtime_state()
+
+    if args.command:
+        result = execute_task(args.command, get_token() or "")
+        print(json.dumps(result, indent=2, ensure_ascii=True, default=str))
+        sys.exit(0 if result.get("status") == "ok" else 2)
+
+    if args.no_login:
+        print("  Local mode ready. Type commands, or Ctrl+C to stop.")
+        while True:
+            try:
+                line = input("  Dex> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                continue
+            if line.lower() in {"quit", "exit"}:
+                break
+            result = execute_task(line, "")
+            print(json.dumps(result, indent=2, ensure_ascii=True, default=str))
+        sys.exit(0)
 
     caps = []
     if PYAUTOGUI_OK:  caps.append("mouse/keyboard")
