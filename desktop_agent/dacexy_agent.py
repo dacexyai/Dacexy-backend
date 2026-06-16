@@ -64,6 +64,9 @@ _PACKAGES = [
     ("schedule",          "schedule"),
     ("cryptography",      "cryptography"),
     ("watchdog",          "watchdog"),
+    ("opencv-python",     "cv2"),
+    ("pytesseract",       "pytesseract"),
+    ("pywin32",           "pythoncom"),
     ("pdfplumber",        "pdfplumber"),
     ("openpyxl",          "openpyxl"),
     ("python-docx",       "docx"),
@@ -286,6 +289,16 @@ _runtime_state: Dict[str, Any] = {
     "last_result": "",
     "last_verified": False,
     "updated_at": "",
+}
+_voice_diag: Dict[str, Any] = {
+    "microphone": "unknown",
+    "wake_hits": 0,
+    "wake_misses": 0,
+    "last_heard": "",
+    "last_command": "",
+    "last_error": "",
+    "energy_threshold": 0,
+    "push_to_talk": False,
 }
 MEMORY_FILE = Path.home() / ".dacexy_memory.json"
 
@@ -1284,6 +1297,37 @@ def _retry(fn, attempts: int = 3, delays: tuple = (1, 3), label: str = ""):
             if i < attempts - 1:
                 time.sleep(delays[min(i, len(delays) - 1)])
     raise last_exc
+
+
+def dashboard_message_to_task(msg: dict) -> str:
+    action = str(msg.get("action") or msg.get("type") or "").strip().lower()
+    if msg.get("task") or msg.get("goal") or msg.get("command"):
+        return str(msg.get("task") or msg.get("goal") or msg.get("command")).strip()
+    if action in {"voice_status", "voice_health", "mic_status", "runtime_state", "agent_status"}:
+        return action.replace("_", " ")
+    if action in {"open", "open_site", "open_website", "open_app", "launch", "start", "goto", "navigate"}:
+        target = msg.get("target") or msg.get("site") or msg.get("app") or msg.get("url") or msg.get("name") or msg.get("query")
+        return f"open {target}".strip() if target else ""
+    if action in {"search", "search_web", "google", "google_search"}:
+        return f"search {msg.get('query') or msg.get('text') or ''}".strip()
+    if action in {"draft_email", "draft_email_in_browser", "gmail_compose"}:
+        to = msg.get("to") or msg.get("email") or ""
+        body = msg.get("body") or msg.get("message") or msg.get("text") or "Hello"
+        return f"draft email to {to} saying {body}".strip()
+    if action in {"send_email", "email", "compose_email", "send_mail", "gmail_send"}:
+        to = msg.get("to") or msg.get("email") or msg.get("recipient") or ""
+        body = msg.get("body") or msg.get("message") or msg.get("text") or "Hello"
+        return f"send email to {to} saying {body}".strip()
+    if action in {"create_file", "write_file", "save_file"}:
+        path = msg.get("path") or msg.get("name") or "output.txt"
+        return f"create {Path(str(path)).name} containing {msg.get('content') or ''}".strip()
+    if action in {"create_excel", "create_spreadsheet"}:
+        return "open excel and create spreadsheet"
+    if action in {"create_word_report", "create_word_doc"}:
+        return f"open word and create document about {msg.get('topic') or msg.get('title') or 'business'}"
+    if action in {"summarize_pdf", "pdf_summary"}:
+        return f"summarize pdf {msg.get('path') or ''}".strip()
+    return ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2737,6 +2781,47 @@ def summarize_pdf_file(path: str = "") -> dict:
         return {"status": "error", "verified": False, "message": str(e)}
 
 
+def investor_email_report_workflow(keyword: str = "investor", max_count: int = 20) -> dict:
+    inbox = read_inbox(max_count=max_count)
+    if inbox.get("status") != "ok":
+        return {"status": "error", "verified": False, "message": inbox.get("message", "Could not read inbox")}
+    emails = inbox.get("emails", [])
+    filtered = [
+        e for e in emails
+        if keyword.lower() in (e.get("from", "") + " " + e.get("subject", "") + " " + e.get("preview", "")).lower()
+    ]
+    if not filtered:
+        filtered = emails
+    if not filtered:
+        return {"status": "error", "verified": False, "message": "No unread emails found to summarize"}
+    source = "\n\n".join(
+        f"From: {e.get('from','')}\nSubject: {e.get('subject','')}\nPreview: {e.get('preview','')}"
+        for e in filtered[:max_count]
+    )
+    summary = ask_ai_brain(
+        "Summarize these real unread emails. Extract investor/customer intent, deadlines, risks, and recommended replies.\n\n" + source
+    )
+    report = _agent_output_path(f"{keyword}_email_report_{int(time.time())}.txt")
+    report.write_text(f"Email report for: {keyword}\nDate: {datetime.datetime.now()}\n\n{summary}", encoding="utf-8")
+    drafts = []
+    for e in filtered[:5]:
+        reply = draft_email_reply(e.get("subject", ""), e.get("preview", ""), "Reply professionally and ask for the next concrete step.")
+        draft_path = _agent_output_path(f"draft_reply_{int(time.time())}_{len(drafts)+1}.eml")
+        draft_path.write_text(
+            f"To: {e.get('from','')}\nSubject: Re: {e.get('subject','')}\n\n{reply}",
+            encoding="utf-8",
+        )
+        drafts.append(str(draft_path))
+    verified = report.exists() and report.stat().st_size > 0 and all(Path(p).exists() for p in drafts)
+    if verified:
+        try: subprocess.Popen(f'notepad.exe "{report}"', shell=True)
+        except Exception: pass
+        update_runtime_state(active_application="email", active_file=str(report), active_folder=str(report.parent),
+                             last_action="investor_email_report", last_result=str(report), last_verified=True)
+        return {"status": "ok", "verified": True, "report": str(report), "drafts": drafts, "emails": len(filtered)}
+    return {"status": "error", "verified": False, "message": "Email report or drafts were not created"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPOUND TASK SPLITTER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2775,6 +2860,12 @@ def local_parse(task: str) -> list:
     t  = task.strip()
     tl = t.lower()
 
+    if re.search(r"\b(voice|microphone|mic)\s+(status|health|diagnostic|diagnostics)\b", tl):
+        return [{"action": "voice_status"}]
+
+    if re.search(r"\b(agent|dex|system|runtime)\s+(status|health)\b", tl):
+        return [{"action": "runtime_status"}]
+
     if "gmail" in tl and re.search(r"\b(?:draft|compose|write|send)\b", tl) and re.search(r"\b(?:message|massage|email|mail)\b", tl):
         body_match = re.search(r"\bsaying\s+(.+)$", t, flags=re.I | re.S)
         if not body_match:
@@ -2789,6 +2880,10 @@ def local_parse(task: str) -> list:
 
     if re.fullmatch(r"send\s+(?:an?\s+)?(?:email|mail)(?:\s+with\s+approval)?", tl):
         return [{"action": "draft_email_in_browser", "to": "", "subject": "Email pending approval", "body": "Hello"}]
+
+    if "gmail" in tl and re.search(r"\b(?:summarize|summarise|summary|read)\b", tl) and re.search(r"\b(?:investor|email|mail|inbox)\b", tl):
+        keyword = "investor" if "investor" in tl else "email"
+        return [{"action": "investor_email_report", "keyword": keyword}]
 
     if "excel" in tl and re.search(r"\b(?:create|make|write|generate)\b", tl) and re.search(r"\b(?:sales|sheet|spreadsheet|workbook)\b", tl):
         name = f"sales_sheet_{datetime.date.today().isoformat()}.xlsx" if "sales" in tl else f"spreadsheet_{int(time.time())}.xlsx"
@@ -3210,6 +3305,25 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
     try:
         # ── ASK AI ────────────────────────────────────────────────────────────
+        if action in {"voice_status", "voice_health", "mic_status"}:
+            diag = dict(_voice_diag)
+            diag.update({
+                "voice_enabled": bool(_voice_on),
+                "voice_available": bool(VOICE_OK),
+                "wake_words": list(WAKE_WORDS),
+            })
+            text = (
+                f"Voice status: microphone {diag.get('microphone', 'unknown')}. "
+                f"Wake hits {diag.get('wake_hits', 0)}, misses {diag.get('wake_misses', 0)}."
+            )
+            speak(text)
+            return {"status": "ok", "verified": True, "message": text, "voice": diag}
+
+        if action in {"runtime_status", "agent_status", "system_status"}:
+            state = current_runtime_state()
+            state.update({"health": dict(HEALTH), "voice": dict(_voice_diag)})
+            return {"status": "ok", "verified": True, "runtime": state}
+
         if action == "ask_ai":
             speak("Let me think about that.")
             resp = ask_ai_brain(str(cmd.get("prompt", "")))
@@ -3293,6 +3407,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
         if action in {"summarize_pdf", "summarise_pdf", "pdf_summary"}:
             return summarize_pdf_file(str(cmd.get("path") or ""))
+
+        if action in {"investor_email_report", "email_report", "summarize_investor_emails"}:
+            return investor_email_report_workflow(str(cmd.get("keyword") or "investor"), int(cmd.get("max_count") or 20))
 
         # ── DRAFT EMAIL IN BROWSER ─────────────────────────────────────────────
         if action in {"draft_email_in_browser", "draft_email", "gmail_compose"}:
@@ -4101,6 +4218,7 @@ def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
         print("  [VOICE] Disabled — PyAudio not installed.")
+        _voice_diag.update({"microphone": "disabled", "last_error": "PyAudio or speech_recognition unavailable", "push_to_talk": True})
         return
 
     rec = sr.Recognizer()
@@ -4119,12 +4237,14 @@ def _voice_loop():
             print("  [VOICE] Calibrating microphone...")
             rec.adjust_for_ambient_noise(src, duration=1.5)
         log.info("Voice calibrated, threshold=%.0f", rec.energy_threshold)
+        _voice_diag.update({"microphone": "ready", "energy_threshold": rec.energy_threshold, "last_error": ""})
         # Set a floor — don't go too sensitive
         if rec.energy_threshold < 200:
             rec.energy_threshold = 200
     except Exception as e:
         log.warning("Voice calibration: %s", e)
         rec.energy_threshold = 300
+        _voice_diag.update({"microphone": "error", "energy_threshold": rec.energy_threshold, "last_error": str(e), "push_to_talk": True})
 
     print("  [VOICE] Active! Say: Hey Dex / Dex / Dacexy / Jarvis")
     speak("Hey! Dex is online. Say Hey Dex whenever you need me.")
@@ -4145,17 +4265,23 @@ def _voice_loop():
                 heard = rec.recognize_google(audio, language="en-IN").lower().strip()
                 if heard:
                     log.debug("Heard: '%s'", heard)
+                    _voice_diag["last_heard"] = heard
             except sr.UnknownValueError:
+                _voice_diag["wake_misses"] = int(_voice_diag.get("wake_misses", 0)) + 1
                 continue
             except sr.RequestError:
+                _voice_diag.update({"last_error": "speech recognition request failed", "push_to_talk": True})
                 time.sleep(2); continue
 
-        except Exception:
+        except Exception as e:
+            _voice_diag.update({"last_error": str(e), "push_to_talk": True})
             time.sleep(0.8); continue
 
         if not _is_wake_word(heard):
+            _voice_diag["wake_misses"] = int(_voice_diag.get("wake_misses", 0)) + 1
             continue
 
+        _voice_diag["wake_hits"] = int(_voice_diag.get("wake_hits", 0)) + 1
         log.info("Wake word detected: '%s'", heard)
         speak("Yes sir?")
         time.sleep(0.3)
@@ -4172,16 +4298,20 @@ def _voice_loop():
             try:
                 command = rec.recognize_google(caudio, language="en-IN").strip()
             except sr.UnknownValueError:
+                _voice_diag["last_error"] = "command not understood"
                 speak("Could you repeat that?")
                 continue
             except sr.RequestError:
+                _voice_diag.update({"last_error": "speech recognition request failed", "push_to_talk": True})
                 continue
-        except Exception:
+        except Exception as e:
+            _voice_diag.update({"last_error": str(e), "push_to_talk": True})
             continue
 
         if not command:
             continue
 
+        _voice_diag["last_command"] = command
         log.info("Voice command: '%s'", command)
         print(f"\n  [VOICE] \"{command}\"")
 
@@ -4355,13 +4485,14 @@ async def run_websocket(token: str):
                     if action and action not in ("swarm_task", "task", "run_agent", ""):
                         def _cmd_thread(m_=dict(msg), t_=token, tid_=task_id):
                             try:
-                                r_ = exec_cmd(m_, t_)
+                                normalized_task = dashboard_message_to_task(m_)
+                                r_ = execute_task(normalized_task, t_) if normalized_task else exec_cmd(m_, t_)
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
                                     "status": r_.get("status", "ok"),
-                                    "ok": 1 if r_.get("status") in ("ok", "skipped") and r_.get("verified", True) is not False else 0,
-                                    "total": 1,
-                                    "result": str(r_.get("message") or r_.get("opened") or "done"),
+                                    "ok": r_.get("ok", 1 if r_.get("status") in ("ok", "skipped") and r_.get("verified", True) is not False else 0),
+                                    "total": r_.get("total", 1),
+                                    "result": str(r_.get("result") or r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
                                 }), loop)
                             except Exception as e_:
