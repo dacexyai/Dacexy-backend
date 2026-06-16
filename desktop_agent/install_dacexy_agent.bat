@@ -17,152 +17,65 @@ echo  ===================================================
 echo.
 
 set "ADIR=%USERPROFILE%\DacexyAgent"
-set "APY=%USERPROFILE%\DacexyAgent\dacexy_agent.py"
-set "SBAT=%USERPROFILE%\DacexyAgent\start_dacexy.bat"
-set "ALOG=%USERPROFILE%\DacexyAgent\install_log.txt"
+set "APY=%ADIR%\dacexy_agent.py"
+set "SBAT=%ADIR%\start_dacexy.bat"
+set "ALOG=%ADIR%\install_log.txt"
 
+if not exist "%ADIR%" mkdir "%ADIR%"
+if not exist "%ADIR%\logs" mkdir "%ADIR%\logs"
+if not exist "%ADIR%\data" mkdir "%ADIR%\data"
+if not exist "%ADIR%\agent_reports" mkdir "%ADIR%\agent_reports"
+if not exist "%ADIR%\agent_screenshots" mkdir "%ADIR%\agent_screenshots"
+
+echo Dacexy Install Log %DATE% %TIME% > "%ALOG%"
 echo  Installing to: %ADIR%
 echo.
 
-if not exist "%ADIR%"              mkdir "%ADIR%"
-if not exist "%ADIR%\logs"         mkdir "%ADIR%\logs"
-if not exist "%ADIR%\data"         mkdir "%ADIR%\data"
-if not exist "%ADIR%\screenshots"  mkdir "%ADIR%\screenshots"
-
-echo Dacexy Install Log %DATE% %TIME% > "%ALOG%"
-
-echo [1/8] Checking Python...
+echo [1/7] Checking Python...
 python --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 goto :GET_PYTHON
+if %ERRORLEVEL% NEQ 0 goto :NO_PYTHON
 for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo  OK: %%i
 goto :PY_OK
 
-:GET_PYTHON
-echo  Python not found. Downloading Python 3.11.9...
-powershell -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%TEMP%\py_setup.exe' -UseBasicParsing" >>"%ALOG%" 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo  ERROR: Python download failed.
-    echo  Go to python.org/downloads and install Python 3.11 then re-run.
-    pause
-    exit /b 1
-)
-echo  Installing Python...
-"%TEMP%\py_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
-timeout /t 30 /nobreak >nul
-del "%TEMP%\py_setup.exe" >nul 2>&1
-set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
-python --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo  ERROR: Close this window and re-run installer.
-    pause
-    exit /b 1
-)
-echo  Python installed OK!
-
-:PY_OK
-
-echo.
-echo [2/8] Upgrading pip...
-python -m pip install --upgrade pip --quiet --no-warn-script-location >>"%ALOG%" 2>&1
-echo  OK
-
-echo.
-echo [3/8] Installing packages...
-echo  (Each one shown below. Any failure is non-fatal - the agent
-echo   will try again automatically the first time it runs.)
-echo.
-
-python -m pip install pyautogui         --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pyautogui         || echo  [!] pyautogui failed
-python -m pip install pillow            --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pillow             || echo  [!] pillow failed
-python -m pip install websockets        --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] websockets         || echo  [!] websockets failed
-python -m pip install requests          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] requests           || echo  [!] requests failed
-python -m pip install pyttsx3           --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pyttsx3            || echo  [!] pyttsx3 failed
-python -m pip install numpy             --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] numpy              || echo  [!] numpy failed
-python -m pip install psutil            --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] psutil             || echo  [!] psutil failed
-python -m pip install pyperclip         --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pyperclip          || echo  [!] pyperclip failed
-python -m pip install plyer             --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] plyer              || echo  [!] plyer failed
-python -m pip install pygetwindow       --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pygetwindow        || echo  [!] pygetwindow failed
-python -m pip install keyboard          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] keyboard           || echo  [!] keyboard failed
-python -m pip install speechrecognition --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] speechrecognition  || echo  [!] speechrecognition failed
-python -m pip install beautifulsoup4    --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] beautifulsoup4     || echo  [!] beautifulsoup4 failed
-python -m pip install lxml              --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] lxml               || echo  [!] lxml failed
-python -m pip install selenium          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] selenium           || echo  [!] selenium failed
-python -m pip install webdriver-manager --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] webdriver-manager  || echo  [!] webdriver-manager failed
-python -m pip install pdfplumber        --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] pdfplumber         || echo  [!] pdfplumber failed
-python -m pip install openpyxl          --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] openpyxl           || echo  [!] openpyxl failed
-python -m pip install cryptography      --quiet --no-warn-script-location >>"%ALOG%" 2>&1 && echo  [+] cryptography       || echo  [!] cryptography failed
-
-echo.
-echo  Installing PyAudio for voice control...
-python -m pip install PyAudio --quiet --no-warn-script-location >>"%ALOG%" 2>&1
-python -c "import pyaudio" >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo  [!] PyAudio failed - voice disabled, text commands still work
-) else (
-    echo  [+] PyAudio OK - voice enabled
-)
-
-echo.
-echo [4/8] Installing agent file...
-echo.
-
-if exist "%~dp0dacexy_agent.py" (
-    echo  Using dacexy_agent.py found next to this installer ^(dev override^).
-    for %%F in ("%~dp0dacexy_agent.py") do echo    File date: %%~tF
-    for %%F in ("%~dp0dacexy_agent.py") do echo    File size: %%~zF bytes
-    copy /y "%~dp0dacexy_agent.py" "%APY%" >nul 2>&1
-    echo    Installed : %APY%
-    goto :AGENT_COMPILECHECK
-)
-
-echo  Downloading latest agent from Dacexy server...
-del "%APY%.new" >nul 2>&1
-powershell -ExecutionPolicy Bypass -Command ^
-    "$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri 'https://dacexy-backend-v7ku.onrender.com/api/v1/agent/download/windows-agent' -OutFile '%APY%.new' -UseBasicParsing; Write-Host 'Downloaded OK' } catch { Write-Host ('FAIL: '+$_.Exception.Message); exit 1 }" >>"%ALOG%" 2>&1
-
-if %ERRORLEVEL% EQU 0 (
-    move /y "%APY%.new" "%APY%" >nul 2>&1
-    for %%F in ("%APY%") do echo    File date: %%~tF
-    for %%F in ("%APY%") do echo    File size: %%~zF bytes
-    echo  OK: Latest agent downloaded from server
-    goto :AGENT_COMPILECHECK
-)
-
-del "%APY%.new" >nul 2>&1
-
-if exist "%APY%" (
-    echo  WARNING: Could not reach the update server.
-    echo  Keeping your existing installed agent at:
-    echo    %APY%
-    for %%F in ("%APY%") do echo    File date: %%~tF
-    goto :AGENT_COMPILECHECK
-)
-
-echo.
-echo  ERROR: Could not download dacexy_agent.py and none is installed yet.
-echo  Check your internet connection and re-run this installer.
+:NO_PYTHON
+echo  Python is not installed or not on PATH.
+echo  Install Python 3.11+ from https://www.python.org/downloads/
+echo  During install, tick "Add Python to PATH", then run this installer again.
 pause
 exit /b 1
 
-:AGENT_COMPILECHECK
+:PY_OK
 echo.
-echo  Verifying agent file...
-python -m py_compile "%APY%" >>"%ALOG%" 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo    [+] dacexy_agent.py is valid Python - OK
-) else (
-    echo    [!] dacexy_agent.py FAILED to compile - see %ALOG%
-    echo        The agent will NOT run correctly until this is fixed.
+echo [2/7] Copying agent files...
+if not exist "%~dp0dacexy_agent.py" (
+    echo  ERROR: dacexy_agent.py must be next to this installer.
+    pause
+    exit /b 1
 )
-
-rem Save a copy of this installer in the agent folder
-copy /y "%~f0" "%ADIR%\install_dacexy_agent.bat" >nul 2>&1
-
-rem Clear saved token so user logs in fresh
-python -c "import json,pathlib; f=pathlib.Path.home()/'.dacexy_agent.json'; d=json.loads(f.read_text()) if f.exists() else {}; d.pop('access_token',None); f.write_text(json.dumps(d,indent=2))" >nul 2>&1
+copy /y "%~dp0dacexy_agent.py" "%APY%" >nul
+if exist "%~dp0requirements.txt" copy /y "%~dp0requirements.txt" "%ADIR%\requirements.txt" >nul
+if exist "%~dp0.env.example" copy /y "%~dp0.env.example" "%ADIR%\.env.example" >nul
+if not exist "%ADIR%\.env" if exist "%ADIR%\.env.example" copy /y "%ADIR%\.env.example" "%ADIR%\.env" >nul
+python -m py_compile "%APY%" >>"%ALOG%" 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo  ERROR: Agent file failed Python compile. See %ALOG%
+    pause
+    exit /b 1
+)
+echo  OK: Agent installed.
 
 echo.
-echo [5/8] Creating launcher...
+echo [3/7] Installing Python packages...
+python -m pip install --upgrade pip --quiet --no-warn-script-location >>"%ALOG%" 2>&1
+if exist "%ADIR%\requirements.txt" (
+    python -m pip install -r "%ADIR%\requirements.txt" --quiet --no-warn-script-location >>"%ALOG%" 2>&1
+) else (
+    python -m pip install pyautogui pillow websockets requests pyttsx3 psutil pyperclip plyer pygetwindow keyboard speechrecognition beautifulsoup4 lxml selenium webdriver-manager pdfplumber openpyxl pandas python-dotenv pypdf python-docx --quiet --no-warn-script-location >>"%ALOG%" 2>&1
+)
+echo  Package install attempted. Optional packages may be skipped if Windows blocks them.
+
+echo.
+echo [4/7] Creating launcher...
 (
 echo @echo off
 echo chcp 65001 ^>nul 2^>^&1
@@ -185,85 +98,73 @@ echo :DONE
 echo echo  Agent stopped cleanly.
 echo pause
 ) > "%SBAT%"
-echo  OK: Launcher created at %SBAT%
+echo  OK: %SBAT%
 
 echo.
-echo [6/8] Creating shortcuts and autostart...
-set "VTMP=%TEMP%\dxsc.vbs"
+echo [5/7] Creating desktop shortcut...
+set "VTMP=%TEMP%\dacexy_shortcut.vbs"
 (
 echo Set oWS = WScript.CreateObject("WScript.Shell"^)
 echo Set oLink = oWS.CreateShortcut("%USERPROFILE%\Desktop\Dacexy Agent.lnk"^)
 echo oLink.TargetPath = "%SBAT%"
 echo oLink.WorkingDirectory = "%ADIR%"
-echo oLink.Description = "Dacexy AI Agent"
+echo oLink.Description = "Dacexy AI Desktop Agent"
 echo oLink.IconLocation = "shell32.dll,15"
 echo oLink.Save
 ) > "%VTMP%"
 cscript /nologo "%VTMP%" >nul 2>&1
 del "%VTMP%" >nul 2>&1
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /t REG_SZ /d "\"%SBAT%\"" /f >nul 2>&1
-echo  OK: Desktop shortcut created, autostart on login registered
+echo  OK: Desktop shortcut created.
 
 echo.
-echo [7/8] Checking what works...
-echo.
-python -c "import pyautogui; print('  [+] Mouse and keyboard control')" 2>nul
-python -c "from PIL import ImageGrab; print('  [+] Screenshot capture')" 2>nul
-python -c "import pyaudio; print('  [+] Voice control')" 2>nul
-python -c "from selenium import webdriver; print('  [+] Browser automation (incl. social reply bots)')" 2>nul
-python -c "from bs4 import BeautifulSoup; print('  [+] Web scraping / lead generation')" 2>nul
-python -c "import websockets; print('  [+] Cloud dashboard connection')" 2>nul
-python -c "import psutil; print('  [+] System info')" 2>nul
-python -c "import smtplib; print('  [+] Email engine')" 2>nul
-python -c "import pdfplumber; print('  [+] Invoice PDF extraction / payment queue')" 2>nul
-python -c "import openpyxl; print('  [+] Spreadsheet reading')" 2>nul
-python -c "from cryptography.fernet import Fernet; print('  [+] Encrypted local credential storage')" 2>nul
+echo [6/7] Optional cloud/dashboard token...
+echo  If your dashboard gives an access token, paste it here.
+echo  Otherwise press Enter and the agent will run local-only.
+set /p DX_TOKEN="  Token: "
+if not "%DX_TOKEN%"=="" (
+    cd /d "%ADIR%"
+    python "%APY%" --text --no-voice --no-cloud --token "%DX_TOKEN%" --command "health" >>"%ALOG%" 2>&1
+    echo  OK: Token saved to %%USERPROFILE%%\.dacexy_agent.json
+) else (
+    echo  Skipped token setup.
+)
 
 echo.
-echo [8/8] Done!
+echo [7/7] Autostart...
+set /p AUTOSTART="  Start Dacexy automatically on Windows login? (y/N): "
+if /i "%AUTOSTART%"=="y" (
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /t REG_SZ /d "\"%SBAT%\"" /f >nul 2>&1
+    echo  OK: Autostart enabled.
+) else (
+    reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DacexyAgent" /f >nul 2>&1
+    echo  Autostart skipped.
+)
+
 echo.
 echo  ===================================================
-echo   Installation Complete!
+echo   Installation Complete
 echo  ===================================================
 echo.
-echo  HOW TO START: Double-click "Dacexy Agent" on your Desktop
+echo  Start from Desktop: Dacexy Agent
+echo  Installed at:       %ADIR%
+echo  Log file:           %ALOG%
 echo.
-echo  FIRST RUN:   Log in with your dacexy.vercel.app account
-echo  THEN TYPE:   configure email   (enables auto-send / inbox reading)
-echo.
-echo  WAKE WORDS:  Dacexy / Hey Dacexy / Jarvis / Computer
-echo.
-echo  EXAMPLE COMMANDS:
+echo  Commands to try:
 echo    open youtube
 echo    organize my desktop
 echo    process invoices
 echo    pending payments
-echo    approve payment ^<id^>
 echo    reply to my whatsapp messages
-echo    turn on auto reply for whatsapp
 echo    find leads for my product
-echo    send email to boss@gmail.com saying hello
 echo    take a screenshot
-echo    type hello world
-echo    open notepad
-echo    volume up
-echo.
-echo  DASHBOARD:   dacexy.vercel.app
-echo  LOG FILE:    %ALOG%
-echo.
-echo  ===================================================
+echo    ocr screen
+echo    list windows
+echo    set cloud token YOUR_TOKEN
 echo.
 set /p RUN_NOW="  Launch agent now? (Y/n): "
-if /i "%RUN_NOW%"=="n" goto :SKIP
-if /i "%RUN_NOW%"=="no" goto :SKIP
-echo.
-echo  Opening agent in new window...
+if /i "%RUN_NOW%"=="n" goto :END
+if /i "%RUN_NOW%"=="no" goto :END
 start "Dacexy Agent" "%SBAT%"
-echo  Done! Login window is now open.
-goto :END
-
-:SKIP
-echo  Start anytime from the Desktop shortcut.
 
 :END
 echo.
