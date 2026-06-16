@@ -20,6 +20,9 @@ set "ADIR=%USERPROFILE%\DacexyAgent"
 set "APY=%ADIR%\dacexy_agent.py"
 set "SBAT=%ADIR%\start_dacexy.bat"
 set "ALOG=%ADIR%\install_log.txt"
+set "SRC_AGENT="
+set "SRC_REQUIREMENTS="
+set "SRC_ENV="
 
 if not exist "%ADIR%" mkdir "%ADIR%"
 if not exist "%ADIR%\logs" mkdir "%ADIR%\logs"
@@ -47,14 +50,37 @@ exit /b 1
 :PY_OK
 echo.
 echo [2/7] Copying agent files...
-if not exist "%~dp0dacexy_agent.py" (
-    echo  ERROR: dacexy_agent.py must be next to this installer.
+if exist "%~dp0dacexy_agent.py" set "SRC_AGENT=%~dp0dacexy_agent.py"
+if "%SRC_AGENT%"=="" if exist "%~dp0desktop_agent.py" set "SRC_AGENT=%~dp0desktop_agent.py"
+if "%SRC_AGENT%"=="" if exist "%CD%\dacexy_agent.py" set "SRC_AGENT=%CD%\dacexy_agent.py"
+if "%SRC_AGENT%"=="" if exist "%CD%\desktop_agent.py" set "SRC_AGENT=%CD%\desktop_agent.py"
+if "%SRC_AGENT%"=="" if exist "%APY%" set "SRC_AGENT=%APY%"
+
+if "%SRC_AGENT%"=="" (
+    echo  ERROR: Agent source file not found.
+    echo.
+    echo  Put dacexy_agent.py in the same folder as this installer and run again.
+    echo  Installer folder: %~dp0
+    echo  Current folder:   %CD%
     pause
     exit /b 1
 )
-copy /y "%~dp0dacexy_agent.py" "%APY%" >nul
-if exist "%~dp0requirements.txt" copy /y "%~dp0requirements.txt" "%ADIR%\requirements.txt" >nul
-if exist "%~dp0.env.example" copy /y "%~dp0.env.example" "%ADIR%\.env.example" >nul
+
+echo  Source: %SRC_AGENT%
+if /I not "%SRC_AGENT%"=="%APY%" (
+    if exist "%APY%" copy /y "%APY%" "%ADIR%\dacexy_agent.backup.py" >nul
+    copy /y "%SRC_AGENT%" "%APY%" >nul
+) else (
+    echo  Source is already installed file; keeping it in place.
+)
+
+if exist "%~dp0requirements.txt" set "SRC_REQUIREMENTS=%~dp0requirements.txt"
+if "%SRC_REQUIREMENTS%"=="" if exist "%CD%\requirements.txt" set "SRC_REQUIREMENTS=%CD%\requirements.txt"
+if not "%SRC_REQUIREMENTS%"=="" copy /y "%SRC_REQUIREMENTS%" "%ADIR%\requirements.txt" >nul
+
+if exist "%~dp0.env.example" set "SRC_ENV=%~dp0.env.example"
+if "%SRC_ENV%"=="" if exist "%CD%\.env.example" set "SRC_ENV=%CD%\.env.example"
+if not "%SRC_ENV%"=="" copy /y "%SRC_ENV%" "%ADIR%\.env.example" >nul
 if not exist "%ADIR%\.env" if exist "%ADIR%\.env.example" copy /y "%ADIR%\.env.example" "%ADIR%\.env" >nul
 python -m py_compile "%APY%" >>"%ALOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -122,8 +148,9 @@ echo  If your dashboard gives an access token, paste it here.
 echo  Otherwise press Enter and the agent will run local-only.
 set /p DX_TOKEN="  Token: "
 if not "%DX_TOKEN%"=="" (
-    cd /d "%ADIR%"
-    python "%APY%" --text --no-voice --no-cloud --token "%DX_TOKEN%" --command "health" >>"%ALOG%" 2>&1
+    set "DACEXY_TOKEN_TO_SAVE=%DX_TOKEN%"
+    python -c "import datetime,json,os,pathlib; p=pathlib.Path.home()/'.dacexy_agent.json'; token=os.environ.get('DACEXY_TOKEN_TO_SAVE','').strip(); data={}; data.update(json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}); data['access_token']=token; data['token']=token; data['updated_at']=datetime.datetime.now().isoformat(timespec='seconds'); p.write_text(json.dumps(data, indent=2), encoding='utf-8')" >>"%ALOG%" 2>&1
+    set "DACEXY_TOKEN_TO_SAVE="
     echo  OK: Token saved to %%USERPROFILE%%\.dacexy_agent.json
 ) else (
     echo  Skipped token setup.
