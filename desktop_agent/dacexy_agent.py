@@ -1838,6 +1838,17 @@ def plan_task(goal: str) -> List[dict]:
         log.info("Fast planner produced %d steps for: %s", len(fast_steps), goal[:60])
         return fast_steps
 
+    local_steps = local_parse(goal)
+    if local_steps:
+        # Stability rule: local_parse is the trusted command router. The AI
+        # planner is allowed only when local parsing truly has no concrete
+        # desktop action and would otherwise be an ask_ai fallback.
+        if not (len(local_steps) == 1 and local_steps[0].get("action") == "ask_ai"):
+            log.info("Local planner produced %d steps for: %s", len(local_steps), goal[:60])
+            return local_steps
+        if re.search(r"\b(open|launch|start|click|type|write|press|scroll|gmail|google|youtube|screenshot|file|folder|email|whatsapp)\b", goal.lower()):
+            return local_steps
+
     context = get_mem_ctx()
     plan_prompt = (
         f"You are a task planner for Dacexy, a Windows desktop automation agent.\n"
@@ -2001,7 +2012,6 @@ def execute_planned_task(goal: str, token: str, task_id: str = "") -> dict:
         remember_task(goal, "cancelled")
         overall_status = "cancelled"
     elif fully_done:
-        save_workflow(goal[:80], steps, verified=True)
         remember_task(goal, "ok")
         speak("Task complete and verified!")
         overall_status = "ok"
@@ -2265,6 +2275,13 @@ def execute_task(task: str, token: str, task_id: str = "") -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-AGENT SYSTEM (Phase 7)
 # ══════════════════════════════════════════════════════════════════════════════
+def execute_task(task: str, token: str, task_id: str = "") -> dict:
+    """Stable task entry point: never auto-replay learned workflows."""
+    task = _clean_goal_text(task)
+    if re.match(r"^\s*(replay|reuse|repeat)\s+workflow\b", task, re.I):
+        return execute_planned_task(task, token, task_id=task_id)
+    return coordinator_dispatch(task, token, task_id=task_id)
+
 class Agent:
     def __init__(self, name: str, skills: List[str], description: str, delegates: Optional[List[str]] = None):
         self.name        = name
