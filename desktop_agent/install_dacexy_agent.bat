@@ -50,11 +50,26 @@ exit /b 1
 :PY_OK
 echo.
 echo [2/7] Copying agent files...
-if exist "%~dp0dacexy_agent.py" set "SRC_AGENT=%~dp0dacexy_agent.py"
+if "%SRC_AGENT%"=="" if exist "%~dp0dacexy_agent.py" set "SRC_AGENT=%~dp0dacexy_agent.py"
 if "%SRC_AGENT%"=="" if exist "%~dp0desktop_agent.py" set "SRC_AGENT=%~dp0desktop_agent.py"
 if "%SRC_AGENT%"=="" if exist "%CD%\dacexy_agent.py" set "SRC_AGENT=%CD%\dacexy_agent.py"
 if "%SRC_AGENT%"=="" if exist "%CD%\desktop_agent.py" set "SRC_AGENT=%CD%\desktop_agent.py"
 if "%SRC_AGENT%"=="" if exist "%APY%" set "SRC_AGENT=%APY%"
+
+rem Search fallback in standard locations
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Downloads\desktop_agent.py" set "SRC_AGENT=%USERPROFILE%\Downloads\desktop_agent.py"
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Downloads\dacexy_agent.py" set "SRC_AGENT=%USERPROFILE%\Downloads\dacexy_agent.py"
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Desktop\desktop_agent.py" set "SRC_AGENT=%USERPROFILE%\Desktop\desktop_agent.py"
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Desktop\dacexy_agent.py" set "SRC_AGENT=%USERPROFILE%\Desktop\dacexy_agent.py"
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Documents\desktop_agent.py" set "SRC_AGENT=%USERPROFILE%\Documents\desktop_agent.py"
+if "%SRC_AGENT%"=="" if exist "%USERPROFILE%\Documents\dacexy_agent.py" set "SRC_AGENT=%USERPROFILE%\Documents\dacexy_agent.py"
+
+rem Fast recursive search fallback under Documents\Codex
+if "%SRC_AGENT%"=="" (
+    for /f "delims=" %%f in ('dir /b /s "%USERPROFILE%\Documents\desktop_agent.py" "%USERPROFILE%\Documents\dacexy_agent.py" 2^>nul') do (
+        set "SRC_AGENT=%%f"
+    )
+)
 
 if "%SRC_AGENT%"=="" (
     echo  ERROR: Agent source file not found.
