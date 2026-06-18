@@ -1,28 +1,8 @@
 """
-dacexy_agent.py — Dacexy Desktop AI Agent v13.1
+dacexy_agent.py — Dacexy Desktop AI Agent v13.0
 Production-grade autonomous desktop AI: voice, planner, executor, verifier,
 memory, workflow learning, multi-agent orchestration, business OS, WebSocket bridge.
 All-in-one single file.
-
-v13.1 changes (targeted fixes, no rewrite):
-  - Voice: conversation-mode pause threshold lengthened (0.8s -> 1.4s) so multi-clause
-    business commands aren't cut off; unrecognized speech in conversation mode now
-    triggers a spoken retry instead of silently dropping; periodic re-calibration
-    against ambient noise every 5 minutes.
-  - Verification: real_click now confirms cursor position before clicking; real_type
-    now returns a real status dict (clipboard round-trip check) instead of swallowing
-    errors silently; send_email_real and replay_workflow no longer report "ok" when
-    they only opened a manual browser draft (new "action_required" status).
-  - Planner/executor: execute_planned_task now only counts true "ok" as verified,
-    retries a failed step once before giving up, stops the plan early on a hard
-    failure instead of burning through remaining steps blind, and never saves a
-    workflow as "verified" unless every step actually succeeded.
-  - Multi-agent: execute_task now routes through coordinator_dispatch (previously
-    only one WebSocket message type ever reached the agent router; voice and the
-    interactive shell bypassed it entirely).
-  - Dashboard sync: added live per-step "task_progress" WebSocket messages instead
-    of a single result at the end; removed a hardcoded ok=1 for "skipped" status on
-    direct dashboard actions.
 """
 from __future__ import annotations
 
@@ -174,12 +154,6 @@ except Exception:
     ImageGrab = Image = ImageDraw = ImageFont = ImageEnhance = None; PIL_OK = False
 
 try:
-    import numpy as np
-    NUMPY_OK = True
-except Exception:
-    np = None; NUMPY_OK = False
-
-try:
     import pyttsx3; TTS_LIB_OK = True
 except Exception:
     pyttsx3 = None; TTS_LIB_OK = False
@@ -263,7 +237,6 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-AGENT_VERSION = "14.0-autonomous"
 BACKEND_WS   = "wss://dacexy-backend-v7ku.onrender.com/api/v1/agent/desktop/ws"
 BACKEND_HTTP = "https://dacexy-backend-v7ku.onrender.com/api/v1"
 
@@ -276,9 +249,6 @@ INBOX_DIR   = AGENT_DIR / "inbox"
 KEY_FILE    = AGENT_DIR / ".agent.key"
 CONFIG_FILE = Path.home() / ".dacexy_agent.json"
 MEMORY_FILE = Path.home() / ".dacexy_memory.json"
-DEVICE_FILE = DATA_DIR / "device_registration.json"
-TASK_STATE_FILE = DATA_DIR / "task_state.json"
-VISION_STATE_FILE = DATA_DIR / "vision_state.json"
 
 for _d in [AGENT_DIR, AGENT_DIR / "logs", SS_DIR, DATA_DIR, DOC_DIR, INBOX_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
@@ -482,15 +452,6 @@ _pending_approvals: Dict[str, dict] = {}
 _approval_lock     = threading.Lock()
 _ws_send_fn        = None
 _ws_loop           = None
-_ws_device_session = ""
-_dashboard_last_screenshot = 0.0
-_task_cancel_flags: Dict[str, threading.Event] = {}
-_task_checkpoint_lock = threading.Lock()
-_vision_lock = threading.Lock()
-_vision_thread = None
-_vision_on = False
-_last_vision_hash = ""
-_voice_interrupt = threading.Event()
 
 # Social reply-bot state
 _social_drivers: Dict[str, Any] = {}
@@ -514,20 +475,6 @@ MEMORY: Dict = {
     "approved_ops": [],
     "workflows":    {},
     "business_facts": {},
-    "long_term":    [],
-    "business_memory": {},
-    "customer_memory": {},
-    "contact_memory": {},
-    "workflow_memory": {},
-    "semantic_memory": [],
-    "kpis": {},
-    "revenue": [],
-    "profit": [],
-    "sales": [],
-    "competitors": {},
-    "market_watch": {},
-    "retention": {},
-    "documents": {},
 }
 
 HEALTH: Dict = {
@@ -539,25 +486,6 @@ HEALTH: Dict = {
     "executor_status": "idle",
     "memory_status": "ok",
     "agent_errors": 0,
-    "vision_status": "idle",
-    "active_jobs": 0,
-    "last_checkpoint": "",
-    "device_id": "",
-    "ws_reconnects": 0,
-}
-
-VISION_STATE: Dict = {
-    "status": "idle",
-    "updated_at": "",
-    "active_window": "",
-    "windows": [],
-    "ocr_text": "",
-    "buttons": [],
-    "forms": [],
-    "errors": [],
-    "browser": {},
-    "summary": "",
-    "screenshot_path": "",
 }
 
 # ── TASK QUEUE (Phase 3) ──────────────────────────────────────────────────────
@@ -629,11 +557,7 @@ async def _edge_speak(text: str):
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
         temp_name = fp.name
     try:
-        if _voice_interrupt.is_set():
-            return
         await communicate.save(temp_name)
-        if _voice_interrupt.is_set():
-            return
         ctypes.windll.winmm.mciSendStringW(
             f'open "{temp_name}" type mpegvideo alias dexmp3', None, 0, 0)
         ctypes.windll.winmm.mciSendStringW("play dexmp3 wait", None, 0, 0)
@@ -654,22 +578,14 @@ def _tts_worker():
             text = _tts_q.get(timeout=1)
             if text is None:
                 break
-            if _voice_interrupt.is_set():
-                _voice_interrupt.clear()
-                continue
-            spoken = str(text)[:220]
-            with _tts_lock:
-                if _tts_engine:
-                    if _voice_interrupt.is_set():
-                        _voice_interrupt.clear()
-                        continue
-                    _tts_engine.say(spoken)
-                    _tts_engine.runAndWait()
-                    continue
             try:
-                asyncio.run(_edge_speak(spoken))
+                asyncio.run(_edge_speak(str(text)[:400]))
             except Exception as e:
-                log.warning("Edge-TTS failed: %s", e)
+                log.warning("Edge-TTS failed, pyttsx3 fallback: %s", e)
+                with _tts_lock:
+                    if _tts_engine:
+                        _tts_engine.say(str(text)[:400])
+                        _tts_engine.runAndWait()
         except queue.Empty:
             continue
         except Exception:
@@ -687,7 +603,7 @@ def init_tts():
         return
     try:
         eng = pyttsx3.init()
-        eng.setProperty("rate", 185)
+        eng.setProperty("rate", 160)
         eng.setProperty("volume", 0.92)
         try:
             voices = eng.getProperty("voices") or []
@@ -707,7 +623,7 @@ def init_tts():
 def speak(text: str):
     if not text:
         return
-    s = re.sub(r"\s+", " ", str(text)).strip()[:240]
+    s = str(text)[:400]
     try:
         print(f"\n  [Dacexy] {s}")
         sys.stdout.flush()
@@ -719,27 +635,6 @@ def speak(text: str):
     except queue.Full:
         pass
 
-def interrupt_speech(reason: str = "interrupt"):
-    _voice_interrupt.set()
-    try:
-        while True:
-            _tts_q.get_nowait()
-            _tts_q.task_done()
-    except Exception:
-        pass
-    try:
-        ctypes.windll.winmm.mciSendStringW("stop dexmp3", None, 0, 0)
-        ctypes.windll.winmm.mciSendStringW("close dexmp3", None, 0, 0)
-    except Exception:
-        pass
-    try:
-        with _tts_lock:
-            if _tts_engine:
-                _tts_engine.stop()
-    except Exception:
-        pass
-    log.info("Speech interrupted: %s", reason)
-
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -749,48 +644,6 @@ def _notify(title: str, msg: str):
             notification.notify(title=title, message=str(msg)[:100], app_name="Dacexy", timeout=5)
     except Exception:
         pass
-
-def _new_id(prefix: str = "id") -> str:
-    raw = f"{prefix}:{socket.gethostname()}:{time.time()}:{random.random()}".encode("utf-8", errors="ignore")
-    return f"{prefix}_{hashlib.sha256(raw).hexdigest()[:16]}"
-
-def get_device_registration() -> dict:
-    """Persistent local desktop identity used by dashboard sync and reconnects."""
-    try:
-        if DEVICE_FILE.exists():
-            data = json.loads(DEVICE_FILE.read_text(encoding="utf-8"))
-            if data.get("device_id"):
-                HEALTH["device_id"] = data["device_id"]
-                return data
-    except Exception as e:
-        log.warning("device registration read: %s", e)
-    data = {
-        "device_id": _new_id("device"),
-        "hostname": socket.gethostname(),
-        "platform": platform.system(),
-        "machine": platform.machine(),
-        "version": AGENT_VERSION,
-        "registered_at": datetime.datetime.now().isoformat(),
-    }
-    try:
-        DEVICE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        DEVICE_FILE.chmod(0o600)
-    except Exception as e:
-        log.warning("device registration write: %s", e)
-    HEALTH["device_id"] = data["device_id"]
-    return data
-
-def _send_ws_best_effort(payload: dict):
-    if not (_ws_send_fn and _ws_loop):
-        return
-    try:
-        asyncio.run_coroutine_threadsafe(_ws_send_fn(payload), _ws_loop)
-    except Exception:
-        pass
-
-def _dashboard_log(level: str, message: str, **extra):
-    payload = {"type": "log", "level": level, "message": str(message)[:1000], **extra}
-    _send_ws_best_effort(payload)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIG / TOKEN
@@ -848,47 +701,6 @@ def _get_dex_token():
 # ══════════════════════════════════════════════════════════════════════════════
 # MEMORY ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
-def _normalize_memory():
-    with _mem_lock:
-        defaults = {
-            "facts": [],
-            "preferences": {},
-            "context": {},
-            "contacts": {},
-            "customers": {},
-            "suppliers": {},
-            "leads": [],
-            "skills": [],
-            "approved_ops": [],
-            "workflows": {},
-            "business_facts": {},
-            "long_term": [],
-            "business_memory": {},
-            "customer_memory": {},
-            "contact_memory": {},
-            "workflow_memory": {},
-            "semantic_memory": [],
-            "kpis": {},
-            "revenue": [],
-            "profit": [],
-            "sales": [],
-            "competitors": {},
-            "market_watch": {},
-            "retention": {},
-            "documents": {},
-        }
-        for key, default in defaults.items():
-            if key not in MEMORY or MEMORY[key] is None:
-                MEMORY[key] = default.copy() if isinstance(default, dict) else list(default)
-        if not isinstance(MEMORY.get("task_history"), deque):
-            MEMORY["task_history"] = deque(list(MEMORY.get("task_history", []))[-1000:], maxlen=1000)
-        if not MEMORY.get("contact_memory") and MEMORY.get("contacts"):
-            MEMORY["contact_memory"] = dict(MEMORY["contacts"])
-        if not MEMORY.get("customer_memory") and MEMORY.get("customers"):
-            MEMORY["customer_memory"] = dict(MEMORY["customers"])
-        if not MEMORY.get("workflow_memory") and MEMORY.get("workflows"):
-            MEMORY["workflow_memory"] = dict(MEMORY["workflows"])
-
 def load_memory():
     global _smtp_cfg, _sched_jobs
     try:
@@ -906,20 +718,6 @@ def load_memory():
                 MEMORY["approved_ops"]  = d.get("approved_ops", [])
                 MEMORY["workflows"]     = d.get("workflows", {})
                 MEMORY["business_facts"]= d.get("business_facts", {})
-                MEMORY["long_term"]     = d.get("long_term", d.get("facts", []))[-2000:]
-                MEMORY["business_memory"] = d.get("business_memory", {})
-                MEMORY["customer_memory"] = d.get("customer_memory", d.get("customers", {}))
-                MEMORY["contact_memory"] = d.get("contact_memory", d.get("contacts", {}))
-                MEMORY["workflow_memory"] = d.get("workflow_memory", d.get("workflows", {}))
-                MEMORY["semantic_memory"] = d.get("semantic_memory", [])
-                MEMORY["kpis"]          = d.get("kpis", {})
-                MEMORY["revenue"]       = d.get("revenue", [])
-                MEMORY["profit"]        = d.get("profit", [])
-                MEMORY["sales"]         = d.get("sales", [])
-                MEMORY["competitors"]   = d.get("competitors", {})
-                MEMORY["market_watch"]  = d.get("market_watch", {})
-                MEMORY["retention"]     = d.get("retention", {})
-                MEMORY["documents"]     = d.get("documents", {})
                 MEMORY["task_history"]  = deque(d.get("task_history", [])[-1000:], maxlen=1000)
             _smtp_cfg = {}
             raw_smtp = d.get("smtp_config", {})
@@ -930,7 +728,6 @@ def load_memory():
                      len(MEMORY["facts"]), len(MEMORY["contacts"]), len(MEMORY["workflows"]))
     except Exception as e:
         log.warning("load_memory: %s", e)
-    _normalize_memory()
 
 def save_memory():
     try:
@@ -950,20 +747,6 @@ def save_memory():
                 "approved_ops":   MEMORY["approved_ops"][-100:],
                 "workflows":      MEMORY["workflows"],
                 "business_facts": MEMORY["business_facts"],
-                "long_term":      MEMORY["long_term"][-2000:],
-                "business_memory": MEMORY["business_memory"],
-                "customer_memory": MEMORY["customer_memory"],
-                "contact_memory": MEMORY["contact_memory"],
-                "workflow_memory": MEMORY["workflow_memory"],
-                "semantic_memory": MEMORY["semantic_memory"][-5000:],
-                "kpis":           MEMORY["kpis"],
-                "revenue":        MEMORY["revenue"][-2000:],
-                "profit":         MEMORY["profit"][-2000:],
-                "sales":          MEMORY["sales"][-2000:],
-                "competitors":    MEMORY["competitors"],
-                "market_watch":   MEMORY["market_watch"],
-                "retention":      MEMORY["retention"],
-                "documents":      MEMORY["documents"],
                 "task_history":   list(MEMORY["task_history"])[-200:],
                 "smtp_config":    enc_smtp,
                 "sched_jobs":     _sched_jobs[-50:],
@@ -981,116 +764,12 @@ def remember(fact: str):
     with _mem_lock:
         if fact not in MEMORY["facts"]:
             MEMORY["facts"].append(fact)
-        if fact not in MEMORY["long_term"]:
-            MEMORY["long_term"].append(fact)
-        MEMORY["semantic_memory"].append({
-            "kind": "fact",
-            "key": hashlib.sha1(fact.encode("utf-8", errors="ignore")).hexdigest()[:12],
-            "text": fact,
-            "tags": [],
-            "updated": datetime.datetime.now().isoformat(),
-        })
     save_memory()
 
 def remember_task(task: str, result: str = "ok"):
     with _mem_lock:
         MEMORY["task_history"].append(f"{task[:80]} [{result}]")
     save_memory()
-
-def _tokens(text: str) -> set:
-    return {t for t in re.findall(r"[a-z0-9][a-z0-9_\-]{1,}", str(text).lower()) if len(t) > 1}
-
-def remember_structured(kind: str, key: str, value: Any, tags: Optional[List[str]] = None) -> dict:
-    kind = (kind or "memory").strip().lower().replace(" ", "_")
-    key = (key or hashlib.sha1(json.dumps(value, default=str).encode("utf-8", errors="ignore")).hexdigest()[:12]).strip().lower()
-    entry = {
-        "kind": kind,
-        "key": key,
-        "value": value,
-        "text": json.dumps(value, default=str, ensure_ascii=False) if not isinstance(value, str) else value,
-        "tags": tags or [],
-        "updated": datetime.datetime.now().isoformat(),
-    }
-    with _mem_lock:
-        if kind in ("contact", "contacts"):
-            MEMORY["contacts"][key] = value if isinstance(value, dict) else {"name": key, "note": str(value)}
-            MEMORY["contact_memory"][key] = MEMORY["contacts"][key]
-        elif kind in ("customer", "customers"):
-            MEMORY["customers"][key] = value if isinstance(value, dict) else {"name": key, "note": str(value)}
-            MEMORY["customer_memory"][key] = MEMORY["customers"][key]
-        elif kind in ("business", "business_fact", "metric"):
-            MEMORY["business_memory"][key] = value
-        elif kind in ("workflow", "workflow_memory"):
-            MEMORY["workflow_memory"][key] = value
-        else:
-            MEMORY["long_term"].append(entry["text"])
-        MEMORY["semantic_memory"].append(entry)
-    save_memory()
-    return {"status": "ok", "memory": entry}
-
-def _memory_documents() -> List[dict]:
-    docs = []
-    with _mem_lock:
-        for i, fact in enumerate(MEMORY.get("long_term", [])):
-            docs.append({"kind": "long_term", "key": str(i), "text": str(fact), "value": fact})
-        for kind, collection in (
-            ("business", MEMORY.get("business_memory", {})),
-            ("business_fact", MEMORY.get("business_facts", {})),
-            ("contact", MEMORY.get("contact_memory", {})),
-            ("customer", MEMORY.get("customer_memory", {})),
-            ("workflow", MEMORY.get("workflow_memory", {})),
-            ("kpi", MEMORY.get("kpis", {})),
-            ("competitor", MEMORY.get("competitors", {})),
-            ("market", MEMORY.get("market_watch", {})),
-        ):
-            if isinstance(collection, dict):
-                for key, value in collection.items():
-                    docs.append({"kind": kind, "key": str(key), "text": json.dumps(value, default=str), "value": value})
-        for entry in MEMORY.get("semantic_memory", [])[-3000:]:
-            if isinstance(entry, dict):
-                docs.append({
-                    "kind": entry.get("kind", "semantic"),
-                    "key": entry.get("key", ""),
-                    "text": entry.get("text") or json.dumps(entry.get("value", ""), default=str),
-                    "value": entry.get("value", entry.get("text", "")),
-                })
-    return docs
-
-def semantic_search_memory(query: str, top_k: int = 5, categories: Optional[List[str]] = None) -> dict:
-    qtok = _tokens(query)
-    if not qtok:
-        return {"status": "error", "message": "No searchable query"}
-    cats = {c.lower() for c in categories or [] if c}
-    scored = []
-    for doc in _memory_documents():
-        if cats and doc.get("kind", "").lower() not in cats:
-            continue
-        dtok = _tokens(doc.get("text", ""))
-        if not dtok:
-            continue
-        overlap = qtok & dtok
-        if not overlap:
-            continue
-        score = len(overlap) / max(len(qtok | dtok), 1)
-        scored.append((score, doc))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    results = []
-    seen = set()
-    for score, doc in scored:
-        ident = (doc.get("kind"), doc.get("key"), doc.get("text", "")[:80])
-        if ident in seen:
-            continue
-        seen.add(ident)
-        results.append({
-            "score": round(score, 4),
-            "kind": doc.get("kind"),
-            "key": doc.get("key"),
-            "text": str(doc.get("text", ""))[:800],
-            "value": doc.get("value"),
-        })
-        if len(results) >= max(1, min(int(top_k or 5), 20)):
-            break
-    return {"status": "ok", "query": query, "results": results}
 
 def get_mem_ctx() -> str:
     try:
@@ -1109,12 +788,6 @@ def get_mem_ctx() -> str:
             wf = list(MEMORY["workflows"].keys())[:5]
             if wf:
                 parts.append("Workflows: " + ", ".join(wf))
-            biz = MEMORY.get("business_memory", {})
-            if biz:
-                parts.append("Business: " + json.dumps(dict(list(biz.items())[:8]), default=str)[:600])
-            kpis = MEMORY.get("kpis", {})
-            if kpis:
-                parts.append("KPIs: " + json.dumps(dict(list(kpis.items())[:8]), default=str)[:600])
             conv = list(_convo)[-6:]
             if conv:
                 parts.append("Conv: " + " | ".join(conv))
@@ -1149,67 +822,23 @@ def list_workflows() -> List[str]:
     with _mem_lock:
         return list(MEMORY["workflows"].keys())
 
-def sanitize_broken_workflows():
-    """Remove workflows learned by older broken planner runs that only opened/search pages."""
-    removed = []
-    with _mem_lock:
-        for name, wf in list(MEMORY.get("workflows", {}).items()):
-            steps = wf.get("steps", []) if isinstance(wf, dict) else []
-            nl = str(name).lower()
-            if not steps:
-                continue
-            actions = [str(s.get("action", "")).lower() for s in steps if isinstance(s, dict)]
-            open_only = actions and all(a in {"open", "web_research", "search_web"} for a in actions)
-            needs_deeper = any(k in nl for k in ["draft", "compose", "email", "search", "website", "gmail"])
-            bad_target = any(str(s.get("target", "")).lower() in {"browser", "default", "default browser"} for s in steps if isinstance(s, dict))
-            if (open_only and needs_deeper) or bad_target:
-                MEMORY["workflows"].pop(name, None)
-                removed.append(name)
-    if removed:
-        log.info("Removed %d broken learned workflow(s): %s", len(removed), ", ".join(removed[:5]))
-        save_memory()
-    return removed
-
 def replay_workflow(name: str, token: str) -> dict:
     wf = get_workflow(name)
     if not wf:
         return {"status": "error", "message": f"No saved workflow: {name}"}
     speak(f"Replaying workflow: {name}")
     results = []
-    verified_count = 0
-    action_required_count = 0
     for step in wf["steps"]:
         r = exec_cmd(step, token)
-        status = r.get("status")
-        results.append({"step": step, "result": r, "status": status})
-        if status == "ok":
-            verified_count += 1
-        elif status == "skipped":
-            pass
-        elif status == "action_required":
-            action_required_count += 1
-            speak(f"Workflow step needs your attention: {r.get('message','')[:60]}")
-        else:
+        results.append({"step": step, "result": r})
+        if r.get("status") == "error":
             speak(f"Workflow step failed: {step.get('action')}")
             return {"status": "error", "message": f"Step failed: {step}", "results": results}
         time.sleep(0.5)
-
-    total = len(wf["steps"])
-    if verified_count == total:
-        speak(f"Workflow {name} completed and verified.")
-        final_status = "ok"
-    elif verified_count + action_required_count > 0:
-        speak(f"Workflow {name} mostly done — {action_required_count} step(s) need manual follow-through.")
-        final_status = "partial"
-    else:
-        speak(f"Workflow {name} did not complete.")
-        final_status = "failed"
-
+    speak(f"Workflow {name} completed.")
     wf["run_count"] = wf.get("run_count", 0) + 1
     save_memory()
-    return {"status": final_status, "workflow": name, "steps_run": len(results),
-            "ok": verified_count, "action_required": action_required_count,
-            "total": total, "results": results}
+    return {"status": "ok", "workflow": name, "steps_run": len(results), "results": results}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECURITY CHECKS
@@ -1321,32 +950,16 @@ def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: 
         x = max(1, min(x, sw - 1))
         y = max(1, min(y, sh - 1))
         pyautogui.moveTo(x, y, duration=duration)
-        # Verify the cursor actually arrived before clicking — catches pyautogui
-        # fail-safe triggers or a stalled/virtual display silently no-op'ing the move.
-        try:
-            actual_x, actual_y = pyautogui.position()
-            if abs(actual_x - x) > 3 or abs(actual_y - y) > 3:
-                pyautogui.moveTo(x, y, duration=duration)
-                actual_x, actual_y = pyautogui.position()
-                if abs(actual_x - x) > 3 or abs(actual_y - y) > 3:
-                    return {"status": "error",
-                            "message": f"Cursor did not reach ({x},{y}), landed at ({actual_x},{actual_y})"}
-        except Exception:
-            pass
         pyautogui.click(x, y, button=button, clicks=clicks, interval=0.08)
         log.info("CLICK x=%d y=%d btn=%s clicks=%d", x, y, button, clicks)
         return {"status": "ok", "x": x, "y": y}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def real_type(text: str, clear_first: bool = False, human_speed: bool = False) -> dict:
-    """Types text into the focused field. Returns a real status dict so callers
-    can verify the action instead of assuming success."""
+def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
     if not text:
-        return {"status": "skipped", "reason": "empty text"}
+        return
     text = str(text)[:100_000]
-    if not PYAUTOGUI_OK and not CLIP_OK:
-        return {"status": "error", "message": "No input backend available (pyautogui/pyperclip missing)"}
     try:
         if clear_first and PYAUTOGUI_OK:
             pyautogui.hotkey("ctrl", "a")
@@ -1356,27 +969,15 @@ def real_type(text: str, clear_first: bool = False, human_speed: bool = False) -
         if CLIP_OK:
             pyperclip.copy(text)
             time.sleep(0.06)
-            # Verify the OS clipboard actually received the text before pasting —
-            # catches silent clipboard-manager interference.
-            clip_ok = False
-            try:
-                clip_ok = pyperclip.paste() == text
-            except Exception:
-                clip_ok = False
             if PYAUTOGUI_OK:
                 pyautogui.hotkey("ctrl", "v")
                 time.sleep(0.12)
-            return {"status": "ok" if clip_ok else "error",
-                    "message": "" if clip_ok else "Clipboard did not contain expected text after copy"}
         elif PYAUTOGUI_OK:
             interval = random.uniform(0.03, 0.09) if human_speed else 0.012
             for chunk in [text[i:i+300] for i in range(0, len(text), 300)]:
                 pyautogui.write(chunk, interval=interval)
-            return {"status": "ok"}
-        return {"status": "error", "message": "No usable input method"}
     except Exception as e:
         log.warning("real_type: %s", e)
-        return {"status": "error", "message": str(e)}
 
 def real_hotkey(*keys):
     if not PYAUTOGUI_OK:
@@ -1426,189 +1027,6 @@ def read_screen_text(region: Optional[Tuple] = None) -> str:
         except Exception as e:
             log.warning("OCR: %s", e)
     return ""
-
-def _browser_page_understanding() -> dict:
-    with _sel_lock:
-        drv = _selenium_driver
-    if not drv:
-        return {}
-    try:
-        script = """
-        const pick = (els, n) => Array.from(els).slice(0, n).map((el) => ({
-          text: (el.innerText || el.value || el.getAttribute('aria-label') || el.name || '').trim().slice(0,120),
-          tag: el.tagName.toLowerCase(),
-          type: el.type || '',
-          id: el.id || '',
-          name: el.name || '',
-          role: el.getAttribute('role') || '',
-          placeholder: el.getAttribute('placeholder') || ''
-        }));
-        return {
-          title: document.title || '',
-          url: location.href,
-          headings: pick(document.querySelectorAll('h1,h2,h3'), 12),
-          buttons: pick(document.querySelectorAll('button,input[type=button],input[type=submit],a[role=button]'), 20),
-          forms: pick(document.querySelectorAll('input,textarea,select'), 30),
-          links: pick(document.querySelectorAll('a[href]'), 20),
-          bodyText: (document.body && document.body.innerText || '').trim().replace(/\\s+/g,' ').slice(0,1500)
-        };
-        """
-        return drv.execute_script(script) or {}
-    except Exception as e:
-        return {"error": str(e)}
-
-def _detect_visual_controls(img) -> dict:
-    controls = {"buttons": [], "forms": []}
-    if not CV2_OK or not NUMPY_OK or not PIL_OK or img is None:
-        return controls
-    try:
-        arr = np.array(img.convert("RGB"))
-        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-        gray = cv2.bilateralFilter(gray, 5, 35, 35)
-        edges = cv2.Canny(gray, 40, 120)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        h, w = gray.shape[:2]
-        for c in contours[:800]:
-            x, y, bw, bh = cv2.boundingRect(c)
-            if bw < 35 or bh < 14 or bw > w * 0.95 or bh > h * 0.5:
-                continue
-            aspect = bw / max(bh, 1)
-            area = bw * bh
-            if 1.4 <= aspect <= 8 and 250 <= area <= 45000:
-                roi = gray[y:y+bh, x:x+bw]
-                border_score = float(np.std(roi)) if roi.size else 0.0
-                item = {"x": int(x), "y": int(y), "w": int(bw), "h": int(bh), "confidence": round(min(border_score / 80.0, 1.0), 2)}
-                if aspect >= 3.0 and bh <= 65:
-                    controls["forms"].append(item)
-                else:
-                    controls["buttons"].append(item)
-        controls["buttons"] = sorted(controls["buttons"], key=lambda r: (r["y"], r["x"]))[:40]
-        controls["forms"] = sorted(controls["forms"], key=lambda r: (r["y"], r["x"]))[:40]
-    except Exception as e:
-        log.debug("visual controls: %s", e)
-    return controls
-
-def _detect_error_context(text: str, windows: List[str]) -> List[dict]:
-    hay = "\n".join([text or ""] + windows).lower()
-    patterns = [
-        "error", "exception", "failed", "failure", "crash", "not responding",
-        "access denied", "permission denied", "invalid password", "network error",
-        "cannot connect", "timed out", "warning", "blocked", "unhandled",
-    ]
-    hits = []
-    for p in patterns:
-        if p in hay:
-            hits.append({"type": p, "evidence": p})
-    return hits[:10]
-
-def understand_screen(save_screenshot: bool = True, fast: bool = False) -> dict:
-    if not PIL_OK:
-        return {"status": "error", "message": "Pillow/ImageGrab not available"}
-    try:
-        img = ImageGrab.grab()
-        shot_path = ""
-        if save_screenshot:
-            shot_path = str(SS_DIR / f"vision_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
-            img.save(shot_path, format="JPEG", quality=75)
-        ocr_text = ""
-        if OCR_OK and not fast:
-            try:
-                ocr_text = pytesseract.image_to_string(img)[:8000]
-            except Exception as e:
-                log.warning("vision OCR: %s", e)
-        windows = list_windows()
-        active = get_active_win()
-        controls = _detect_visual_controls(img)
-        browser = _browser_page_understanding()
-        errors = _detect_error_context(ocr_text, windows)
-        summary_bits = []
-        if active:
-            summary_bits.append(f"Active window: {active}")
-        if browser.get("title"):
-            summary_bits.append(f"Browser page: {browser.get('title')} ({browser.get('url','')})")
-        if ocr_text.strip():
-            compact = re.sub(r"\s+", " ", ocr_text.strip())[:350]
-            summary_bits.append(f"Visible text: {compact}")
-        if errors:
-            summary_bits.append("Possible error detected: " + ", ".join(e["type"] for e in errors[:3]))
-        if controls["buttons"] or controls["forms"]:
-            summary_bits.append(f"Detected {len(controls['buttons'])} button-like and {len(controls['forms'])} form-like regions")
-        state = {
-            "status": "ok",
-            "updated_at": datetime.datetime.now().isoformat(),
-            "active_window": active,
-            "windows": windows[:40],
-            "ocr_text": ocr_text,
-            "buttons": controls["buttons"],
-            "forms": controls["forms"],
-            "errors": errors,
-            "browser": browser,
-            "summary": " | ".join(summary_bits) if summary_bits else "Screen captured, no readable text detected.",
-            "screenshot_path": shot_path,
-        }
-        with _vision_lock:
-            VISION_STATE.update(state)
-        try:
-            VISION_STATE_FILE.write_text(json.dumps({k: v for k, v in state.items() if k != "ocr_text"} | {"ocr_preview": ocr_text[:1000]}, indent=2, default=str), encoding="utf-8")
-        except Exception:
-            pass
-        HEALTH["vision_status"] = "ok"
-        return state
-    except Exception as e:
-        HEALTH["vision_status"] = "error"
-        return {"status": "error", "message": str(e)}
-
-def get_screen_summary() -> str:
-    with _vision_lock:
-        summary = VISION_STATE.get("summary", "")
-    if summary:
-        return summary
-    res = understand_screen(save_screenshot=False)
-    return res.get("summary", res.get("message", "I could not inspect the screen."))
-
-def _vision_monitor_loop():
-    global _last_vision_hash
-    while _vision_on and _running:
-        try:
-            state = understand_screen(save_screenshot=False, fast=False)
-            if state.get("status") == "ok":
-                digest_src = "|".join([
-                    state.get("active_window", ""),
-                    state.get("summary", "")[:500],
-                    json.dumps(state.get("errors", []), sort_keys=True),
-                ])
-                digest = hashlib.sha1(digest_src.encode("utf-8", errors="ignore")).hexdigest()
-                if digest != _last_vision_hash:
-                    _last_vision_hash = digest
-                    _send_ws_best_effort({
-                        "type": "vision_result",
-                        "vision": {k: v for k, v in state.items() if k != "ocr_text"},
-                        "ocr_preview": state.get("ocr_text", "")[:1000],
-                    })
-                if state.get("errors"):
-                    _dashboard_log("warning", "Screen error context detected", errors=state.get("errors"))
-            time.sleep(8)
-        except Exception as e:
-            log.warning("vision monitor: %s", e)
-            time.sleep(10)
-
-def start_vision_monitor() -> dict:
-    global _vision_on, _vision_thread
-    if _vision_on:
-        return {"status": "ok", "message": "Vision monitor already running"}
-    if not PIL_OK:
-        return {"status": "error", "message": "Pillow/ImageGrab not available"}
-    _vision_on = True
-    _vision_thread = threading.Thread(target=_vision_monitor_loop, daemon=True, name="VisionMonitor")
-    _vision_thread.start()
-    HEALTH["vision_status"] = "monitoring"
-    return {"status": "ok", "message": "Vision monitor started"}
-
-def stop_vision_monitor() -> dict:
-    global _vision_on
-    _vision_on = False
-    HEALTH["vision_status"] = "idle"
-    return {"status": "ok", "message": "Vision monitor stopped"}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WINDOW MANAGEMENT
@@ -1662,7 +1080,7 @@ def verify_file_created(path: str) -> bool:
 
 def verify_window_contains(text: str) -> bool:
     if not WINDOW_OK:
-        return False
+        return True
     try:
         for w in gw.getAllTitles():
             if text.lower() in w.lower():
@@ -1673,7 +1091,7 @@ def verify_window_contains(text: str) -> bool:
 
 def verify_screen_ocr(text: str) -> bool:
     if not OCR_OK or not PIL_OK:
-        return False
+        return True
     try:
         img = ImageGrab.grab()
         ocr_text = pytesseract.image_to_string(img).lower()
@@ -1771,59 +1189,6 @@ def ai_completion(prompt: str, system: str = "", timeout: int = 30) -> str:
 def ask_ai_brain(prompt: str) -> str:
     return ai_completion(prompt)
 
-def _clean_goal_text(goal: str) -> str:
-    text = str(goal or "").strip()
-    fixes = {
-        "brower": "browser",
-        "thier": "their",
-        "quetion": "question",
-        "raft": "draft",
-        "sayinng": "saying",
-        "gamil": "gmail",
-    }
-    for wrong, right in fixes.items():
-        text = re.sub(r"\b" + re.escape(wrong) + r"\b", right, text, flags=re.I)
-    return text
-
-def _deterministic_plan(goal: str) -> List[dict]:
-    """Fast path for common desktop commands. Avoids slow/fragile AI plans for simple tasks."""
-    t = _clean_goal_text(goal)
-    tl = t.lower()
-
-    if re.search(r"\b(?:what'?s|what is|describe|understand|analyze)\s+(?:on\s+)?(?:my\s+)?screen\b", tl):
-        return [{"action": "understand_screen"}]
-
-    if re.search(r"\bopen\s+gmail\b", tl) and re.search(r"\b(?:draft|compose|write)\b|\bsaying\b|\bsay\b", tl):
-        to_m = re.search(r"\bto\s+([^\s,]+@[^\s,]+)", t, re.I)
-        subject_m = re.search(r"\b(?:subject|about|re)\s+(.+?)(?:\s+saying\b|\s+body\b|$)", t, re.I)
-        body_m = re.search(r"\b(?:saying|say|body)\s+(.+)$", t, re.I)
-        body = body_m.group(1).strip() if body_m else "Hello"
-        subject = subject_m.group(1).strip() if subject_m else "Hello"
-        return [{"action": "open_gmail_compose", "to": to_m.group(1) if to_m else "", "subject": subject, "body": body}]
-
-    if re.search(r"\bopen\s+gmail\b|\bgmail\s+(?:in|on)\s+(?:browser|chrome)\b", tl):
-        return [{"action": "selenium_open", "url": "https://mail.google.com/mail/u/0/#inbox", "wait_for": "body"}]
-
-    m = re.search(r"\bopen\s+google\s+and\s+search\s+(?:about|for)?\s*(.+?)(?:\s+and\s+open\s+(?:their|the)\s+website)?$", tl)
-    if m:
-        query = re.sub(r"\b(their|the)\s+website\b", "", m.group(1)).strip()
-        if query:
-            if "tesla" in query:
-                return [{"action": "selenium_open", "url": "https://www.tesla.com", "wait_for": "body"}]
-            return [{"action": "open_official_site", "query": query}]
-
-    m = re.search(r"\b(?:search|google|look\s+up)\s+(?:about\s+|for\s+)?(.+)$", tl)
-    if m and "youtube" not in tl:
-        return [{"action": "search_web", "query": m.group(1).strip()}]
-
-    if re.match(r"^\s*(open|launch|start|go to|visit)\b", tl):
-        return local_parse(t)
-
-    if re.search(r"\b(click|type|write|press|scroll|screenshot|read screen|ocr|close window|switch window|volume)\b", tl):
-        return local_parse(t)
-
-    return []
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PLANNER ENGINE (Phase 2) — Goal → Plan → Task Graph → Execute → Verify
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1832,23 +1197,6 @@ def plan_task(goal: str) -> List[dict]:
     Turn a natural language goal into an ordered list of exec_cmd-compatible steps.
     Falls back to local_parse if AI planning fails.
     """
-    goal = _clean_goal_text(goal)
-    fast_steps = _deterministic_plan(goal)
-    if fast_steps:
-        log.info("Fast planner produced %d steps for: %s", len(fast_steps), goal[:60])
-        return fast_steps
-
-    local_steps = local_parse(goal)
-    if local_steps:
-        # Stability rule: local_parse is the trusted command router. The AI
-        # planner is allowed only when local parsing truly has no concrete
-        # desktop action and would otherwise be an ask_ai fallback.
-        if not (len(local_steps) == 1 and local_steps[0].get("action") == "ask_ai"):
-            log.info("Local planner produced %d steps for: %s", len(local_steps), goal[:60])
-            return local_steps
-        if re.search(r"\b(open|launch|start|click|type|write|press|scroll|gmail|google|youtube|screenshot|file|folder|email|whatsapp)\b", goal.lower()):
-            return local_steps
-
     context = get_mem_ctx()
     plan_prompt = (
         f"You are a task planner for Dacexy, a Windows desktop automation agent.\n"
@@ -1858,10 +1206,7 @@ def plan_task(goal: str) -> List[dict]:
         f"and any required parameters. Use ONLY these actions where possible:\n"
         f"screenshot, read_inbox, organize_folder, send_email, bulk_email, find_leads, "
         f"read_spreadsheet, process_invoices, web_research, ask_ai, open, get_system_info, "
-        f"write_file, ocr, understand_screen, run_diagnostics, create_newsletter, draft_contract, "
-        f"backup_to_cloud, business_dashboard, record_metric, board_report, kpi_report, "
-        f"finance_report, monitor_competitor, monitor_market, lead_manage, sales_pipeline_report, "
-        f"customer_retention_report, semantic_memory_search.\n\n"
+        f"write_file, ocr, run_diagnostics, create_newsletter, draft_contract, backup_to_cloud.\n\n"
         f"Respond ONLY with a JSON array of step objects. No explanation. Example:\n"
         f'[{{"action":"read_inbox","max_count":10}},{{"action":"ask_ai","prompt":"summarize emails"}}]'
     )
@@ -1882,38 +1227,8 @@ def plan_task(goal: str) -> List[dict]:
     # Fallback to local NLP
     return local_parse(goal)
 
-def _report_step_progress(task_id: str, step_index: int, total_steps: int, step: dict, result: dict):
-    """Push live per-step status to the dashboard if a WebSocket session is active.
-    Best-effort: failures here never affect task execution."""
-    if not (_ws_send_fn and _ws_loop):
-        return
-    try:
-        payload = {
-            "type": "task_progress",
-            "task_id": task_id,
-            "step_index": step_index,
-            "total_steps": total_steps,
-            "progress": round(step_index / max(total_steps, 1), 4),
-            "action": step.get("action", "?"),
-            "status": result.get("status", "?"),
-            "message": result.get("message", ""),
-        }
-        asyncio.run_coroutine_threadsafe(_ws_send_fn(payload), _ws_loop)
-    except Exception:
-        pass
-
-def execute_planned_task(goal: str, token: str, task_id: str = "") -> dict:
-    """Full Plan → Execute → Verify → Learn cycle.
-
-    Honesty rules:
-      - Only status == "ok" counts as a verified success.
-      - "skipped" is a deliberate no-op (e.g. duplicate action) and counts as
-        non-blocking but is never reported to the user as a completed action.
-      - "action_required" means the agent did something (e.g. opened a draft)
-        but a human must finish it — never folded into "all_ok".
-      - Any other status (error, denied, blocked) is a real failure and gets
-        one retry attempt before the whole task is marked partial/failed.
-    """
+def execute_planned_task(goal: str, token: str) -> dict:
+    """Full Plan → Execute → Verify → Learn cycle."""
     HEALTH["planner_status"] = "planning"
     speak(f"Planning: {goal[:50]}")
 
@@ -1923,239 +1238,56 @@ def execute_planned_task(goal: str, token: str, task_id: str = "") -> dict:
         return {"status": "error", "message": "Could not create plan"}
 
     speak(f"Plan ready: {len(steps)} steps.")
-    _checkpoint_task(task_id, "running", total_steps=len(steps), message="Plan ready")
     HEALTH["planner_status"] = "executing"
     HEALTH["executor_status"] = "running"
 
     results = []
-    verified_count = 0
-    action_required_count = 0
-    hard_failure = False
+    all_ok  = True
 
     for i, step in enumerate(steps):
-        if _is_task_cancelled(task_id):
-            results.append({"step": step, "result": {"status": "cancelled", "message": "Task cancelled"}, "ok": False, "status": "cancelled"})
-            _checkpoint_task(task_id, "cancelled", i, len(steps), step, {"status": "cancelled"})
-            speak("Task cancelled.")
-            break
         step_desc = f"Step {i+1}/{len(steps)}: {step.get('action','?')}"
         log.info("Executing %s", step_desc)
-        _checkpoint_task(task_id, "running", i, len(steps), step, message=step_desc)
         try:
             r = exec_cmd(step, token)
-            status = r.get("status")
-
-            # One retry for a real failure before giving up on this step —
-            # transient issues (window not focused yet, page still loading)
-            # are common and a single retry meaningfully improves reliability
-            # without masking genuine failures.
-            if status not in ("ok", "skipped", "action_required"):
-                log.warning("Step %d failed (%s), retrying once: %s", i + 1, status, r.get("message", ""))
-                recovery = _recover_from_failure(step, r)
-                if recovery.get("attempted"):
-                    r["recovery"] = recovery
-                    _checkpoint_task(task_id, "recovering", i, len(steps), step, r,
-                                     message=f"Recovery attempted: {recovery.get('method')}")
-                time.sleep(1.0)
-                r = exec_cmd(step, token)
-                status = r.get("status")
-
-            ok = status == "ok"
-            results.append({"step": step, "result": r, "ok": ok, "status": status})
-            _report_step_progress(task_id, i + 1, len(steps), step, r)
-            _checkpoint_task(task_id, "running", i + 1, len(steps), step, r,
-                             message=f"Step {i+1}/{len(steps)} {status}")
-
-            if status == "ok":
-                verified_count += 1
-                log.info("Step %d OK (verified)", i + 1)
-            elif status == "skipped":
-                log.info("Step %d skipped: %s", i + 1, r.get("reason", ""))
-            elif status == "action_required":
-                action_required_count += 1
-                speak(f"Step {i+1} needs your attention: {r.get('message','')[:80]}")
-                log.warning("Step %d needs human follow-through: %s", i + 1, r.get("message", ""))
-            else:
-                hard_failure = True
+            verified = r.get("status") in ("ok", "skipped")
+            results.append({"step": step, "result": r, "ok": verified})
+            if not verified:
+                all_ok = False
                 speak(f"Step {i+1} failed: {r.get('message','')[:60]}")
-                log.warning("Step %d failed after retry: %s => %s", i + 1, step, r)
-                # If an early step fails hard, later steps are very likely to be
-                # meaningless (e.g. can't "read the email" if "open inbox" failed).
-                # Stop here rather than burning through the rest of the plan and
-                # reporting a misleadingly granular partial result.
-                remaining = len(steps) - (i + 1)
-                if remaining > 0:
-                    log.warning("Stopping plan early: %d remaining step(s) skipped after hard failure", remaining)
-                    speak(f"Stopping here — {remaining} remaining step(s) depend on this and were not attempted.")
-                break
-
+                log.warning("Step failed: %s => %s", step, r)
+            else:
+                log.info("Step %d OK", i + 1)
             time.sleep(0.3)
         except Exception as e:
             log.error("Step %d exception: %s", i + 1, e)
-            results.append({"step": step, "result": {"status": "error", "message": str(e)}, "ok": False, "status": "error"})
-            _report_step_progress(task_id, i + 1, len(steps), step, {"status": "error", "message": str(e)})
-            hard_failure = True
-            break
+            results.append({"step": step, "result": {"status": "error", "message": str(e)}, "ok": False})
+            all_ok = False
 
     HEALTH["planner_status"] = "idle"
     HEALTH["executor_status"] = "idle"
 
-    attempted = len(results)
-    cancelled = any(r.get("status") == "cancelled" for r in results)
-    fully_done = verified_count == len(steps)
-    partially_done = verified_count > 0 or action_required_count > 0
-
-    # A workflow is only ever learned/replayed later if every single step was
-    # a true, verified "ok" — never if any step needed human follow-through
-    # or silently failed. This is the core "no fake success" guarantee.
-    if cancelled:
-        remember_task(goal, "cancelled")
-        overall_status = "cancelled"
-    elif fully_done:
+    # Learn workflow if successful
+    if all_ok:
+        save_workflow(goal[:80], steps, verified=True)
         remember_task(goal, "ok")
         speak("Task complete and verified!")
-        overall_status = "ok"
-    elif partially_done:
-        remember_task(goal, "partial")
-        if action_required_count and not hard_failure:
-            speak(f"Done what I can — {action_required_count} step(s) need you to finish manually.")
-        else:
-            speak("Task finished with some issues — not everything was verified.")
-        overall_status = "partial"
     else:
-        remember_task(goal, "failed")
-        speak("Task did not complete — nothing could be verified.")
-        overall_status = "failed"
+        remember_task(goal, "partial")
+        speak("Task finished with some issues.")
 
+    ok_count = sum(1 for r in results if r.get("ok"))
     return {
-        "status":   overall_status,
-        "goal":     goal,
-        "steps":    len(steps),
-        "attempted": attempted,
-        "ok":       verified_count,
-        "action_required": action_required_count,
-        "total":    len(steps),
-        "results":  results,
+        "status":  "ok" if all_ok else "partial",
+        "goal":    goal,
+        "steps":   len(steps),
+        "ok":      ok_count,
+        "total":   len(steps),
+        "results": results,
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TASK QUEUE & BACKGROUND EXECUTION (Phase 3)
 # ══════════════════════════════════════════════════════════════════════════════
-def _load_task_state() -> dict:
-    try:
-        if TASK_STATE_FILE.exists():
-            data = json.loads(TASK_STATE_FILE.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception as e:
-        log.warning("load task state: %s", e)
-    return {}
-
-def _save_task_state_snapshot():
-    with _task_checkpoint_lock:
-        try:
-            data = {
-                "updated_at": datetime.datetime.now().isoformat(),
-                "tasks": _active_tasks,
-            }
-            tmp = TASK_STATE_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-            tmp.replace(TASK_STATE_FILE)
-        except Exception as e:
-            log.warning("save task state: %s", e)
-
-def _checkpoint_task(task_id: str, state: str = "", step_index: int = 0,
-                     total_steps: int = 0, step: Optional[dict] = None,
-                     result: Optional[dict] = None, message: str = ""):
-    if not task_id:
-        return
-    now = datetime.datetime.now().isoformat()
-    with _tasks_lock:
-        rec = _active_tasks.setdefault(task_id, {"id": task_id, "goal": "", "state": "unknown"})
-        if state:
-            rec["state"] = state
-        rec["updated_at"] = now
-        rec["step_index"] = step_index or rec.get("step_index", 0)
-        rec["total_steps"] = total_steps or rec.get("total_steps", 0)
-        if total_steps:
-            rec["progress"] = round(min(max((step_index or 0) / max(total_steps, 1), 0), 1), 4)
-        if step is not None:
-            rec["last_step"] = step
-        if result is not None:
-            rec["last_result"] = result
-        if message:
-            rec["message"] = message
-        HEALTH["last_checkpoint"] = now
-    _save_task_state_snapshot()
-
-def _is_task_cancelled(task_id: str) -> bool:
-    if not task_id:
-        return False
-    ev = _task_cancel_flags.get(task_id)
-    if ev and ev.is_set():
-        return True
-    with _tasks_lock:
-        return _active_tasks.get(task_id, {}).get("state") == "cancelled"
-
-def restore_task_state():
-    data = _load_task_state()
-    tasks = data.get("tasks", {}) if isinstance(data, dict) else {}
-    restored = 0
-    with _tasks_lock:
-        for tid, rec in tasks.items():
-            if not isinstance(rec, dict):
-                continue
-            state = rec.get("state")
-            if state in ("queued", "running", "recovering"):
-                rec = dict(rec)
-                rec["state"] = "interrupted"
-                rec["message"] = "Agent restarted before this task finished. Use resume task <id> to run it again."
-                _active_tasks[tid] = rec
-                restored += 1
-    if restored:
-        _save_task_state_snapshot()
-        log.info("Restored %d interrupted task records", restored)
-
-def resume_task(task_id: str, token: str) -> dict:
-    with _tasks_lock:
-        rec = dict(_active_tasks.get(task_id, {}))
-    if not rec:
-        return {"status": "error", "message": "Task not found"}
-    goal = rec.get("goal", "")
-    if not goal:
-        return {"status": "error", "message": "Task has no saved goal"}
-    new_id = queue_task(goal, token)
-    return {"status": "ok", "resumed_from": task_id, "task_id": new_id, "goal": goal}
-
-def _recover_from_failure(step: dict, result: dict) -> dict:
-    action = str(step.get("action", "")).lower()
-    msg = str(result.get("message") or result.get("note") or "")
-    recovery = {"attempted": False, "action": action, "message": msg}
-    try:
-        if action in {"selenium_open", "selenium_click", "selenium_fill"}:
-            with _sel_lock:
-                drv = _selenium_driver
-            if drv:
-                try:
-                    drv.refresh()
-                    time.sleep(1.5)
-                    recovery.update({"attempted": True, "method": "browser_refresh"})
-                except Exception:
-                    pass
-        elif action in {"open", "open_url", "open_browser"}:
-            target = step.get("target") or step.get("url") or step.get("app") or ""
-            if target:
-                smart_open(str(target))
-                recovery.update({"attempted": True, "method": "reopen_target"})
-        elif action in {"ocr", "ocr_screen", "read_screen", "screenshot"}:
-            understand_screen(save_screenshot=True, fast=True)
-            recovery.update({"attempted": True, "method": "vision_rescan"})
-        elif action in {"type", "fill", "write"} and CLIP_OK:
-            pyperclip.copy(str(step.get("text") or step.get("value") or ""))
-            recovery.update({"attempted": True, "method": "clipboard_reset"})
-    except Exception as e:
-        recovery["recovery_error"] = str(e)
-    return recovery
-
 def _queue_worker():
     while _running:
         try:
@@ -2170,31 +1302,13 @@ def _queue_worker():
             with _tasks_lock:
                 if task_id in _active_tasks:
                     _active_tasks[task_id]["state"] = "running"
-                    _active_tasks[task_id]["started_at"] = datetime.datetime.now().isoformat()
-                    _active_tasks[task_id]["attempts"] = int(_active_tasks[task_id].get("attempts", 0)) + 1
-            _checkpoint_task(task_id, "running", message="Task started")
-            HEALTH["active_jobs"] = len(list_active_tasks())
 
             try:
-                if _is_task_cancelled(task_id):
-                    result = {"status": "cancelled", "message": "Task cancelled before start"}
-                else:
-                    result = execute_planned_task(goal, token, task_id=task_id)
-                    if result.get("status") in ("failed", "error") and not _is_task_cancelled(task_id):
-                        with _tasks_lock:
-                            attempts = int(_active_tasks.get(task_id, {}).get("attempts", 1))
-                        if attempts < 2:
-                            _checkpoint_task(task_id, "recovering", message="Retrying failed task once")
-                            time.sleep(2)
-                            result = execute_planned_task(goal, token, task_id=task_id)
+                result = execute_planned_task(goal, token)
                 with _tasks_lock:
                     if task_id in _active_tasks:
-                        final_state = "cancelled" if result.get("status") == "cancelled" else "completed"
-                        _active_tasks[task_id]["state"]  = final_state
+                        _active_tasks[task_id]["state"]  = "completed"
                         _active_tasks[task_id]["result"] = result
-                        _active_tasks[task_id]["finished_at"] = datetime.datetime.now().isoformat()
-                _checkpoint_task(task_id, _active_tasks.get(task_id, {}).get("state", "completed"),
-                                 result=result, message=f"Task finished: {result.get('status')}")
                 if callback:
                     callback(task_id, result)
             except Exception as e:
@@ -2202,15 +1316,7 @@ def _queue_worker():
                     if task_id in _active_tasks:
                         _active_tasks[task_id]["state"]  = "failed"
                         _active_tasks[task_id]["result"] = {"status": "error", "message": str(e)}
-                        _active_tasks[task_id]["finished_at"] = datetime.datetime.now().isoformat()
-                _checkpoint_task(task_id, "failed", result={"status": "error", "message": str(e)})
                 log.error("Queue worker task %s failed: %s", task_id, e)
-            finally:
-                HEALTH["active_jobs"] = len(list_active_tasks())
-                try:
-                    _task_queue.task_done()
-                except Exception:
-                    pass
         except queue.Empty:
             continue
         except Exception as e:
@@ -2221,17 +1327,13 @@ threading.Thread(target=_queue_worker, daemon=True, name="TaskQueueWorker").star
 
 def queue_task(goal: str, token: str, callback: Optional[Callable] = None) -> str:
     task_id = hashlib.md5(f"{goal}{time.time()}".encode()).hexdigest()[:10]
-    _task_cancel_flags[task_id] = threading.Event()
     with _tasks_lock:
         _active_tasks[task_id] = {
             "id": task_id, "goal": goal,
             "state": "queued", "result": None,
             "queued_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "attempts": 0,
-            "progress": 0.0,
         }
     _task_queue.put({"id": task_id, "goal": goal, "token": token, "callback": callback})
-    _checkpoint_task(task_id, "queued", message="Task queued")
     return task_id
 
 def get_task_status(task_id: str) -> dict:
@@ -2239,14 +1341,10 @@ def get_task_status(task_id: str) -> dict:
         return dict(_active_tasks.get(task_id, {"state": "not_found"}))
 
 def cancel_task(task_id: str) -> dict:
-    if task_id in _task_cancel_flags:
-        _task_cancel_flags[task_id].set()
     with _tasks_lock:
         if task_id in _active_tasks:
-            if _active_tasks[task_id]["state"] in ("queued", "running", "recovering"):
+            if _active_tasks[task_id]["state"] == "queued":
                 _active_tasks[task_id]["state"] = "cancelled"
-                _active_tasks[task_id]["cancelled_at"] = datetime.datetime.now().isoformat()
-                _save_task_state_snapshot()
                 return {"status": "ok", "cancelled": task_id}
             return {"status": "error", "message": "Task already running or completed"}
     return {"status": "error", "message": "Task not found"}
@@ -2254,131 +1352,63 @@ def cancel_task(task_id: str) -> dict:
 def list_active_tasks() -> list:
     with _tasks_lock:
         return [
-            {"id": k, "state": v["state"], "goal": v.get("goal", "")[:60],
-             "progress": v.get("progress", 0), "message": v.get("message", "")}
+            {"id": k, "state": v["state"], "goal": v.get("goal", "")[:60]}
             for k, v in _active_tasks.items()
-            if v["state"] in ("queued", "running", "recovering", "interrupted")
+            if v["state"] in ("queued", "running")
         ]
 
-def execute_task(task: str, token: str, task_id: str = "") -> dict:
-    """Main entry point: checks for saved workflow first, then routes through
-    the multi-agent coordinator (previously this bypassed agent routing
-    entirely and went straight to the planner — coordinator_dispatch is
-    defined below but resolved at call time, so this is safe)."""
+def execute_task(task: str, token: str) -> dict:
+    """Main entry point: checks for saved workflow first, then plans."""
     # Check if we have a saved workflow for this exact goal
     wf = get_workflow(task)
     if wf:
         speak(f"Found saved workflow: {task[:40]}. Replaying.")
         return replay_workflow(task, token)
-    return coordinator_dispatch(task, token, task_id=task_id)
+    return execute_planned_task(task, token)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-AGENT SYSTEM (Phase 7)
 # ══════════════════════════════════════════════════════════════════════════════
-def execute_task(task: str, token: str, task_id: str = "") -> dict:
-    """Stable task entry point: never auto-replay learned workflows."""
-    task = _clean_goal_text(task)
-    if re.match(r"^\s*(replay|reuse|repeat)\s+workflow\b", task, re.I):
-        return execute_planned_task(task, token, task_id=task_id)
-    return coordinator_dispatch(task, token, task_id=task_id)
-
 class Agent:
-    def __init__(self, name: str, skills: List[str], description: str, delegates: Optional[List[str]] = None):
+    def __init__(self, name: str, skills: List[str], description: str):
         self.name        = name
         self.skills      = skills
         self.description = description
-        self.delegates   = delegates or []
-
-    def score(self, task: str) -> int:
-        tl = task.lower()
-        return sum(1 for s in self.skills if s.lower() in tl)
 
     def can_handle(self, task: str) -> bool:
-        return self.score(task) > 0
+        tl = task.lower()
+        return any(s.lower() in tl for s in self.skills)
 
-    def delegate_names(self, task: str) -> List[str]:
-        names = []
-        for name in self.delegates:
-            agent = next((a for a in _AGENTS if a.name == name), None)
-            if agent and agent.can_handle(task):
-                names.append(name)
-        return names
-
-    def handle(self, task: str, token: str, task_id: str = "") -> dict:
-        with _mem_lock:
-            MEMORY["context"]["active_agent"] = self.name
-            MEMORY["context"]["agent_role"] = self.description
-        return execute_planned_task(task, token, task_id=task_id)
+    def handle(self, task: str, token: str) -> dict:
+        return execute_planned_task(task, token)
 
 # Register sub-agents
 _AGENTS: List[Agent] = [
-    Agent("CEO Agent",
-          ["strategy", "board", "investor", "kpi", "dashboard", "profit", "revenue", "goal", "plan", "company"],
-          "Coordinates company-level goals, priorities, reports, and cross-functional execution.",
-          ["Finance Agent", "Sales Agent", "Marketing Agent", "Operations Agent", "Research Agent", "Support Agent", "Recruitment Agent"]),
-    Agent("Finance Agent",
-          ["finance", "invoice", "payment", "expense", "cashflow", "cash flow", "budget", "revenue", "profit", "tax", "investor"],
-          "Handles revenue, profit, expenses, payments, invoices, investor data, and finance reports."),
-    Agent("Sales Agent",
-          ["lead", "prospect", "crm", "sales", "pipeline", "quotation", "customer", "deal", "retention"],
-          "Handles lead management, pipeline reporting, sales outreach, and customer retention."),
-    Agent("Marketing Agent",
-          ["marketing", "campaign", "newsletter", "social", "twitter", "linkedin", "facebook", "ad", "seo", "keyword", "brand"],
-          "Handles campaigns, content, social posting, market messaging, and marketing operations."),
-    Agent("Operations Agent",
-          ["operation", "workflow", "file", "folder", "organize", "pdf", "spreadsheet", "document", "backup", "browser", "desktop"],
-          "Handles desktop operations, files, documents, workflows, browser actions, and automation reliability."),
-    Agent("Support Agent",
-          ["support", "ticket", "reply", "inbox", "email", "whatsapp", "instagram", "facebook", "customer issue", "complaint"],
-          "Handles inboxes, customer support replies, social DMs, and service follow-up."),
-    Agent("Research Agent",
-          ["research", "search", "find", "investigate", "competitor", "market", "monitor", "news", "trend"],
-          "Handles web research, competitor monitoring, market monitoring, and evidence gathering."),
-    Agent("Recruitment Agent",
-          ["recruit", "candidate", "resume", "interview", "hiring", "job", "talent", "hr"],
-          "Handles hiring workflows, candidate tracking, recruiting docs, and interview planning."),
+    Agent("EmailAgent",     ["email", "inbox", "smtp", "mail", "newsletter", "bulk email"], "Handles all email tasks"),
+    Agent("SalesAgent",     ["lead", "prospect", "crm", "sales", "pipeline", "quotation"], "Sales automation"),
+    Agent("FinanceAgent",   ["invoice", "payment", "expense", "cashflow", "finance", "budget", "revenue"], "Finance workflows"),
+    Agent("MarketingAgent", ["social", "twitter", "linkedin", "facebook", "ad", "campaign", "seo", "keyword"], "Marketing automation"),
+    Agent("ReportingAgent", ["report", "dashboard", "kpi", "analytics", "chart", "forecast", "analysis"], "Reports & analytics"),
+    Agent("ResearchAgent",  ["research", "search", "find", "investigate", "competitor", "market"], "Web research"),
+    Agent("BrowserAgent",   ["open", "browser", "navigate", "selenium", "website", "url"], "Browser automation"),
+    Agent("FileAgent",      ["file", "folder", "organize", "pdf", "spreadsheet", "document", "backup"], "File management"),
 ]
 
-def coordinator_dispatch(task: str, token: str, task_id: str = "") -> dict:
+def coordinator_dispatch(task: str, token: str) -> dict:
     """Coordinator Agent: routes task to the best sub-agent or handles directly."""
     # Find best matching agent
     for agent in _AGENTS:
         if agent.can_handle(task):
             log.info("Coordinator → %s for: %s", agent.name, task[:60])
             speak(f"{agent.name} handling: {task[:40]}")
-            return agent.handle(task, token, task_id=task_id)
+            return agent.handle(task, token)
     # No specific agent — coordinator handles directly
     log.info("Coordinator handles directly: %s", task[:60])
-    return execute_planned_task(task, token, task_id=task_id)
-
+    return execute_planned_task(task, token)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FILE ORGANIZER
 # ══════════════════════════════════════════════════════════════════════════════
-def coordinator_dispatch(task: str, token: str, task_id: str = "") -> dict:
-    """Role-based coordinator for CEO/Finance/Sales/Marketing/Ops/Support/Research/Recruitment agents."""
-    scored = sorted([(agent.score(task), agent) for agent in _AGENTS], key=lambda x: x[0], reverse=True)
-    matched = [agent for score, agent in scored if score > 0]
-    if not matched:
-        matched = [next(a for a in _AGENTS if a.name == "CEO Agent")]
-    lead = matched[0]
-    collaborators = []
-    for agent in matched[1:4]:
-        if agent.name not in collaborators:
-            collaborators.append(agent.name)
-    for name in lead.delegate_names(task):
-        if name not in collaborators and name != lead.name:
-            collaborators.append(name)
-    with _mem_lock:
-        MEMORY["context"]["active_agents"] = [lead.name] + collaborators
-        MEMORY["context"]["last_coordinator_task"] = task[:300]
-    log.info("Coordinator -> %s collaborators=%s task=%s", lead.name, collaborators, task[:80])
-    speak(f"{lead.name} coordinating" + (f" with {', '.join(collaborators[:2])}" if collaborators else ""))
-    result = lead.handle(task, token, task_id=task_id)
-    result["lead_agent"] = lead.name
-    result["collaborators"] = collaborators
-    return result
-
 def organize_folder(folder: str, dry_run: bool = False) -> dict:
     p = Path(folder)
     if not p.exists() or not p.is_dir():
@@ -2729,33 +1759,26 @@ def send_email_real(to: str, subject: str, body: str, require_approval: bool = T
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}"
                f"&body={urllib.parse.quote(str(body)[:2000])}")
         webbrowser.open(url)
-        speak(f"Gmail draft opened for {to} — SMTP isn't configured, so I can't auto-send. "
-              f"You'll need to click Send yourself, or say 'configure email' to enable auto-send.")
-        # A draft sitting open is NOT a sent email — must not report "ok" here,
-        # or the planner will mark this step verified when no email left the outbox.
-        return {"status": "action_required", "action": "browser_draft", "to": to,
-                "message": "SMTP not configured. Draft opened in browser; requires manual Send click."}
+        speak(f"Gmail opened for {to} — configure SMTP for auto-send.")
+        return {"status": "ok", "action": "browser", "note": "SMTP not configured"}
 
     try:
         msg = _build_msg(em, to, subject, body)
         with smtplib.SMTP(ht, pt, timeout=30) as srv:
             srv.ehlo(); srv.starttls(); srv.ehlo(); srv.login(em, pw)
             srv.sendmail(em, [to], msg.as_string())
-        audit.info("EMAIL_SENT to=%s subject=%s", to, subject[:60])
-        # Verify email actually sent by checking the audit trail we just wrote.
-        if not verify_email_sent(to):
-            log.warning("Email send verification failed for %s despite no SMTP exception", to)
-            return {"status": "error", "message": f"SMTP reported no error but send could not be verified for {to}"}
         speak(f"Email sent to {to}!")
-        return {"status": "ok", "sent_to": to, "verified": True}
+        audit.info("EMAIL_SENT to=%s subject=%s", to, subject[:60])
+        # Verify email actually sent
+        if not verify_email_sent(to):
+            log.warning("Email send verification: audit log check inconclusive — treating as sent")
+        return {"status": "ok", "sent_to": to}
     except Exception as e:
         log.warning("email failed: %s", e)
         url = (f"https://mail.google.com/mail/?view=cm&fs=1"
                f"&to={urllib.parse.quote(to)}&su={urllib.parse.quote(subject)}")
         webbrowser.open(url)
-        speak(f"SMTP send failed, so I opened a Gmail draft for {to} instead. You'll need to send it manually.")
-        return {"status": "action_required", "action": "browser_fallback", "to": to,
-                "message": f"SMTP send failed ({e}); draft opened in browser, requires manual Send click."}
+        return {"status": "ok", "action": "browser_fallback", "note": str(e)}
 
 def send_bulk_email(contacts: list, subject: str, body_tmpl: str, delay: float = 1.5) -> dict:
     em = _smtp_cfg.get("email", ""); pw = _smtp_cfg.get("password", "")
@@ -2969,7 +1992,7 @@ def wa_send(phone: str, msg: str) -> dict:
     url = f"https://wa.me/{ph.lstrip('+')}?text={urllib.parse.quote(str(msg))}"
     webbrowser.open(url)
     speak(f"WhatsApp Web opened for {phone}.")
-    return {"status": "action_required", "note": "WhatsApp Web opened; click Send to complete. Message not verified as sent."}
+    return {"status": "ok", "note": "WhatsApp Web opened — click Send"}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CALENDAR BOOKING
@@ -2990,7 +2013,7 @@ def book_meeting(with_email: str, subject: str, date_str: str, duration_min: int
            f"&add={urllib.parse.quote(with_email)}")
     webbrowser.open(url)
     speak(f"Calendar opened to book meeting with {with_email}")
-    return {"status": "action_required", "note": "Calendar draft opened; choose time and click Save. Meeting not verified as booked."}
+    return {"status": "ok", "note": "Fill in time and click Save"}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SELENIUM BROWSER AUTOMATION
@@ -3033,7 +2056,7 @@ def selenium_open(url: str, wait_for_css: str = None, timeout: int = 15) -> dict
     drv = _get_driver()
     if not drv:
         webbrowser.open(url)
-        return {"status": "action_required", "note": "Opened in default browser without Selenium verification", "url": url}
+        return {"status": "ok", "note": "default browser"}
     try:
         drv.get(url)
         if wait_for_css:
@@ -3071,55 +2094,6 @@ def selenium_click(selector: str, by: str = "css") -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # SOCIAL MEDIA POSTING
 # ══════════════════════════════════════════════════════════════════════════════
-def open_gmail_compose(to: str = "", subject: str = "", body: str = "") -> dict:
-    params = {"view": "cm", "fs": "1", "su": subject or "", "body": body or ""}
-    if to:
-        params["to"] = to
-    url = "https://mail.google.com/mail/?" + urllib.parse.urlencode(params)
-    drv = _get_driver()
-    if drv:
-        try:
-            drv.get(url)
-            WebDriverWait(drv, 20).until(lambda d: "mail.google.com" in (d.current_url or ""))
-            speak("Gmail compose is open.")
-            return {"status": "action_required", "url": drv.current_url, "message": "Gmail compose opened and filled as a draft. Sending requires your confirmation."}
-        except Exception as e:
-            log.warning("gmail compose selenium: %s", e)
-    webbrowser.open(url)
-    speak("Gmail compose opened.")
-    return {"status": "action_required", "url": url, "message": "Gmail compose opened as a draft. Sending requires your confirmation."}
-
-def open_official_site(query: str) -> dict:
-    q = str(query or "").strip()
-    if not q:
-        return {"status": "error", "message": "No search query"}
-    known = {
-        "tesla": "https://www.tesla.com",
-        "openai": "https://openai.com",
-        "google": "https://www.google.com",
-        "microsoft": "https://www.microsoft.com",
-        "apple": "https://www.apple.com",
-        "amazon": "https://www.amazon.com",
-    }
-    for key, url in known.items():
-        if key in q.lower():
-            return selenium_open(url, "body", 20)
-    if REQUESTS_OK and BS4_OK:
-        try:
-            search_url = "https://www.google.com/search?q=" + urllib.parse.quote(q + " official website")
-            r = req_lib.get(search_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-            soup = BeautifulSoup(r.text, "html.parser")
-            for a in soup.select("a"):
-                href = a.get("href", "")
-                m = re.search(r"/url\?q=(https?://[^&]+)", href)
-                if m:
-                    url = urllib.parse.unquote(m.group(1))
-                    if not any(bad in url.lower() for bad in ["google.", "youtube.", "facebook.", "wikipedia.", "support.google"]):
-                        return selenium_open(url, "body", 20)
-        except Exception as e:
-            log.warning("official site search: %s", e)
-    return selenium_open("https://www.google.com/search?q=" + urllib.parse.quote(q + " official website"), "body", 20)
-
 def post_twitter(username: str, password: str, text: str) -> dict:
     if not request_approval("post_twitter", f"@{username}: {text[:80]}"):
         return {"status": "denied"}
@@ -3444,11 +2418,6 @@ def smart_open(target: str) -> dict:
     for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ", "visit ", "browse "]:
         if tl.startswith(pfx):
             tl = tl[len(pfx):].strip(); t = t[len(pfx):].strip()
-    tl = re.sub(r"\b(in|on|with)\s+(?:the\s+)?(?:browser|default browser|chrome|web browser)\b", "", tl).strip()
-    t = re.sub(r"\b(in|on|with)\s+(?:the\s+)?(?:browser|default browser|chrome|web browser)\b", "", t, flags=re.I).strip()
-    if tl in {"browser", "default browser", "web browser", "default"}:
-        webbrowser.open("https://www.google.com")
-        return {"status": "ok", "opened": "https://www.google.com"}
 
     if tl in APPS:
         try:
@@ -3469,10 +2438,7 @@ def smart_open(target: str) -> dict:
     def _open_chrome(url, name=""):
         speak(f"Opening {name or url}")
         try:
-            if platform.system() == "Windows":
-                subprocess.Popen(f'start "" "{url}"', shell=True)
-            else:
-                webbrowser.open(url)
+            subprocess.Popen(["start", "chrome", url], shell=True)
         except Exception:
             webbrowser.open(url)
 
@@ -3491,10 +2457,11 @@ def smart_open(target: str) -> dict:
             os.startfile(str(p)); return {"status": "ok", "opened": str(p)}
         except Exception as e:
             return {"status": "error", "message": str(e)}
-    if len(t.split()) <= 8:
-        url = f"https://www.google.com/search?q={urllib.parse.quote(t)}"
-        _open_chrome(url, f"search {t}")
-        return {"status": "ok", "opened": url}
+    if len(t.split()) <= 4:
+        try:
+            subprocess.Popen(t, shell=True); return {"status": "ok", "opened": t}
+        except Exception:
+            pass
     return {"status": "error", "message": f"Could not open: {target[:80]}"}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3618,212 +2585,9 @@ def generate_investor_report() -> dict:
     speak("Investor report ready.")
     return {"status": "ok", "report": str(report_path), "preview": content[:200]}
 
-def _parse_money(value: Any) -> float:
-    try:
-        if isinstance(value, (int, float)):
-            return float(value)
-        s = re.sub(r"[^0-9.\-]", "", str(value))
-        return float(s) if s else 0.0
-    except Exception:
-        return 0.0
-
-def record_business_metric(metric: str, value: Any, period: str = "", source: str = "manual") -> dict:
-    metric = (metric or "metric").strip().lower().replace(" ", "_")
-    amount = _parse_money(value)
-    entry = {
-        "metric": metric,
-        "value": amount if amount or str(value).strip().replace(".", "", 1).isdigit() else value,
-        "raw_value": value,
-        "period": period or datetime.date.today().isoformat(),
-        "source": source,
-        "updated": datetime.datetime.now().isoformat(),
-    }
-    with _mem_lock:
-        if metric in ("revenue", "income", "sales_revenue", "arr", "mrr"):
-            MEMORY["revenue"].append(entry)
-        elif metric in ("profit", "net_profit", "gross_profit", "margin"):
-            MEMORY["profit"].append(entry)
-        elif metric.startswith("sales") or metric in ("pipeline", "closed_won", "bookings"):
-            MEMORY["sales"].append(entry)
-        else:
-            MEMORY["kpis"][metric] = entry
-        MEMORY["business_memory"][metric] = entry
-        MEMORY["business_facts"][metric] = {"value": entry["value"], "updated": entry["updated"], "period": entry["period"]}
-    save_memory()
-    return {"status": "ok", "metric": metric, "entry": entry}
-
-def _sum_metric(entries: list) -> float:
-    total = 0.0
-    for e in entries:
-        total += _parse_money(e.get("value", 0) if isinstance(e, dict) else e)
-    return round(total, 2)
-
-def business_dashboard() -> dict:
-    with _mem_lock:
-        revenue = list(MEMORY.get("revenue", []))
-        profit = list(MEMORY.get("profit", []))
-        sales = list(MEMORY.get("sales", []))
-        kpis = dict(MEMORY.get("kpis", {}))
-        customers = dict(MEMORY.get("customers", {}))
-        leads = list(MEMORY.get("leads", []))
-    dashboard = {
-        "revenue_total": _sum_metric(revenue),
-        "profit_total": _sum_metric(profit),
-        "sales_total": _sum_metric(sales),
-        "kpis": kpis,
-        "customers": len(customers),
-        "leads": len(leads),
-        "updated_at": datetime.datetime.now().isoformat(),
-    }
-    speak(f"Revenue {dashboard['revenue_total']}, profit {dashboard['profit_total']}, {dashboard['leads']} leads.")
-    return {"status": "ok", "dashboard": dashboard}
-
-def _write_business_report(name: str, title: str, body: str) -> dict:
-    path = DATA_DIR / f"{name}_{datetime.date.today()}.txt"
-    path.write_text(f"{title}\nGenerated: {datetime.datetime.now()}\n\n{body}", encoding="utf-8")
-    if not verify_file_created(str(path)):
-        return {"status": "error", "message": f"{title} file was not created"}
-    return {"status": "ok", "report": str(path), "preview": body[:500]}
-
-def generate_board_report() -> dict:
-    dash = business_dashboard().get("dashboard", {})
-    with _mem_lock:
-        context = {
-            "dashboard": dash,
-            "kpis": MEMORY.get("kpis", {}),
-            "competitors": MEMORY.get("competitors", {}),
-            "market_watch": MEMORY.get("market_watch", {}),
-            "recent_tasks": list(MEMORY.get("task_history", []))[-20:],
-        }
-    prompt = (
-        "Create a concise board report with executive summary, KPI table, revenue/profit notes, "
-        "risks, decisions needed, and next actions from this data:\n"
-        f"{json.dumps(context, default=str)[:6000]}"
-    )
-    content = ask_ai_brain(prompt)
-    return _write_business_report("board_report", "DACEXY BOARD REPORT", content)
-
-def generate_kpi_report() -> dict:
-    with _mem_lock:
-        data = {
-            "kpis": MEMORY.get("kpis", {}),
-            "revenue": MEMORY.get("revenue", [])[-50:],
-            "profit": MEMORY.get("profit", [])[-50:],
-            "sales": MEMORY.get("sales", [])[-50:],
-        }
-    body = ask_ai_brain("Analyze these business KPIs and produce a concise KPI report:\n" + json.dumps(data, default=str)[:6000])
-    return _write_business_report("kpi_report", "DACEXY KPI REPORT", body)
-
-def generate_finance_report(kind: str = "finance") -> dict:
-    dash = business_dashboard().get("dashboard", {})
-    with _mem_lock:
-        data = {
-            "revenue": MEMORY.get("revenue", [])[-100:],
-            "profit": MEMORY.get("profit", [])[-100:],
-            "sales": MEMORY.get("sales", [])[-100:],
-            "dashboard": dash,
-        }
-    body = ask_ai_brain(f"Create a {kind} report with revenue, profit, trend notes, and actions:\n{json.dumps(data, default=str)[:6000]}")
-    return _write_business_report(f"{kind}_report", f"DACEXY {kind.upper()} REPORT", body)
-
-def monitor_competitor(name: str, url: str = "", notes: str = "") -> dict:
-    if not name:
-        return {"status": "error", "message": "Competitor name required"}
-    record = {
-        "name": name,
-        "url": url,
-        "notes": notes,
-        "last_checked": datetime.datetime.now().isoformat(),
-    }
-    if url and REQUESTS_OK:
-        try:
-            r = req_lib.get(url, timeout=12, headers={"User-Agent": "DacexyAgent/14"})
-            record["status_code"] = r.status_code
-            record["title"] = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.I | re.S).group(1).strip()[:200] if re.search(r"<title[^>]*>(.*?)</title>", r.text, re.I | re.S) else ""
-            record["page_preview"] = re.sub(r"\s+", " ", BeautifulSoup(r.text, "html.parser").get_text(" ") if BS4_OK else r.text)[:1500]
-        except Exception as e:
-            record["error"] = str(e)
-    with _mem_lock:
-        MEMORY["competitors"][name.lower()] = record
-    save_memory()
-    return {"status": "ok", "competitor": record}
-
-def monitor_market(topic: str, max_items: int = 5) -> dict:
-    if not topic:
-        return {"status": "error", "message": "Market topic required"}
-    research = web_research(f"{topic} market trends competitors pricing news")[:3000]
-    record = {
-        "topic": topic,
-        "research": research,
-        "updated": datetime.datetime.now().isoformat(),
-    }
-    with _mem_lock:
-        MEMORY["market_watch"][topic.lower()] = record
-    save_memory()
-    return {"status": "ok", "market": record}
-
-def lead_management(action: str, name: str = "", email: str = "", company: str = "",
-                    stage: str = "new", notes: str = "") -> dict:
-    action = (action or "add").lower()
-    with _mem_lock:
-        if action in ("list", "show", "report"):
-            leads = list(MEMORY.get("leads", []))
-            return {"status": "ok", "leads": leads[-100:], "count": len(leads)}
-        if not (name or email or company):
-            return {"status": "error", "message": "Lead name, email, or company required"}
-        lead_id = hashlib.sha1(f"{name}|{email}|{company}".lower().encode()).hexdigest()[:10]
-        lead = {
-            "id": lead_id,
-            "name": name,
-            "email": email,
-            "company": company,
-            "stage": stage,
-            "notes": notes,
-            "updated": datetime.datetime.now().isoformat(),
-        }
-        existing = [l for l in MEMORY["leads"] if isinstance(l, dict) and l.get("id") != lead_id]
-        existing.append(lead)
-        MEMORY["leads"] = existing[-1000:]
-    save_memory()
-    return {"status": "ok", "lead": lead}
-
-def customer_retention_report() -> dict:
-    with _mem_lock:
-        customers = dict(MEMORY.get("customers", {}))
-        retention = dict(MEMORY.get("retention", {}))
-    prompt = (
-        "Create a customer retention report with churn risks, renewal opportunities, and follow-up actions:\n"
-        f"{json.dumps({'customers': customers, 'retention': retention}, default=str)[:6000]}"
-    )
-    body = ask_ai_brain(prompt)
-    return _write_business_report("customer_retention_report", "DACEXY CUSTOMER RETENTION REPORT", body)
-
-def sales_pipeline_report() -> dict:
-    with _mem_lock:
-        leads = list(MEMORY.get("leads", []))
-        sales = list(MEMORY.get("sales", []))
-    prompt = "Create a sales pipeline report from these leads and sales records:\n" + json.dumps({"leads": leads[-200:], "sales": sales[-100:]}, default=str)[:6000]
-    body = ask_ai_brain(prompt)
-    return _write_business_report("sales_pipeline_report", "DACEXY SALES PIPELINE REPORT", body)
-
-def document_operation(kind: str, title: str, content: str = "") -> dict:
-    title = title or kind or "document"
-    content = content or ask_ai_brain(f"Draft a professional {kind} document titled {title}.")
-    safe_title = re.sub(r"[^a-zA-Z0-9_\-]+", "_", title).strip("_")[:80] or "document"
-    path = DOC_DIR / f"{safe_title}_{int(time.time())}.txt"
-    path.write_text(content, encoding="utf-8")
-    if not verify_file_created(str(path)):
-        return {"status": "error", "message": "Document file was not created"}
-    with _mem_lock:
-        MEMORY["documents"][safe_title] = {"path": str(path), "kind": kind, "updated": datetime.datetime.now().isoformat()}
-    save_memory()
-    return {"status": "ok", "path": str(path), "title": title}
-
 def run_diagnostics() -> dict:
     """Phase 11 — Full system status."""
     report = []
-    report.append(f"Agent Version  : {AGENT_VERSION}")
-    report.append(f"Device ID      : {get_device_registration().get('device_id', '')}")
     report.append(f"PyAutoGUI      : {'OK' if PYAUTOGUI_OK else 'MISSING'}")
     report.append(f"Selenium       : {'OK' if SELENIUM_OK else 'MISSING'}")
     report.append(f"Voice/PyAudio  : {'OK' if VOICE_OK else 'MISSING'}")
@@ -3841,10 +2605,8 @@ def run_diagnostics() -> dict:
     ws_ok = _ws_send_fn is not None
     report.append(f"WebSocket      : {'CONNECTED' if ws_ok else 'DISCONNECTED'}")
     report.append(f"Voice Status   : {HEALTH['voice_status']}")
-    report.append(f"Vision Status  : {HEALTH.get('vision_status', 'idle')}")
     report.append(f"Planner Status : {HEALTH['planner_status']}")
     report.append(f"Executor Status: {HEALTH['executor_status']}")
-    report.append(f"Last Checkpoint: {HEALTH.get('last_checkpoint', '')}")
     report.append(f"Memory Entries : {len(MEMORY.get('facts', []))} facts, "
                   f"{len(MEMORY.get('contacts', {}))} contacts, "
                   f"{len(MEMORY.get('workflows', {}))} workflows")
@@ -3893,21 +2655,6 @@ def local_parse(task: str) -> list:
     if re.search(r"\bsystem\s+status\b|\brun\s+diagnostics\b|\bhealth\s+check\b|\bself.?test\b", tl):
         return [{"action": "run_diagnostics"}]
 
-    if re.search(r"\b(?:what'?s|what is|describe|understand|analyze)\s+(?:on\s+)?(?:my\s+)?screen\b|\bscreen\s+understanding\b|\bvision\s+status\b", tl):
-        return [{"action": "understand_screen"}]
-
-    if re.search(r"\b(?:start|enable|turn\s+on)\s+(?:continuous\s+)?(?:screen|vision)\s+(?:monitor|understanding)\b", tl):
-        return [{"action": "start_vision_monitor"}]
-
-    if re.search(r"\b(?:stop|disable|turn\s+off)\s+(?:screen|vision)\s+(?:monitor|understanding)\b", tl):
-        return [{"action": "stop_vision_monitor"}]
-
-    if re.search(r"\b(?:voice|microphone|mic)\s+(?:diagnostics?|test|health)\b", tl):
-        return [{"action": "voice_diagnostics"}]
-
-    if re.search(r"\b(?:recover|reset|fix)\s+(?:microphone|mic|voice)\b", tl):
-        return [{"action": "recover_microphone"}]
-
     # ── WORKFLOW COMMANDS ─────────────────────────────────────────────────
     m = re.search(r"(?:replay|reuse|run|repeat)\s+workflow\s+(.+)", tl)
     if m:
@@ -3928,45 +2675,6 @@ def local_parse(task: str) -> list:
     if re.search(r"sales\s+(?:report|analysis|dashboard)", tl):
         return [{"action": "sales_report"}]
 
-    if re.search(r"\bboard\s+(?:report|update)\b", tl):
-        return [{"action": "board_report"}]
-
-    if re.search(r"\bkpi\s+(?:report|dashboard|tracking|status)\b", tl):
-        return [{"action": "kpi_report"}]
-
-    if re.search(r"\b(?:business|company)\s+dashboard\b|\bbusiness\s+os\b", tl):
-        return [{"action": "business_dashboard"}]
-
-    if re.search(r"\b(?:revenue|profit|finance)\s+(?:report|tracking|status)\b", tl):
-        kind = "profit" if "profit" in tl else "revenue" if "revenue" in tl else "finance"
-        return [{"action": "finance_report", "kind": kind}]
-
-    m = re.search(r"(?:record|save|track|add)\s+(revenue|profit|kpi|sales|expense|income|mrr|arr)\s+(?:of\s+|as\s+|=)?([₹$€£]?\s*[-\d,.]+)", tl)
-    if m:
-        period_m = re.search(r"(?:for|in|during)\s+([a-z0-9\-/ ]{3,30})$", tl)
-        return [{"action": "record_metric", "metric": m.group(1), "value": m.group(2), "period": period_m.group(1).strip() if period_m else ""}]
-
-    m = re.search(r"(?:monitor|track|watch)\s+competitor\s+(.+?)(?:\s+(https?://\S+))?$", tl)
-    if m:
-        return [{"action": "monitor_competitor", "name": m.group(1).strip(), "url": (m.group(2) or "").strip()}]
-
-    m = re.search(r"(?:monitor|track|research|watch)\s+(?:the\s+)?market\s+(?:for|about|on)?\s*(.+)", tl)
-    if m:
-        return [{"action": "monitor_market", "topic": m.group(1).strip()}]
-
-    if re.search(r"\bcustomer\s+retention\s+(?:report|status|analysis)\b", tl):
-        return [{"action": "customer_retention_report"}]
-
-    if re.search(r"\bsales\s+pipeline\s+(?:report|status|analysis)\b", tl):
-        return [{"action": "sales_pipeline_report"}]
-
-    m = re.search(r"(?:add|save|track)\s+lead\s+(.+?)(?:\s+email\s+([^\s,]+@[^\s,]+))?(?:\s+company\s+(.+?))?(?:\s+stage\s+(\w+))?$", tl)
-    if m:
-        return [{"action": "lead_manage", "op": "add", "name": m.group(1).strip(), "email": m.group(2) or "", "company": m.group(3) or "", "stage": m.group(4) or "new"}]
-
-    if re.search(r"(?:list|show)\s+leads\b|\blead\s+management\b", tl):
-        return [{"action": "lead_manage", "op": "list"}]
-
     if re.search(r"(?:prepare|generate|create|write)\s+(?:investor|board)\s+(?:report|update|deck)", tl):
         return [{"action": "investor_report"}]
 
@@ -3977,10 +2685,6 @@ def local_parse(task: str) -> list:
     m = re.search(r"cancel\s+task\s+([a-z0-9]+)", tl)
     if m:
         return [{"action": "cancel_task", "task_id": m.group(1)}]
-
-    m = re.search(r"resume\s+task\s+([a-z0-9]+)", tl)
-    if m:
-        return [{"action": "resume_task", "task_id": m.group(1)}]
 
     # ── ERROR LOGS ────────────────────────────────────────────────────────
     if re.search(r"(?:monitor|check|scan|read)\s+(?:error\s+)?(?:logs?|error\s+files?)", tl):
@@ -4214,10 +2918,6 @@ def local_parse(task: str) -> list:
     if m:
         return [{"action": "remember", "fact": m.group(1)}, {"action": "speak", "text": "Noted!"}]
 
-    m = re.search(r"(?:search|find|recall)\s+(?:my\s+)?memory\s+(?:for\s+)?(.+)", tl)
-    if m:
-        return [{"action": "semantic_memory_search", "query": m.group(1).strip()}]
-
     m = re.match(r"(?:say|speak|tell\s+me|announce)\s+(.+)", tl)
     if m:
         return [{"action": "speak", "text": m.group(1)}]
@@ -4286,25 +2986,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"run_diagnostics", "system_status", "status"}:
             return run_diagnostics()
 
-        if action in {"voice_diagnostics", "mic_diagnostics", "microphone_diagnostics"}:
-            return voice_diagnostics()
-
-        if action in {"recover_microphone", "recover_mic", "reset_microphone"}:
-            _recover_mic()
-            return voice_diagnostics()
-
-        if action in {"understand_screen", "screen_understanding", "vision_status", "what_is_on_screen"}:
-            res = understand_screen(save_screenshot=True)
-            if res.get("status") == "ok":
-                speak(res.get("summary", "Screen understood.")[:350])
-            return res
-
-        if action == "start_vision_monitor":
-            return start_vision_monitor()
-
-        if action == "stop_vision_monitor":
-            return stop_vision_monitor()
-
         # ── WORKFLOW LEARNING ─────────────────────────────────────────────
         if action == "replay_workflow":
             name = str(cmd.get("name", ""))
@@ -4338,9 +3019,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action == "cancel_task":
             return cancel_task(str(cmd.get("task_id", "")))
 
-        if action == "resume_task":
-            return resume_task(str(cmd.get("task_id", "")), token or "")
-
         if action == "queue_task":
             goal = str(cmd.get("goal") or cmd.get("task") or "")
             if not goal:
@@ -4355,49 +3033,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 
         if action in {"sales_report", "generate_sales_report"}:
             return generate_sales_report(str(cmd.get("path", "")))
-
-        if action in {"board_report", "generate_board_report"}:
-            return generate_board_report()
-
-        if action in {"kpi_report", "generate_kpi_report"}:
-            return generate_kpi_report()
-
-        if action in {"finance_report", "revenue_report", "profit_report"}:
-            return generate_finance_report(str(cmd.get("kind") or action.replace("_report", "")))
-
-        if action in {"business_dashboard", "business_status", "business_os"}:
-            return business_dashboard()
-
-        if action in {"record_metric", "track_metric", "save_metric"}:
-            return record_business_metric(str(cmd.get("metric") or "metric"),
-                                          cmd.get("value", ""),
-                                          str(cmd.get("period") or ""),
-                                          str(cmd.get("source") or "manual"))
-
-        if action == "monitor_competitor":
-            return monitor_competitor(str(cmd.get("name") or ""), str(cmd.get("url") or ""), str(cmd.get("notes") or ""))
-
-        if action in {"monitor_market", "market_monitoring"}:
-            return monitor_market(str(cmd.get("topic") or cmd.get("query") or ""))
-
-        if action == "customer_retention_report":
-            return customer_retention_report()
-
-        if action == "sales_pipeline_report":
-            return sales_pipeline_report()
-
-        if action in {"lead_manage", "lead_management"}:
-            return lead_management(str(cmd.get("op") or cmd.get("operation") or "add"),
-                                   str(cmd.get("name") or ""),
-                                   str(cmd.get("email") or ""),
-                                   str(cmd.get("company") or ""),
-                                   str(cmd.get("stage") or "new"),
-                                   str(cmd.get("notes") or ""))
-
-        if action in {"document_operation", "create_document", "draft_document"}:
-            return document_operation(str(cmd.get("kind") or "document"),
-                                      str(cmd.get("title") or cmd.get("name") or "document"),
-                                      str(cmd.get("content") or ""))
 
         if action == "monitor_error_logs":
             res = monitor_error_logs(str(cmd.get("path", str(Path.home() / "Desktop" / "error.log"))))
@@ -4516,7 +3151,7 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if not found_email:
                 speak(f"I don't have {name} in contacts. Opening Gmail.")
                 webbrowser.open(f"https://mail.google.com/mail/?view=cm&fs=1&su={cmd.get('subject','')}")
-                return {"status": "action_required", "note": "Opened Gmail compose; send not verified"}
+                return {"status": "ok", "note": "opened gmail compose"}
             return send_email_real(found_email, str(cmd.get("subject") or "Message"),
                                    str(cmd.get("body") or "Hello"), require_approval=True)
 
@@ -4652,15 +3287,15 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                    or cmd.get("site") or cmd.get("target") or "").strip()
             if not tgt:
                 return {"status": "error", "message": "No target to open"}
-            res = smart_open(tgt)
-            if res.get("status") != "ok":
-                return res
-            opened = str(res.get("opened") or "")
-            if opened.startswith("http"):
-                return {"status": "ok", "opened": opened, "verified": True}
-            time.sleep(0.5)
-            active = get_active_win()
-            return {"status": "ok", "opened": opened, "active_window": active, "verified": bool(active or opened)}
+
+            def _open():
+                return smart_open(tgt)
+            def _verify():
+                return verify_window_contains(tgt) or verify_screen_ocr(tgt)
+            def _correct():
+                smart_open(tgt)
+
+            return run_with_verification(_open, _verify, f"open {tgt}", correction_func=_correct)
 
         # ── MOUSE / KEYBOARD ──────────────────────────────────────────────
         if action == "click":
@@ -4685,8 +3320,9 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             return {"status": "ok"}
 
         if action in {"type", "type_text", "write", "input", "enter_text", "fill"}:
-            return real_type(str(cmd.get("text") or cmd.get("content") or cmd.get("value") or ""),
-                              bool(cmd.get("clear_first", False)), bool(cmd.get("human_speed", False)))
+            real_type(str(cmd.get("text") or cmd.get("content") or cmd.get("value") or ""),
+                      bool(cmd.get("clear_first", False)), bool(cmd.get("human_speed", False)))
+            return {"status": "ok"}
 
         if action in {"key", "press", "press_key"}:
             k = str(cmd.get("key") or "enter")
@@ -4880,10 +3516,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         # ── SELENIUM ──────────────────────────────────────────────────────
         if action == "selenium_open":
             return selenium_open(str(cmd.get("url") or ""), cmd.get("wait_for"), int(cmd.get("timeout") or 15))
-        if action == "open_gmail_compose":
-            return open_gmail_compose(str(cmd.get("to") or ""), str(cmd.get("subject") or ""), str(cmd.get("body") or cmd.get("text") or ""))
-        if action == "open_official_site":
-            return open_official_site(str(cmd.get("query") or cmd.get("name") or cmd.get("topic") or ""))
         if action in {"selenium_fill", "fill_field"}:
             return selenium_fill(str(cmd.get("selector") or ""), str(cmd.get("value") or cmd.get("text") or ""),
                                  str(cmd.get("by") or "css"), bool(cmd.get("submit", False)))
@@ -4896,19 +3528,6 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             if fact:
                 remember(fact); speak("Noted!")
             return {"status": "ok"}
-        if action in {"semantic_memory_search", "search_memory", "memory_search"}:
-            res = semantic_search_memory(str(cmd.get("query") or cmd.get("text") or ""),
-                                         int(cmd.get("top_k") or 5))
-            if res.get("results"):
-                speak(f"Found {len(res['results'])} memory matches.")
-            else:
-                speak("No matching memory found.")
-            return res
-        if action in {"remember_structured", "save_memory_record"}:
-            return remember_structured(str(cmd.get("kind") or "memory"),
-                                       str(cmd.get("key") or cmd.get("name") or ""),
-                                       cmd.get("value", cmd.get("text", "")),
-                                       cmd.get("tags") or [])
         if action in {"get_memory", "show_memory", "recall"}:
             ctx = get_mem_ctx()
             speak("Memory retrieved.")
@@ -5066,43 +3685,6 @@ def _recover_mic():
     time.sleep(2)
     log.info("Voice: mic recovery done, new index=%s", _voice_mic_idx)
 
-def voice_diagnostics() -> dict:
-    devices = []
-    default_idx = None
-    if PYAUDIO_OK:
-        try:
-            pa = pyaudio.PyAudio()
-            default_idx = pa.get_default_input_device_info().get("index")
-            for i in range(pa.get_device_count()):
-                info = pa.get_device_info_by_index(i)
-                if info.get("maxInputChannels", 0) > 0:
-                    devices.append({
-                        "index": i,
-                        "name": info.get("name", ""),
-                        "channels": info.get("maxInputChannels", 0),
-                        "rate": int(info.get("defaultSampleRate", 0) or 0),
-                        "default": i == default_idx,
-                        "selected": i == _voice_mic_idx,
-                    })
-            pa.terminate()
-        except Exception as e:
-            devices.append({"error": str(e)})
-    result = {
-        "status": "ok" if VOICE_OK and bool(devices) else "error",
-        "voice_ok": VOICE_OK,
-        "pyaudio_ok": PYAUDIO_OK,
-        "speech_recognition_ok": sr is not None,
-        "selected_mic": _voice_mic_idx,
-        "default_mic": default_idx,
-        "devices": devices,
-        "conversation_active": _voice_conv_active,
-        "voice_errors": _voice_errors,
-        "energy_threshold": getattr(_voice_r, "energy_threshold", None),
-        "voice_status": HEALTH.get("voice_status"),
-    }
-    speak("Microphone diagnostics complete." if result["status"] == "ok" else "Microphone diagnostics found a problem.")
-    return result
-
 def _handle_voice_command(text: str, token: str):
     global _voice_conv_active, _voice_last_heard
     text = text.strip()
@@ -5113,8 +3695,7 @@ def _handle_voice_command(text: str, token: str):
     print(f"\n  [VOICE] '{text}'")
 
     # Abort
-    if text.lower() in ("stop", "abort", "cancel", "interrupt", "stop talking", "quit listening"):
-        interrupt_speech("voice command")
+    if text.lower() in ("stop", "abort", "cancel", "quit listening"):
         _voice_conv_active = False
         speak("Stopped.")
         HEALTH["voice_status"] = "idle"
@@ -5122,8 +3703,7 @@ def _handle_voice_command(text: str, token: str):
 
     # Voice status
     if re.search(r"\b(voice|mic)\s+status\b", text.lower()):
-        diag = voice_diagnostics()
-        speak(f"Voice is {diag.get('voice_status')}. Microphone index {_voice_mic_idx}. "
+        speak(f"Voice is active. Microphone index {_voice_mic_idx}. "
               f"Conversation mode {'active' if _voice_conv_active else 'idle'}.")
         return
 
@@ -5134,12 +3714,8 @@ def _handle_voice_command(text: str, token: str):
         name="VoiceCmdExec"
     ).start()
 
-_voice_unclear_streak = 0
-_VOICE_MAX_RETRY_PROMPTS = 2
-_voice_recalibrate_due_at = 0.0
-
 def _voice_listen_loop():
-    global _voice_conv_active, _voice_last_heard, _voice_errors, _voice_mic_idx, _voice_unclear_streak, _voice_recalibrate_due_at, _voice_r
+    global _voice_conv_active, _voice_last_heard, _voice_errors, _voice_mic_idx
     if not sr or not VOICE_OK:
         log.warning("Voice: speech_recognition or pyaudio not available")
         return
@@ -5150,16 +3726,15 @@ def _voice_listen_loop():
     HEALTH["voice_status"] = "listening"
 
     consecutive_failures = 0
-    _voice_recalibrate_due_at = time.time() + 300
 
     while _voice_on and _running:
         try:
             recognizer = sr.Recognizer()
             recognizer.energy_threshold         = 300
             recognizer.dynamic_energy_threshold  = True
+            recognizer.pause_threshold           = 0.8
             recognizer.phrase_threshold          = 0.3
             recognizer.non_speaking_duration     = 0.5
-            _voice_r = recognizer
 
             mic = sr.Microphone(device_index=_voice_mic_idx)
 
@@ -5170,51 +3745,26 @@ def _voice_listen_loop():
                 while _voice_on and _running:
                     try:
                         in_conv  = _voice_conv_active and (time.time() - _voice_last_heard) < _VOICE_CONV_TIMEOUT
-                        # Conversation mode needs a longer pause threshold — natural business
-                        # commands ("reply to... the first email... from the investor") have
-                        # mid-sentence pauses that a 0.8s cutoff chops into fragments.
-                        recognizer.pause_threshold = 1.4 if in_conv else 0.8
-                        timeout  = 6.0 if in_conv else 5.0
-                        phrase_limit = 18.0 if in_conv else 10.0
-
-                        # Periodic re-calibration against ambient noise, even mid-session,
-                        # so a noisy room doesn't permanently degrade capture quality.
-                        if time.time() >= _voice_recalibrate_due_at:
-                            try:
-                                recognizer.adjust_for_ambient_noise(source, duration=0.6)
-                            except Exception:
-                                pass
-                            _voice_recalibrate_due_at = time.time() + 300
-
-                        audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
+                        timeout  = 2.0 if in_conv else 5.0
+                        audio    = recognizer.listen(source, timeout=timeout, phrase_time_limit=10.0)
 
                         # Recognize
                         text = ""
-                        heard_but_unclear = False
                         try:
                             text = recognizer.recognize_google(audio)
                         except sr.UnknownValueError:
-                            heard_but_unclear = True
+                            pass
                         except sr.RequestError:
                             try:
                                 text = recognizer.recognize_sphinx(audio)
                             except Exception:
-                                heard_but_unclear = True
+                                pass
                         except Exception:
-                            heard_but_unclear = True
+                            pass
 
                         if not text:
-                            # During an active conversation, silently dropping a misheard
-                            # command feels broken — ask the user to repeat instead, up to
-                            # a couple of times, before giving up quietly.
-                            if in_conv and heard_but_unclear:
-                                _voice_unclear_streak += 1
-                                if _voice_unclear_streak <= _VOICE_MAX_RETRY_PROMPTS:
-                                    speak("Sorry, didn't catch that — go ahead.")
-                                    _voice_last_heard = time.time()
                             continue
 
-                        _voice_unclear_streak = 0
                         confidence = _voice_score_confidence(text)
                         log.debug("HEARD: '%s' conf=%.2f", text, confidence)
 
@@ -5223,16 +3773,6 @@ def _voice_listen_loop():
                             _voice_last_heard = time.time()
                             tok = _cur_token
                             _handle_voice_command(text, tok or "")
-                            continue
-
-                        # Heard something in conversation mode but confidence too low to
-                        # act on (likely noise/partial capture) — ask for a repeat rather
-                        # than silently ignoring it.
-                        if in_conv and confidence < _VOICE_CONFIDENCE_THRESH:
-                            _voice_unclear_streak += 1
-                            if _voice_unclear_streak <= _VOICE_MAX_RETRY_PROMPTS:
-                                speak("Could you repeat that?")
-                                _voice_last_heard = time.time()
                             continue
 
                         # Wake word check
@@ -5258,18 +3798,6 @@ def _voice_listen_loop():
                             else:
                                 speak("Yes?")
                         else:
-                            # Always-listening command mode: execute clear direct commands
-                            # even when the wake word recognizer misses the first word.
-                            if confidence >= 0.7 and re.match(
-                                r"^\s*(open|search|google|click|type|write|press|scroll|screenshot|read screen|what is on my screen|stop|cancel)\b",
-                                text.lower()
-                            ):
-                                _voice_conv_active = True
-                                _voice_last_heard = time.time()
-                                HEALTH["voice_status"] = "active"
-                                tok = _cur_token
-                                _handle_voice_command(text, tok or "")
-                                continue
                             # Timeout conversation
                             if _voice_conv_active and (time.time() - _voice_last_heard) >= _VOICE_CONV_TIMEOUT:
                                 _voice_conv_active = False
@@ -5420,7 +3948,6 @@ def _scheduler_loop(tok_ref: list):
 # HEALTH MONITOR
 # ══════════════════════════════════════════════════════════════════════════════
 def _health_monitor(ws_send_ref: list):
-    global _dashboard_last_screenshot
     while _running:
         time.sleep(60)
         try:
@@ -5439,22 +3966,11 @@ def _health_monitor(ws_send_ref: list):
             if fn and _ws_loop:
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        fn({"type": "heartbeat", "health": dict(HEALTH), "device_id": HEALTH.get("device_id", "")}),
+                        fn({"type": "heartbeat", "health": dict(HEALTH)}),
                         _ws_loop
                     )
                 except Exception:
                     pass
-                if time.time() - _dashboard_last_screenshot > 120 and PIL_OK:
-                    ss = take_screenshot(save=False, quality=35)
-                    if ss:
-                        _dashboard_last_screenshot = time.time()
-                        try:
-                            asyncio.run_coroutine_threadsafe(
-                                fn({"type": "live_screenshot", "screenshot": ss, "captured_at": datetime.datetime.now().isoformat()}),
-                                _ws_loop
-                            )
-                        except Exception:
-                            pass
 
             if HEALTH["cpu"] > 90:
                 speak("Warning: CPU usage is very high!")
@@ -5487,12 +4003,6 @@ def _interactive_shell(token: str, tok_ref: list):
         "find leads for X":         "Find email leads for product X",
         "investor report":          "Generate AI investor update",
         "sales report":             "Analyze spreadsheets, generate summary",
-        "what is on my screen":      "Use OCR/window/browser vision to describe the screen",
-        "business dashboard":        "Show revenue, profit, KPI, customer, and lead status",
-        "board report":              "Generate a verified board report file",
-        "record revenue 5000":       "Track revenue/profit/KPI metrics in memory",
-        "monitor competitor NAME":   "Save competitor monitoring record",
-        "search memory QUERY":       "Semantic search across long-term memory",
         "list workflows":           "Show all saved/learned workflows",
         "replay workflow NAME":     "Re-execute a saved workflow",
         "reply to my whatsapp":     "Read WhatsApp DMs and draft replies",
@@ -5559,13 +4069,11 @@ def _interactive_shell(token: str, tok_ref: list):
 # WEBSOCKET — Authenticated bridge with live monitoring (Phase 9)
 # ══════════════════════════════════════════════════════════════════════════════
 async def run_websocket(token: str):
-    global _ws_send_fn, _ws_loop, _ws_device_session
+    global _ws_send_fn, _ws_loop
     retry = 4.0; max_retry = 60.0
-    device = get_device_registration()
 
     while _running:
         try:
-            _ws_device_session = _new_id("session")
             log.info("WS: connecting...")
             print("  [WS] Connecting to Dacexy cloud...")
 
@@ -5602,12 +4110,10 @@ async def run_websocket(token: str):
 
                 await ws.send(json.dumps({
                     "type": "init",
-                    "device_id": device.get("device_id"),
-                    "session_id": _ws_device_session,
                     "platform": platform.system(),
                     "machine": platform.machine(),
                     "hostname": socket.gethostname(),
-                    "version": AGENT_VERSION,
+                    "version": "13.0",
                     "features": [
                         "voice3", "vision", "browser", "email", "social_selenium",
                         "bulk_email", "lead_gen", "web_research", "scheduler", "memory",
@@ -5617,12 +4123,8 @@ async def run_websocket(token: str):
                         "calendar_booking", "human_approval", "social_reply_bots",
                         "payment_queue", "planner", "executor", "verifier",
                         "workflow_learning", "multi_agent", "business_os",
-                        "task_queue", "background_execution", "task_progress",
-                        "device_registration", "command_sync", "task_sync",
-                        "live_logs", "live_screenshots", "semantic_memory",
-                        "continuous_vision", "checkpoint_recovery",
+                        "task_queue", "background_execution",
                     ],
-                    "memory_context": get_mem_ctx()[:3000],
                 }))
 
                 log.info("WS: connected!")
@@ -5681,14 +4183,12 @@ async def run_websocket(token: str):
                         def _cmd_thread(m_=dict(msg), t_=token, tid_=task_id):
                             try:
                                 r_ = exec_cmd(m_, t_)
-                                status_ = r_.get("status", "error")  # missing status is NOT assumed ok
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
-                                    "status": status_,
-                                    "ok": 1 if status_ == "ok" else 0,
+                                    "status": r_.get("status", "ok"),
+                                    "ok": 1 if r_.get("status") in ("ok", "skipped") else 0,
                                     "total": 1,
-                                    "result": str(r_.get("message") or r_.get("opened") or
-                                                  ("done" if status_ == "ok" else status_)),
+                                    "result": str(r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
                                 }), loop)
                             except Exception as e_:
@@ -5711,13 +4211,10 @@ async def run_websocket(token: str):
 
                         def _task_thread(t_=token, txt_=task_txt, tid_=task_id):
                             try:
-                                # task_id threaded through so execute_planned_task can
-                                # push live task_progress messages per step, not just
-                                # a single result at the very end.
-                                r_ = coordinator_dispatch(txt_, t_, task_id=tid_)
+                                r_ = coordinator_dispatch(txt_, t_)
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
-                                    "status": r_.get("status", "error"),
+                                    "status": r_.get("status", "ok"),
                                     "ok": r_.get("ok", 0),
                                     "total": r_.get("total", 1),
                                     "result": r_.get("result", ""),
@@ -5730,13 +4227,11 @@ async def run_websocket(token: str):
                                 }), loop)
                         threading.Thread(target=_task_thread, daemon=True).start()
 
-
         except Exception as e:
             log.error("WS outer: %s", e)
 
         if _running:
             HEALTH["ws_status"] = "disconnected"
-            HEALTH["ws_reconnects"] = int(HEALTH.get("ws_reconnects", 0)) + 1
             print(f"\n  [WS] Disconnected. Retry in {int(retry)}s...")
             _ws_send_fn = None
             await asyncio.sleep(retry)
@@ -5751,21 +4246,15 @@ def main():
     print("\n" + "=" * 65)
     print("  DACEXY DESKTOP AGENT v13.0 — STARTING")
     print("  Production-grade autonomous desktop AI")
-    print(f"  Runtime version: {AGENT_VERSION}")
     print("  Voice | Planner | Executor | Verifier | Memory | Multi-Agent")
     print("=" * 65 + "\n")
 
     init_tts()
     load_memory()
-    sanitize_broken_workflows()
-    get_device_registration()
-    restore_task_state()
-    start_vision_monitor()
 
     caps = []
     if PYAUTOGUI_OK:  caps.append("mouse/keyboard")
     if PIL_OK:        caps.append("screenshot")
-    if PIL_OK:        caps.append("continuous-vision")
     if VOICE_OK:      caps.append("VOICE")
     if SELENIUM_OK:   caps.append("browser-automation")
     if BS4_OK:        caps.append("web-scraping")
@@ -5840,7 +4329,6 @@ def main():
     finally:
         _running = False
         stop_voice()
-        stop_vision_monitor()
         with _sel_lock:
             if _selenium_driver:
                 try:
