@@ -1,10 +1,10 @@
 """
-dacexy_agent.py — Dacexy Desktop AI Agent v13.1
+dacexy_agent.py — Dacexy Desktop AI Agent
 Production-grade autonomous desktop AI: voice, planner, executor, verifier,
 memory, workflow learning, multi-agent orchestration, business OS, WebSocket bridge.
 All-in-one single file.
 
-v13.1 changes (targeted fixes, no rewrite):
+ changes (targeted fixes, no rewrite):
   - Voice: conversation-mode pause threshold lengthened (0.8s -> 1.4s) so multi-clause
     business commands aren't cut off; unrecognized speech in conversation mode now
     triggers a spoken retry instead of silently dropping; periodic re-calibration
@@ -133,6 +133,732 @@ print("  [BOOT] Dependencies ready.\n")
 # ══════════════════════════════════════════════════════════════════════════════
 # STANDARD LIBRARY
 # ══════════════════════════════════════════════════════════════════════════════
+
+# --- EMBEDDED MODULAR SYSTEM ---
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, Field
+
+class ActionStatus(str, Enum):
+    OK = "ok"
+    ERROR = "error"
+    DENIED = "denied"
+    ACTION_REQUIRED = "action_required"
+    PENDING = "pending"
+    SKIPPED = "skipped"
+    PARTIAL = "partial"
+
+class MemoryType(str, Enum):
+    FACT = "fact"
+    CONTACT = "contact"
+    CUSTOMER = "customer"
+    SUPPLIER = "supplier"
+    BUSINESS = "business"
+    WORKFLOW = "workflow"
+    KPI = "kpi"
+    LONG_TERM = "long_term"
+    SEMANTIC = "semantic"
+
+class ActionResult(BaseModel):
+    status: ActionStatus
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+class PlannedStep(BaseModel):
+    action: str
+    target: Optional[str] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    description: Optional[str] = None
+
+class ExecutionPlan(BaseModel):
+    goal: str
+    steps: List[PlannedStep]
+    requires_approval: bool = False
+
+class MemoryEntry(BaseModel):
+    kind: MemoryType
+    key: str
+    text: str
+    value: Any = None
+    tags: List[str] = Field(default_factory=list)
+    updated: str
+
+class WorkflowRecord(BaseModel):
+    name: str
+    steps: List[PlannedStep]
+    verified: bool = True
+    run_count: int = 0
+    saved_at: str
+
+from typing import Callable, Dict, Any, List, Optional
+import logging
+
+
+log = logging.getLogger("dacexy.tool_registry")
+
+class ToolRegistry:
+    def __init__(self):
+        # Maps action string to a callable function
+        # The callable must take a dict of parameters and return an ActionResult
+        self._tools: Dict[str, Callable[[Dict[str, Any]], ActionResult]] = {}
+
+    def register(self, action_name: str, func: Callable[[Dict[str, Any]], ActionResult]) -> None:
+        """Register a new tool."""
+        if action_name in self._tools:
+            log.warning(f"Overwriting existing tool registration for: {action_name}")
+        self._tools[action_name] = func
+        log.debug(f"Registered tool: {action_name}")
+
+    def get_tool(self, action_name: str) -> Optional[Callable[[Dict[str, Any]], ActionResult]]:
+        """Retrieve a registered tool by name."""
+        return self._tools.get(action_name)
+
+    def execute(self, action_name: str, params: Dict[str, Any]) -> ActionResult:
+        """Execute a tool by name with the given parameters."""
+        tool = self.get_tool(action_name)
+        if not tool:
+            return ActionResult(
+                status=ActionStatus.ERROR,
+                message=f"Unknown tool/action: {action_name}"
+            )
+        try:
+            return tool(params)
+        except Exception as e:
+            log.error(f"Error executing tool {action_name}: {e}")
+            return ActionResult(
+                status=ActionStatus.ERROR,
+                message=str(e)
+            )
+
+    def list_tools(self) -> List[str]:
+        """List all registered tools."""
+        return list(self._tools.keys())
+
+import os
+import time
+import logging
+from typing import Dict, Any, Callable
+
+
+log = logging.getLogger("dacexy.verification_engine")
+
+class VerificationEngine:
+    def __init__(self):
+        # Maps action name to a custom verification function
+        self._verifiers: Dict[str, Callable[[Dict[str, Any], ActionResult], bool]] = {}
+        self._register_default_verifiers()
+
+    def _register_default_verifiers(self):
+        self.register("create_file", self._verify_file_created)
+        self.register("write_file", self._verify_file_created)
+        self.register("delete_file", self._verify_file_deleted)
+
+    def register(self, action_name: str, verifier_func: Callable[[Dict[str, Any], ActionResult], bool]):
+        self._verifiers[action_name] = verifier_func
+
+    def verify(self, action_name: str, params: Dict[str, Any], result: ActionResult) -> ActionResult:
+        """
+        Verify the outcome of an action.
+        Returns the original result if verification passes, or an updated
+        ActionResult if verification fails.
+        """
+        if result.status != ActionStatus.OK:
+            return result  # Only verify successful actions
+
+        verifier = self._verifiers.get(action_name)
+        if not verifier:
+            # If no explicit verifier exists, trust the tool's reported status
+            return result
+
+        try:
+            is_valid = verifier(params, result)
+            if not is_valid:
+                log.warning(f"Verification failed for action {action_name}")
+                return ActionResult(
+                    status=ActionStatus.ERROR,
+                    message=f"Verification failed: Post-conditions for {action_name} not met."
+                )
+            return result
+        except Exception as e:
+            log.error(f"Error during verification of {action_name}: {e}")
+            return ActionResult(
+                status=ActionStatus.ERROR,
+                message=f"Verification process raised an error: {e}"
+            )
+
+    # --- Built-in Verifiers ---
+
+    def _verify_file_created(self, params: Dict[str, Any], result: ActionResult) -> bool:
+        filepath = params.get("path") or params.get("filepath")
+        if not filepath:
+            return True # Can't verify without a path
+        
+        # Wait a short moment for async disk flushes
+        for _ in range(5):
+            if os.path.exists(filepath):
+                return True
+            time.sleep(0.2)
+        return False
+
+    def _verify_file_deleted(self, params: Dict[str, Any], result: ActionResult) -> bool:
+        filepath = params.get("path") or params.get("filepath")
+        if not filepath:
+            return True
+        return not os.path.exists(filepath)
+
+import os
+import json
+import threading
+import hashlib
+import datetime
+from typing import Dict, List, Any, Optional
+from collections import deque
+import logging
+
+
+
+log = logging.getLogger("dacexy.memory_system")
+
+class MemoryManager:
+    def __init__(self, memory_file_path: str):
+        self._file_path = memory_file_path
+        self._lock = threading.Lock()
+        
+        # Internal memory representation
+        self._data = {
+            "facts": [],
+            "long_term": [],
+            "semantic_memory": [],
+            "business_memory": {},
+            "contact_memory": {},
+            "customer_memory": {},
+            "workflow_memory": {},
+            "task_history": deque(maxlen=1000)
+        }
+        
+        self.load()
+
+    def load(self):
+        """Load memory from disk thread-safely."""
+        with self._lock:
+            try:
+                if os.path.exists(self._file_path):
+                    with open(self._file_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    
+                    self._data["facts"] = loaded.get("facts", [])
+                    self._data["long_term"] = loaded.get("long_term", [])
+                    self._data["semantic_memory"] = loaded.get("semantic_memory", [])
+                    self._data["business_memory"] = loaded.get("business_memory", {})
+                    self._data["contact_memory"] = loaded.get("contact_memory", {})
+                    self._data["customer_memory"] = loaded.get("customer_memory", {})
+                    self._data["workflow_memory"] = loaded.get("workflow_memory", {})
+                    
+                    th = loaded.get("task_history", [])
+                    self._data["task_history"] = deque(th[-1000:], maxlen=1000)
+                    
+                    log.info(f"Memory loaded from {self._file_path}")
+            except Exception as e:
+                log.error(f"Error loading memory: {e}")
+
+    def save(self):
+        """Save memory to disk atomically and thread-safely."""
+        with self._lock:
+            try:
+                to_save = {
+                    "facts": self._data["facts"][-1000:],
+                    "long_term": self._data["long_term"][-2000:],
+                    "semantic_memory": self._data["semantic_memory"][-5000:],
+                    "business_memory": self._data["business_memory"],
+                    "contact_memory": self._data["contact_memory"],
+                    "customer_memory": self._data["customer_memory"],
+                    "workflow_memory": self._data["workflow_memory"],
+                    "task_history": list(self._data["task_history"])[-200:]
+                }
+                tmp_path = self._file_path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(to_save, f, indent=2, default=str)
+                os.replace(tmp_path, self._file_path)
+            except Exception as e:
+                log.error(f"Error saving memory: {e}")
+
+    def remember_fact(self, fact: str):
+        """Remember a simple string fact."""
+        if not fact: return
+        with self._lock:
+            if fact not in self._data["facts"]:
+                self._data["facts"].append(fact)
+            if fact not in self._data["long_term"]:
+                self._data["long_term"].append(fact)
+                
+            entry = MemoryEntry(
+                kind=MemoryType.FACT,
+                key=hashlib.sha1(fact.encode()).hexdigest()[:12],
+                text=fact,
+                updated=datetime.datetime.now().isoformat()
+            )
+            self._data["semantic_memory"].append(entry.dict())
+        self.save()
+
+    def remember_structured(self, kind: MemoryType, key: str, value: Any, tags: Optional[List[str]] = None):
+        """Remember structured data (contacts, business facts, etc)."""
+        key = key.strip().lower()
+        
+        text_rep = json.dumps(value, default=str) if not isinstance(value, str) else value
+        
+        entry = MemoryEntry(
+            kind=kind,
+            key=key,
+            text=text_rep,
+            value=value,
+            tags=tags or [],
+            updated=datetime.datetime.now().isoformat()
+        )
+        
+        with self._lock:
+            if kind == MemoryType.CONTACT:
+                self._data["contact_memory"][key] = value
+            elif kind == MemoryType.CUSTOMER:
+                self._data["customer_memory"][key] = value
+            elif kind == MemoryType.BUSINESS:
+                self._data["business_memory"][key] = value
+            elif kind == MemoryType.WORKFLOW:
+                self._data["workflow_memory"][key] = value
+            else:
+                self._data["long_term"].append(text_rep)
+                
+            self._data["semantic_memory"].append(entry.dict())
+        self.save()
+        
+    def record_task_history(self, task: str, result: str):
+        with self._lock:
+            self._data["task_history"].append(f"{task[:80]} [{result}]")
+        self.save()
+
+    def get_context_summary(self) -> str:
+        """Returns a string summary of recent/relevant memory for LLM context."""
+        with self._lock:
+            parts = []
+            if self._data["facts"]:
+                parts.append("Facts: " + "; ".join(self._data["facts"][-10:]))
+            
+            recent_tasks = list(self._data["task_history"])[-8:]
+            if recent_tasks:
+                parts.append("Recent Tasks: " + "; ".join(recent_tasks))
+                
+            contacts = list(self._data["contact_memory"].keys())[:8]
+            if contacts:
+                parts.append("Contacts: " + ", ".join(contacts))
+                
+            biz = self._data["business_memory"]
+            if biz:
+                parts.append("Business: " + json.dumps(dict(list(biz.items())[:8]), default=str)[:600])
+                
+            return "\n".join(parts)
+
+    def _tokenize(self, text: str) -> set:
+        import re
+        return {t for t in re.findall(r"[a-z0-9][a-z0-9_\-]{1,}", str(text).lower()) if len(t) > 1}
+
+    def semantic_search(self, query: str, top_k: int = 5, categories: Optional[List[MemoryType]] = None) -> List[Dict]:
+        """Perform a bag-of-words similarity search across all memories."""
+        qtok = self._tokenize(query)
+        if not qtok:
+            return []
+            
+        cats = {c.value for c in categories} if categories else None
+        
+        docs = []
+        with self._lock:
+            for entry in self._data["semantic_memory"][-3000:]:
+                if cats and entry.get("kind") not in cats:
+                    continue
+                docs.append(entry)
+                
+        scored = []
+        for doc in docs:
+            dtok = self._tokenize(doc.get("text", ""))
+            if not dtok: continue
+            overlap = qtok & dtok
+            if not overlap: continue
+            
+            score = len(overlap) / max(len(qtok | dtok), 1)
+            scored.append((score, doc))
+            
+        scored.sort(key=lambda x: x[0], reverse=True)
+        
+        results = []
+        seen = set()
+        for score, doc in scored:
+            ident = (doc.get("kind"), doc.get("key"), str(doc.get("text", ""))[:80])
+            if ident in seen: continue
+            seen.add(ident)
+            
+            res = dict(doc)
+            res["score"] = round(score, 4)
+            results.append(res)
+            
+            if len(results) >= max(1, min(int(top_k), 20)):
+                break
+                
+        return results
+
+import datetime
+import logging
+from typing import List, Optional
+
+
+
+
+log = logging.getLogger("dacexy.learning_layer")
+
+class WorkflowLearner:
+    def __init__(self, memory: MemoryManager):
+        self.memory = memory
+
+    def save_workflow(self, name: str, steps: List[PlannedStep], verified: bool = True) -> None:
+        """Persist a successful sequence of steps as a reusable workflow."""
+        if not name or not steps:
+            return
+
+        name_lower = name.lower()
+        # Retrieve existing to keep run_count if any (need direct memory access or a helper, 
+        # but for now we'll just check if it exists in semantic search or just overwrite)
+        # Assuming memory_manager has the workflow in business_memory or similar
+        
+        # We will use remember_structured to store it
+        record = WorkflowRecord(
+            name=name,
+            steps=steps,
+            verified=verified,
+            run_count=1, # simplified; real implementation would increment
+            saved_at=datetime.datetime.now().isoformat()
+        )
+        
+        self.memory.remember_structured(
+            kind=MemoryType.WORKFLOW,
+            key=name_lower,
+            value=record.dict()
+        )
+        log.info(f"Workflow saved: '{name}' ({len(steps)} steps)")
+
+    def get_workflow(self, name: str) -> Optional[WorkflowRecord]:
+        """Retrieve a saved workflow by name."""
+        name_lower = name.lower()
+        # MemoryManager._data is private, but we could use a specific method.
+        # For this refactor, we assume the MemoryManager exposes a way to get it,
+        # or we just access the internal dict for now (or add a get method to memory).
+        # We'll use the internal dict access for the prototype, but in production
+        # we'd add `get_structured` to MemoryManager.
+        with self.memory._lock:
+            data = self.memory._data["workflow_memory"].get(name_lower)
+            if data:
+                return WorkflowRecord(**data)
+        return None
+
+    def list_workflows(self) -> List[str]:
+        """List all saved workflow names."""
+        with self.memory._lock:
+            return list(self.memory._data["workflow_memory"].keys())
+
+    def record_execution(self, name: str, success: bool):
+        """Update the run count and verification status of a workflow."""
+        wf = self.get_workflow(name)
+        if wf:
+            wf.run_count += 1
+            if not success:
+                wf.verified = False
+            self.memory.remember_structured(
+                kind=MemoryType.WORKFLOW,
+                key=name.lower(),
+                value=wf.dict()
+            )
+
+import json
+import logging
+from typing import List, Dict, Any
+
+
+
+
+log = logging.getLogger("dacexy.hierarchical_planner")
+
+class Planner:
+    def __init__(self, reasoning_engine: ReasoningEngine):
+        self.reasoning = reasoning_engine
+
+    def create_plan(self, goal: str, context: str = "") -> ExecutionPlan:
+        """
+        Takes a natural language goal and converts it into a structured
+        ExecutionPlan using the ReasoningEngine (LLM/NLP logic).
+        """
+        log.info(f"Creating plan for goal: {goal}")
+        
+        # In the monolithic version, local_parse used a massive regex system.
+        # Here we abstract it so the ReasoningEngine can use AI or regex.
+        
+        system_prompt = (
+            "You are a task planner. Break the user's goal down into actionable steps. "
+            "Output valid JSON matching this schema: "
+            "{ 'requires_approval': bool, 'steps': [ {'action': 'str', 'target': 'str', 'parameters': {}} ] }"
+        )
+        
+        # A real implementation would parse the result from the LLM or regex
+        # For the architecture stub, we'll simulate the parse
+        
+        raw_response = self.reasoning.ask(
+            prompt=f"Goal: {goal}\nContext: {context}",
+            system_prompt=system_prompt,
+            expect_json=True
+        )
+        
+        try:
+            # Attempt to parse the response as JSON if it's a string, or it might already be a dict
+            data = raw_response if isinstance(raw_response, dict) else json.loads(raw_response)
+            
+            steps = []
+            for s in data.get("steps", []):
+                steps.append(PlannedStep(
+                    action=s.get("action", "unknown"),
+                    target=s.get("target"),
+                    parameters=s.get("parameters", {}),
+                    description=s.get("description")
+                ))
+                
+            plan = ExecutionPlan(
+                goal=goal,
+                steps=steps,
+                requires_approval=data.get("requires_approval", False)
+            )
+            return plan
+            
+        except Exception as e:
+            log.error(f"Failed to parse plan: {e}")
+            # Fallback to a single-step generic plan
+            return ExecutionPlan(
+                goal=goal,
+                steps=[PlannedStep(action="smart_open", target=goal, parameters={"target": goal})],
+                requires_approval=False
+            )
+
+import logging
+import time
+from typing import List
+
+
+
+
+
+log = logging.getLogger("dacexy.execution_engine")
+
+class ExecutionEngine:
+    def __init__(self, registry: ToolRegistry, verifier: VerificationEngine):
+        self.registry = registry
+        self.verifier = verifier
+
+    def execute_plan(self, plan: ExecutionPlan) -> ActionResult:
+        """
+        Iterates over a plan's steps, executing them in sequence.
+        Aborts early if a step fails verification.
+        """
+        log.info(f"Executing plan: {plan.goal} ({len(plan.steps)} steps)")
+        
+        results: List[ActionResult] = []
+        verified_count = 0
+        action_required_count = 0
+        
+        for step in plan.steps:
+            step_result = self.execute_step(step)
+            results.append(step_result)
+            
+            if step_result.status == ActionStatus.OK:
+                verified_count += 1
+            elif step_result.status == ActionStatus.ACTION_REQUIRED:
+                action_required_count += 1
+            elif step_result.status == ActionStatus.SKIPPED:
+                continue
+            else:
+                log.error(f"Plan aborted due to step failure: {step.action}")
+                return ActionResult(
+                    status=ActionStatus.PARTIAL if verified_count > 0 else ActionStatus.ERROR,
+                    message=f"Plan halted at step '{step.action}': {step_result.message}",
+                    data={"completed_steps": verified_count, "failed_step": step.dict(), "results": [r.dict() for r in results]}
+                )
+            
+            time.sleep(0.5) # Throttle between steps
+            
+        final_status = ActionStatus.OK
+        if action_required_count > 0:
+            final_status = ActionStatus.PARTIAL
+            
+        return ActionResult(
+            status=final_status,
+            message=f"Plan completed. {verified_count} ok, {action_required_count} action required.",
+            data={"completed_steps": verified_count, "results": [r.dict() for r in results]}
+        )
+
+    def execute_step(self, step: PlannedStep) -> ActionResult:
+        """Executes a single step and verifies it."""
+        log.debug(f"Executing step: {step.action}")
+        
+        # Merge target into parameters for convenience if needed
+        params = dict(step.parameters)
+        if step.target and "target" not in params:
+            params["target"] = step.target
+            
+        # 1. Execute
+        raw_result = self.registry.execute(step.action, params)
+        
+        # 2. Verify
+        verified_result = self.verifier.verify(step.action, params, raw_result)
+        
+        # 3. Handle Retry if verification fails (simple 1-retry policy)
+        if verified_result.status == ActionStatus.ERROR and raw_result.status == ActionStatus.OK:
+            log.warning(f"Step {step.action} failed verification. Retrying once...")
+            time.sleep(1.0)
+            raw_result_2 = self.registry.execute(step.action, params)
+            verified_result = self.verifier.verify(step.action, params, raw_result_2)
+            
+        return verified_result
+
+import logging
+import json
+from typing import Optional, Union, Dict, Any
+
+# We assume g4f is used as in the original code, or a similar provider
+try:
+    import g4f
+    G4F_AVAILABLE = True
+except ImportError:
+    G4F_AVAILABLE = False
+
+log = logging.getLogger("dacexy.reasoning_engine")
+
+class ReasoningEngine:
+    def __init__(self, default_model: str = "gpt-4"):
+        self.default_model = default_model
+
+    def ask(self, prompt: str, system_prompt: str = "", expect_json: bool = False) -> Union[str, Dict[str, Any]]:
+        """
+        Send a prompt to the LLM and return the response.
+        If expect_json is True, attempts to parse and return a dict.
+        """
+        log.debug(f"Asking AI. Prompt length: {len(prompt)}")
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        if not G4F_AVAILABLE:
+            log.error("g4f is not available. Cannot perform reasoning.")
+            return {} if expect_json else "Error: AI provider not available."
+
+        try:
+            # Using g4f API as per original codebase pattern
+            response = g4f.ChatCompletion.create(
+                model=self.default_model,
+                messages=messages,
+                timeout=30
+            )
+            
+            response_text = str(response).strip()
+            
+            if expect_json:
+                return self._parse_json(response_text)
+                
+            return response_text
+            
+        except Exception as e:
+            log.error(f"Reasoning engine error: {e}")
+            return {} if expect_json else f"Error: {e}"
+
+    def _parse_json(self, text: str) -> Dict[str, Any]:
+        """Attempt to extract and parse JSON from a potentially messy text response."""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Try to find JSON block
+            import re
+            match = re.search(r'```(?:json)?\s*({.*?})\s*```', text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            log.warning("Failed to parse JSON from reasoning response.")
+            return {}
+
+import logging
+from typing import Dict, Any
+
+
+
+
+
+
+
+log = logging.getLogger("dacexy.multi_agent_system")
+
+class AgentCoordinator:
+    """
+    The root node that receives triggers, invokes the Planner, passes plans 
+    to the ExecutionEngine, and records results via the LearningLayer and MemorySystem.
+    """
+    def __init__(self, 
+                 memory: MemoryManager, 
+                 planner: Planner, 
+                 executor: ExecutionEngine, 
+                 learner: WorkflowLearner):
+        self.memory = memory
+        self.planner = planner
+        self.executor = executor
+        self.learner = learner
+
+    def dispatch(self, goal: str, context: str = "") -> ActionResult:
+        """
+        Main entry point for fulfilling a user request.
+        """
+        log.info(f"Coordinator received goal: {goal}")
+        
+        # 1. Check if we already know how to do this (Workflow)
+        # A real implementation would semantically match the goal to a workflow name
+        # For simplicity, we just check exact match
+        existing_wf = self.learner.get_workflow(goal)
+        if existing_wf:
+            log.info(f"Replaying existing workflow for: {goal}")
+            # Mock replay logic - in reality, convert workflow to ExecutionPlan
+            
+            plan = ExecutionPlan(goal=goal, steps=existing_wf.steps)
+            result = self.executor.execute_plan(plan)
+            self.learner.record_execution(goal, result.status == ActionStatus.OK)
+            self.memory.record_task_history(goal, result.status.value)
+            return result
+
+        # 2. Plan
+        mem_context = self.memory.get_context_summary()
+        full_context = f"{mem_context}\n{context}"
+        plan = self.planner.create_plan(goal, full_context)
+        
+        if not plan.steps:
+            msg = "Planner could not generate any steps."
+            log.error(msg)
+            return ActionResult(status=ActionStatus.ERROR, message=msg)
+
+        # 3. Execute
+        result = self.executor.execute_plan(plan)
+
+        # 4. Learn
+        if result.status == ActionStatus.OK:
+            # Save successful novel plans as workflows
+            self.learner.save_workflow(name=goal, steps=plan.steps, verified=True)
+            
+        # 5. Remember
+        self.memory.record_task_history(goal, result.status.value)
+        
+        return result
+
+
 import asyncio, base64, csv, ctypes, datetime, fnmatch, hashlib, hmac
 import io, json, logging, os, pathlib, platform, queue, random, re, shutil
 import smtplib, socket, string, struct, threading, time, urllib.parse
@@ -1211,37 +1937,33 @@ def _is_command_safe(cmd: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 # HUMAN APPROVAL GATE
 # ══════════════════════════════════════════════════════════════════════════════
+
 def request_approval(action: str, details: str, timeout: int = 30) -> bool:
-    op_key = f"{action}:{hashlib.md5(details.encode()).hexdigest()[:8]}"
-    with _mem_lock:
-        if op_key in MEMORY["approved_ops"]:
-            return True
-
-    speak(f"Approval needed: {action}. Check your terminal.")
-    print(f"\n  {'='*55}")
-    print(f"  ⚠  APPROVAL REQUIRED")
-    print(f"  Action : {action}")
-    print(f"  Details: {details[:200]}")
-    print(f"  {'='*55}")
-    print(f"  Approve? [Y/n/always] (auto-deny in {timeout}s): ", end="", flush=True)
-
-    _notify("Dacexy — Action Approval", f"{action}: {details[:60]}")
-
-    import select
-    if hasattr(select, "select"):
-        try:
-            rlist, _, _ = select.select([sys.stdin], [], [], timeout)
-            if rlist:
-                ans = sys.stdin.readline().strip().lower()
-            else:
-                print("\n  [TIMEOUT] Auto-denied.")
+    global _pending_approvals, _ws_send_fn
+    req_id = hashlib.md5(f"{action}{details}{time.time()}".encode()).hexdigest()[:8]
+    _pending_approvals[req_id] = "pending"
+    
+    if _ws_send_fn:
+        # Route through WebSocket
+        _send_ws_best_effort({"type": "approval_request", "req_id": req_id, "action": action, "details": details})
+        
+        start = time.time()
+        while time.time() - start < timeout:
+            if _pending_approvals[req_id] == "approved":
+                return True
+            if _pending_approvals[req_id] == "denied":
                 return False
-        except Exception:
-            ans = "n"
+            time.sleep(1)
+        return False
     else:
-        _ans = ["n"]
-        _ev  = threading.Event()
-        def _read():
+        # Console fallback
+        print(f"
+[APPROVAL REQUIRED] {action}: {details}")
+        ans = input(f"Approve? (y/n) [{timeout}s timeout]: ").strip().lower()
+        return ans == "y"
+
+
+def _read():
             try:
                 _ans[0] = input().strip().lower()
             except Exception:
@@ -2897,6 +3619,8 @@ def book_meeting(with_email: str, subject: str, date_str: str, duration_min: int
 # SELENIUM BROWSER AUTOMATION
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_driver(headless: bool = False):
+    with _sel_lock:
+
     global _selenium_driver
     with _sel_lock:
         if _selenium_driver:
@@ -3055,6 +3779,8 @@ def youtube_search_and_play(query: str) -> dict:
 # SOCIAL MESSAGE REPLY BOTS
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_social_driver(platform: str):
+    with _social_lock:
+
     with _social_lock:
         drv = _social_drivers.get(platform)
         if drv:
