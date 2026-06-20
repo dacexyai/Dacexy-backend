@@ -1,20 +1,16 @@
 """
-DACEXY DESKTOP AGENT v30.0 — "DEX" JARVIS MODE
+DACEXY DESKTOP AGENT v31.0 — "DEX" AUTONOMOUS MODE
 ================================================
 Full business co-assistant for small businesses.
-Voice-first, Jarvis-style, instant response.
+Voice-first, Jarvis-style, verified execution.
 
-NEW in v30.0:
-  - Jarvis-style voice: instant wake, single-attempt recognition
-  - TTS: engine created inside worker thread (COM STA fix, always audible)
-  - All P0 bugs fixed: open/create_file/verification layer fully implemented
-  - 500+ business task patterns across every department
-  - Smart planner: multi-step goal decomposition via AI
-  - Dashboard voice transcript streaming
-  - Recovery system: retry + alternative methods on failure
-  - Vision-assisted verification (OCR + window check)
-  - Natural Jarvis narration on every action
-  - "Hey Dex" triggers on first attempt at normal speaking volume
+NEW in v31.0:
+  - Task planner: goal → step graph → execution graph → verification graph
+  - Recovery engine: retry, alternate paths, re-plan on failure
+  - Long-running workflows: progress, cancellation, resumable state
+  - Browser agent: navigate → read → extract → verify → continue
+  - Voice v2: interruption, session context, inline wake+command
+  - Strict verification on all core skills (built on v30 reliability layer)
 """
 from __future__ import annotations
 
@@ -138,6 +134,7 @@ import webbrowser, zipfile
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from email import encoders
+from email.message import EmailMessage
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -275,6 +272,7 @@ KEY_FILE    = AGENT_DIR / ".agent.key"
 CONFIG_FILE = Path.home() / ".dacexy_agent.json"
 RUNTIME_STATE_FILE = AGENT_DIR / "data" / "runtime_state.json"
 TASK_QUEUE_FILE = AGENT_DIR / "data" / "task_queue.json"
+WORKFLOW_STATE_FILE = AGENT_DIR / "data" / "workflow_state.json"
 
 _desktop_task_lock = threading.RLock()
 _runtime_state_lock = threading.RLock()
@@ -547,11 +545,25 @@ _sched_jobs: List  = []
 _convo: deque      = deque(maxlen=40)
 _selenium_driver   = None
 _sel_lock          = threading.Lock()
+_chromedriver_path = None
 _pending_approvals: Dict[str, dict] = {}
 _approval_lock     = threading.Lock()
 _ws_send_fn        = None
 _ws_loop           = None
 _abort_flag        = threading.Event()
+_workflow_lock     = threading.RLock()
+_active_workflow: Dict[str, Any] = {}
+_session_context: Dict[str, Any] = {
+    "last_goal": "",
+    "last_command": "",
+    "last_result": "",
+    "entities": {},
+    "turns": deque(maxlen=12),
+    "last_research_subject": "",
+    "last_report": "",
+    "last_report_type": "",
+    "last_saved_file": "",
+}
 
 _social_drivers: Dict[str, Any] = {}
 _social_lock       = threading.Lock()
@@ -594,7 +606,7 @@ except Exception:
 
 log   = logging.getLogger("dacexy")
 audit = logging.getLogger("dacexy.audit")
-log.info("Dacexy Agent v30.0 initializing")
+log.info("Dacexy Agent v31.0 initializing")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1019,6 +1031,7 @@ def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: 
 def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
     if not text: return
     text = str(text)[:100_000]
+    active_win_before = get_active_win()
     try:
         if clear_first and PYAUTOGUI_OK:
             pyautogui.hotkey("ctrl", "a")
@@ -1035,6 +1048,22 @@ def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
             interval = random.uniform(0.02, 0.06) if human_speed else 0.008
             for chunk in [text[i:i+300] for i in range(0, len(text), 300)]:
                 pyautogui.write(chunk, interval=interval)
+        time.sleep(0.15)
+        active_win_after = get_active_win()
+        if active_win_before != active_win_after:
+            log.warning("real_type: window focus changed during typing")
+            return
+        if CLIP_OK:
+            pyperclip.copy("")
+            time.sleep(0.05)
+        if OCR_OK and len(text) > 10:
+            screen_text = read_screen_text()
+            text_lower = text.lower().strip()
+            screen_lower = screen_text.lower()
+            if text_lower[:50] in screen_lower or any(word in screen_lower for word in text_lower.split()[:5] if len(word) > 4):
+                log.info("real_type: verified via OCR fingerprint")
+            else:
+                log.warning("real_type: OCR verification failed - text not found on screen")
     except Exception as e:
         log.warning("real_type: %s", e)
 
@@ -1189,8 +1218,20 @@ def verify_file_created(path: str) -> bool:
         return False
 
 
-def verify_window_contains(target: str) -> bool:
-    """Check if any open window title plausibly matches the target."""
+def verify_window_contains(target: str, baseline: Optional[List[str]] = None) -> bool:
+    """
+    Check if a window title plausibly matches the target.
+
+    IMPORTANT: if `baseline` (a snapshot of list_windows() taken BEFORE the
+    action ran) is provided, this only counts as verified when a matching
+    window is present now AND was NOT present in the baseline (or its count
+    increased) — i.e. this action's own launch actually produced a new
+    window. Without a baseline, this checks current windows only and can
+    false-positive on a pre-existing window that happens to share a substring
+    with the target (e.g. a stale browser tab titled "excel tips" "verifying"
+    an Excel launch that never happened). Callers that need real proof of
+    *this* action's effect should always pass a baseline.
+    """
     try:
         wins = [w.lower() for w in list_windows()]
         t = target.lower()
@@ -1201,7 +1242,19 @@ def verify_window_contains(target: str) -> bool:
         for app in APPS:
             if app in t or t in app:
                 candidates.add(app)
-        return any(any(c in w for c in candidates) for w in wins)
+
+        def _matches(w: str) -> bool:
+            return any(c in w for c in candidates)
+
+        now_matches = [w for w in wins if _matches(w)]
+        if baseline is None:
+            return bool(now_matches)
+
+        base_matches = [w for w in (b.lower() for b in baseline) if _matches(w)]
+        # Verified only if there are MORE matching windows now than before
+        # the action ran — proves this action created/raised a new window,
+        # rather than detecting a window that was already open.
+        return len(now_matches) > len(base_matches)
     except Exception:
         return False
 
@@ -1216,75 +1269,235 @@ def verify_screen_ocr(target: str) -> bool:
         return False
 
 
-def run_with_verification(action_fn, verify_fn, description: str,
-                           correction_func=None, retries: int = 1) -> dict:
-    """
-    Run action_fn(), wait briefly, then verify. Verification never turns
-    a successful action into a failure — it only adds a 'verified' field.
-    On verify failure + correction_func provided: one retry.
-    """
+def log_execution_result(res: dict) -> None:
+    """Structured audit log for every action outcome."""
     try:
-        result = action_fn()
-    except Exception as e:
-        return {"status": "error", "message": f"Exception in {description}: {e}"}
-    if not isinstance(result, dict):
-        result = {"status": "ok", "value": result}
-    try:
-        time.sleep(0.5)
-        verified = bool(verify_fn())
+        audit.info(
+            "EXEC_RESULT action=%s status=%s verified=%s verification_reason=%s failure_reason=%s",
+            res.get("action", "?"),
+            res.get("status", "?"),
+            res.get("verified", False),
+            str(res.get("verification_reason") or "")[:160],
+            str(res.get("failure_reason") or "")[:160],
+        )
+        log.info(
+            "EXEC_RESULT[%s] verified=%s result=%s",
+            res.get("action", "?"),
+            res.get("verified", False),
+            str(res.get("result") or res.get("message") or "")[:120],
+        )
     except Exception:
-        verified = False
-    if not verified and correction_func and retries > 0:
-        try:
-            correction_func()
-            time.sleep(0.7)
-            verified = bool(verify_fn())
-        except Exception:
-            pass
-    result["verified"] = verified
-    log.info("run_with_verification[%s]: verified=%s", description, verified)
-    return result
+        pass
 
 
-def run_with_verification(action_fn, verify_fn, description: str,
-                           correction_func=None, retries: int = 2) -> dict:
+def make_execution_result(
+    action: str,
+    result: Any = "",
+    verified: bool = False,
+    verification_reason: str = "",
+    failure_reason: str = "",
+    status: Optional[str] = None,
+    **extra,
+) -> dict:
+    """Standard result envelope: action, result, verified, reasons."""
+    if verified:
+        st = status or "ok"
+        failure_reason = ""
+        if not verification_reason:
+            verification_reason = "verification passed"
+    else:
+        st = status or "error"
+        if not failure_reason:
+            failure_reason = verification_reason or "verification failed"
+        verification_reason = verification_reason or failure_reason
+    out: Dict[str, Any] = {
+        "status": st,
+        "action": action,
+        "result": result,
+        "verified": bool(verified),
+        "verification_reason": verification_reason,
+        "failure_reason": failure_reason if not verified else "",
+    }
+    out.update(extra)
+    log_execution_result(out)
+    return out
+
+
+def is_verified_step(res: dict) -> bool:
+    """A step counts as success only when explicitly verified."""
+    if not isinstance(res, dict):
+        return False
+    st = res.get("status")
+    if st in ("blocked", "denied", "error"):
+        return False
+    if st == "skipped":
+        return True
+    return res.get("verified") is True
+
+
+INFORMATIONAL_ACTIONS = frozenset({
+    "speak", "notify", "ping", "get_time", "get_date", "get_system_info",
+    "list_skills", "wait", "remember", "voice_status", "voice_health", "mic_status",
+    "runtime_status", "agent_status", "system_status", "health_check", "status",
+    "get_memory", "show_memory", "recall", "get_windows", "list_windows",
+    "active_window", "draft_reply", "workflow_status", "cancel_workflow", "task_progress",
+})
+
+
+def finalize_cmd_result(action: str, res: dict) -> dict:
+    """Normalize executor output — never default verification to True."""
+    if not isinstance(res, dict):
+        res = {"status": "error", "message": str(res)}
+    res.setdefault("action", action)
+    if "result" not in res:
+        res["result"] = res.get("message") or res.get("response") or res.get("path") or ""
+    if res.get("verified") is True:
+        res.setdefault("verification_reason", "verified")
+        res.setdefault("failure_reason", "")
+        if res.get("status") not in ("ok", "skipped"):
+            res["status"] = "ok"
+    elif res.get("verified") is False:
+        res.setdefault("failure_reason", res.get("message") or "not verified")
+        res.setdefault("verification_reason", res["failure_reason"])
+        if res.get("status") == "ok" and action not in INFORMATIONAL_ACTIONS:
+            res["status"] = "error"
+    elif action in INFORMATIONAL_ACTIONS and res.get("status") in ("ok", "skipped"):
+        res["verified"] = True
+        res.setdefault("verification_reason", "informational")
+        res.setdefault("failure_reason", "")
+    else:
+        res["verified"] = False
+        res.setdefault("failure_reason", res.get("message") or "verification not performed")
+        res.setdefault("verification_reason", res["failure_reason"])
+        if res.get("status") == "ok":
+            res["status"] = "error"
+    log_execution_result(res)
+    return res
+
+
+def run_with_verification(
+    action_fn,
+    verify_fn,
+    description: str,
+    correction_func=None,
+    retries: int = 2,
+    action_name: str = "",
+) -> dict:
     """
-    Strict verification wrapper. A task step is successful only when the
-    verifier returns True. Failed verification triggers recovery retries.
+    Strict verification wrapper with retry. Success requires verifier True.
     """
-    result = {"status": "error", "message": f"{description} not attempted"}
+    action = action_name or description
     last_error = ""
+    exec_payload: Any = ""
     attempts = max(1, retries + 1)
     for attempt in range(1, attempts + 1):
+        verified = False
+        verify_reason = ""
         try:
-            result = action_fn()
-            if not isinstance(result, dict):
-                result = {"status": "ok", "value": result}
+            raw = action_fn()
+            if isinstance(raw, dict):
+                exec_payload = raw
+            else:
+                exec_payload = {"value": raw}
             time.sleep(0.8 + (attempt * 0.4))
-            verified = bool(verify_fn())
+            v_out = verify_fn()
+            if isinstance(v_out, tuple):
+                verified = bool(v_out[0])
+                verify_reason = str(v_out[1] or "")
+            else:
+                verified = bool(v_out)
+                verify_reason = "check passed" if verified else "check failed"
         except Exception as e:
-            verified = False
             last_error = str(e)
-            result = {"status": "error", "message": f"Exception in {description}: {e}"}
-        log.info("run_with_verification[%s]: attempt=%s verified=%s", description, attempt, verified)
+            exec_payload = {"error": last_error}
+            verified = False
+            verify_reason = last_error
+        log.info(
+            "run_with_verification[%s]: attempt=%s verified=%s reason=%s",
+            description, attempt, verified, verify_reason[:80],
+        )
         if verified:
-            result["status"] = "ok"
-            result["verified"] = True
-            update_runtime_state(last_action=description, last_result="verified", last_verified=True)
-            return result
+            update_runtime_state(
+                last_action=description, last_result="verified", last_verified=True,
+            )
+            out = make_execution_result(
+                action, exec_payload, True,
+                verification_reason=verify_reason or "verification passed",
+            )
+            if isinstance(exec_payload, dict):
+                out.update({k: v for k, v in exec_payload.items() if k not in out})
+            return out
         if correction_func and attempt < attempts:
             try:
                 correction_func()
                 time.sleep(0.8)
             except Exception as e:
                 last_error = str(e)
-    result["verified"] = False
-    result["status"] = "error"
-    result["message"] = result.get("message") or f"Verification failed for {description}"
-    if last_error:
-        result["error"] = last_error
-    update_runtime_state(last_action=description, last_result=result.get("message", "verification failed"), last_verified=False)
-    return result
+    failure = last_error or verify_reason or f"Verification failed for {description}"
+    update_runtime_state(
+        last_action=description, last_result=failure, last_verified=False,
+    )
+    out = make_execution_result(
+        action, exec_payload, False,
+        verification_reason=failure,
+        failure_reason=failure,
+        message=failure,
+    )
+    if isinstance(exec_payload, dict):
+        out.update({k: v for k, v in exec_payload.items() if k not in out})
+    return out
+
+
+def run_execution_loop(
+    action: str,
+    execute_fn,
+    verify_fn,
+    description: str,
+    correction_func=None,
+    replan_func=None,
+    retries: int = 2,
+) -> dict:
+    """Observe → Plan → Execute → Verify → Retry → Replan."""
+    last_failure = ""
+    for attempt in range(1, retries + 2):
+        try:
+            if replan_func and attempt > 1:
+                replan_func(attempt, last_failure)
+            observe_state = {}
+            try:
+                observe_state = verify_fn(observe_only=True) if callable(verify_fn) else {}
+            except TypeError:
+                pass
+            except Exception as e:
+                log.debug("observe[%s]: %s", description, e)
+            raw = execute_fn(attempt, observe_state)
+            payload = raw if isinstance(raw, dict) else {"value": raw}
+            time.sleep(0.8 + attempt * 0.3)
+            v_out = verify_fn()
+            if isinstance(v_out, tuple):
+                verified, reason = bool(v_out[0]), str(v_out[1] or "")
+            else:
+                verified, reason = bool(v_out), ("check passed" if v_out else "check failed")
+            log.info("execution_loop[%s] attempt=%s verified=%s", description, attempt, verified)
+            if verified:
+                out = make_execution_result(action, payload, True, verification_reason=reason)
+                out.update({k: v for k, v in payload.items() if k not in out})
+                return out
+            last_failure = reason or "verification failed"
+        except Exception as e:
+            last_failure = str(e)
+        if correction_func and attempt <= retries:
+            try:
+                correction_func(attempt)
+                time.sleep(0.8)
+            except Exception as e:
+                last_failure = str(e)
+    return make_execution_result(
+        action, {}, False,
+        verification_reason=last_failure,
+        failure_reason=last_failure,
+        message=last_failure,
+    )
 
 
 def _retry(fn, attempts: int = 3, delays: tuple = (1, 3), label: str = ""):
@@ -1778,6 +1991,7 @@ _HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53
 def web_research(query: str) -> str:
     if not REQUESTS_OK:
         return "Web research unavailable."
+    _session_context["last_research_subject"] = query
     try:
         url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&num=10"
         r = req_lib.get(url, headers=_HDRS, timeout=15)
@@ -1888,7 +2102,10 @@ def _get_driver(headless: bool = False):
         opts.add_experimental_option("useAutomationExtension", False)
         opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
         try:
-            svc = ChromeService(ChromeDriverManager().install())
+            if _chromedriver_path:
+                svc = ChromeService(executable_path=_chromedriver_path)
+            else:
+                svc = ChromeService(ChromeDriverManager().install())
             drv = webdriver.Chrome(service=svc, options=opts)
             drv.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             _selenium_driver = drv
@@ -1898,15 +2115,233 @@ def _get_driver(headless: bool = False):
 
 
 def selenium_open(url: str, wait_for_css: str = None, timeout: int = 15) -> dict:
+    hint = urllib.parse.urlparse(url).netloc.replace("www.", "").split(".")[0]
+    return browser_navigate(
+        url,
+        expected_title_hint=hint,
+        expected_content=hint,
+        wait_for_css=wait_for_css,
+        timeout=timeout,
+        action_name="selenium_open",
+    )
+
+
+def observe_browser_state() -> dict:
+    """Snapshot current browser state from Selenium or desktop."""
+    state = {"url": "", "title": "", "method": "none"}
     drv = _get_driver()
-    if not drv: webbrowser.open(url); return {"status": "ok", "note": "default browser"}
-    try:
-        drv.get(url)
-        if wait_for_css:
-            WebDriverWait(drv, timeout).until(EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_css)))
-        return {"status": "ok", "url": drv.current_url}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    if drv:
+        try:
+            state.update({
+                "url": drv.current_url or "",
+                "title": drv.title or "",
+                "method": "selenium",
+            })
+            try:
+                state["content_preview"] = (drv.find_element(By.TAG_NAME, "body").text or "")[:500]
+            except Exception:
+                state["content_preview"] = ""
+            return state
+        except Exception:
+            pass
+    state["active_window"] = get_active_win()
+    state["method"] = "desktop"
+    return state
+
+
+def verify_browser_page(
+    url: str,
+    expected_title_hint: str = "",
+    expected_content: str = "",
+) -> Tuple[bool, str]:
+    """Verify URL, page title, and expected content signals."""
+    parsed = urllib.parse.urlparse(url)
+    host_hint = (parsed.netloc or "").replace("www.", "").split(".")[0].lower()
+    title_hint = (expected_title_hint or host_hint).lower()
+    content_hint = (expected_content or host_hint).lower()
+    reasons: List[str] = []
+
+    drv = _get_driver()
+    if drv:
+        try:
+            cur_url = (drv.current_url or "").lower()
+            title = (drv.title or "").lower()
+            if host_hint and host_hint in cur_url:
+                reasons.append("url")
+            if title_hint and title_hint in title:
+                reasons.append("title")
+            if content_hint:
+                try:
+                    body = (drv.find_element(By.TAG_NAME, "body").text or "").lower()
+                    if content_hint in body[:8000]:
+                        reasons.append("content")
+                except Exception:
+                    pass
+            if reasons:
+                return True, ",".join(reasons)
+        except Exception:
+            pass
+
+    if host_hint and verify_window_contains(host_hint):
+        return True, "window_title"
+    if title_hint and verify_window_contains(title_hint):
+        return True, "window_title_hint"
+    if content_hint and verify_screen_ocr(content_hint):
+        return True, "ocr"
+    if PSUTIL_OK:
+        try:
+            browsers = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"}
+            if any((p.info.get("name") or "").lower() in browsers for p in psutil.process_iter(["name"])):
+                if host_hint and verify_window_contains(host_hint):
+                    return True, "browser_process+window"
+                return False, "browser running but page not confirmed"
+        except Exception:
+            pass
+    return False, "no browser verification signal"
+
+
+def browser_navigate(
+    url: str,
+    expected_title_hint: str = "",
+    expected_content: str = "",
+    wait_for_css: Optional[str] = None,
+    timeout: int = 15,
+    retries: int = 2,
+    action_name: str = "browser_navigate",
+) -> dict:
+    """Unified browser path: Observe → Execute → Verify URL/title/content → Retry."""
+    if not url:
+        return make_execution_result(action_name, "", False, failure_reason="no url")
+
+    def _execute(attempt: int, observe_state: dict) -> dict:
+        method = "selenium"
+        if SELENIUM_OK:
+            drv = _get_driver()
+            if drv:
+                try:
+                    drv.get(url)
+                    if wait_for_css:
+                        WebDriverWait(drv, timeout).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_css))
+                        )
+                    return {
+                        "method": method,
+                        "url": drv.current_url,
+                        "title": drv.title,
+                        "opened": url,
+                    }
+                except Exception as e:
+                    log.warning("browser_navigate selenium attempt %s: %s", attempt, e)
+        webbrowser.open(url)
+        return {"method": "webbrowser", "url": url, "opened": url}
+
+    def _verify(observe_only: bool = False) -> Tuple[bool, str]:
+        if observe_only:
+            return False, json.dumps(observe_browser_state(), default=str)[:200]
+        return verify_browser_page(url, expected_title_hint, expected_content)
+
+    def _correct(attempt: int) -> None:
+        if SELENIUM_OK and attempt > 1:
+            with _sel_lock:
+                global _selenium_driver
+                if _selenium_driver:
+                    try:
+                        _selenium_driver.quit()
+                    except Exception:
+                        pass
+                    _selenium_driver = None
+        webbrowser.open(url)
+
+    speak(f"Opening {expected_title_hint or url[:40]}.")
+    return run_execution_loop(
+        action_name,
+        _execute,
+        _verify,
+        f"browser {url[:60]}",
+        correction_func=_correct,
+        retries=retries,
+    )
+
+
+def browser_read_page(max_chars: int = 8000) -> dict:
+    """Read visible page text from Selenium or OCR fallback."""
+    action = "browser_read_page"
+    text = ""
+    meta = observe_browser_state()
+    drv = _get_driver()
+    if drv:
+        try:
+            text = (drv.find_element(By.TAG_NAME, "body").text or "").strip()
+            meta["url"] = drv.current_url
+            meta["title"] = drv.title
+        except Exception as e:
+            log.warning("browser_read_page selenium: %s", e)
+    if not text:
+        text = read_screen_text().strip()
+        meta["method"] = "ocr"
+    text = text[:max_chars]
+    verified = len(text) > 40
+    return make_execution_result(
+        action,
+        text[:500],
+        verified,
+        verification_reason=f"extracted {len(text)} chars via {meta.get('method', 'unknown')}",
+        failure_reason="" if verified else "insufficient page text extracted",
+        text=text,
+        page_meta=meta,
+    )
+
+
+def browser_search_workflow(query: str, save_name: str = "") -> dict:
+    """Observe → Search → Read → Save report — full browser research workflow."""
+    action = "browser_search_workflow"
+    if not query:
+        return make_execution_result(action, "", False, failure_reason="empty query")
+    url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+    nav = browser_navigate(url, expected_title_hint="google", expected_content="google", action_name="search_web")
+    if not nav.get("verified"):
+        return make_execution_result(
+            action, nav, False,
+            failure_reason=nav.get("failure_reason") or "search navigation failed",
+            steps=[nav],
+        )
+    read = browser_read_page()
+    if not read.get("verified"):
+        read = {"status": "ok", "verified": True, "text": web_research(query), "verification_reason": "web_research fallback"}
+    content = read.get("text") or web_research(query)
+    fname = save_name or f"search_report_{int(time.time())}.txt"
+    saved = create_notepad_file(fname, f"Search: {query}\n\n{content}")
+    verified = bool(saved.get("verified"))
+    return make_execution_result(
+        action,
+        saved.get("path", ""),
+        verified,
+        verification_reason="search read and saved" if verified else "save failed",
+        failure_reason="" if verified else saved.get("message", "save failed"),
+        query=query,
+        steps=[nav, read, saved],
+    )
+
+
+def browser_extract_and_summarize(query: str = "") -> dict:
+    """Read current browser page and produce a saved summary."""
+    action = "browser_extract_and_summarize"
+    read = browser_read_page()
+    if not read.get("verified"):
+        return make_execution_result(action, "", False, failure_reason="could not read page")
+    page_text = read.get("text") or ""
+    topic = query or read.get("page_meta", {}).get("title") or "web page"
+    summary = ask_ai_brain(
+        f"Summarize this web page for a business user. Topic hint: {topic}\n\n{page_text[:10000]}"
+    )
+    out = create_notepad_file(f"page_summary_{int(time.time())}.txt", f"Topic: {topic}\n\n{summary}")
+    verified = bool(out.get("verified"))
+    return make_execution_result(
+        action, out.get("path", ""), verified,
+        verification_reason="page summarized and saved" if verified else "summary save failed",
+        failure_reason="" if verified else out.get("message", ""),
+        summary=summary[:1000],
+    )
 
 
 def selenium_fill(selector: str, value: str, by: str = "css", submit: bool = False) -> dict:
@@ -2005,8 +2440,13 @@ def post_facebook(username: str, password: str, text: str, page_id: str = "") ->
 
 def youtube_search_and_play(query: str) -> dict:
     url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
-    webbrowser.open(url); speak(f"Searching YouTube for: {query}")
-    return {"status": "ok", "url": url}
+    speak(f"Searching YouTube for: {query}")
+    return browser_navigate(
+        url,
+        expected_title_hint="youtube",
+        expected_content="youtube",
+        action_name="open_youtube",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2031,7 +2471,10 @@ def _get_social_driver(platform: str):
         opts.add_experimental_option("useAutomationExtension", False)
         opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
         try:
-            svc = ChromeService(ChromeDriverManager().install())
+            if _chromedriver_path:
+                svc = ChromeService(executable_path=_chromedriver_path)
+            else:
+                svc = ChromeService(ChromeDriverManager().install())
             drv = webdriver.Chrome(service=svc, options=opts)
             drv.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             _social_drivers[platform] = drv; return drv
@@ -2225,95 +2668,156 @@ def stop_social_replies(platforms: list = None) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # SMART OPEN — with verification and recovery
 # ══════════════════════════════════════════════════════════════════════════════
+def _best_dict_match(tl: str, mapping: Dict[str, str]) -> Optional[Tuple[str, str]]:
+    """Longest-key match with word boundaries; avoids false positives (e.g. 'x' in words)."""
+    tl_clean = tl.strip().lower()
+    if not tl_clean:
+        return None
+    if tl_clean in mapping:
+        return tl_clean, mapping[tl_clean]
+
+    def _skip_key(key: str) -> bool:
+        return key == "x" and tl_clean != "x"
+
+    word_matches: List[Tuple[int, str, str]] = []
+    for key, value in mapping.items():
+        if _skip_key(key):
+            continue
+        pat = r"(?:^|\s)" + re.escape(key) + r"(?:\s|$)"
+        if re.search(pat, tl_clean):
+            word_matches.append((len(key), key, value))
+    if word_matches:
+        word_matches.sort(key=lambda x: -x[0])
+        return word_matches[0][1], word_matches[0][2]
+
+    if " " not in tl_clean:
+        for key, value in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
+            if _skip_key(key):
+                continue
+            if tl_clean == key or (len(key) >= 3 and key in tl_clean):
+                return key, value
+    return None
+
+
 def smart_open(target: str) -> dict:
-    if not target: return {"status": "error", "message": "Nothing to open"}
-    t = str(target).strip(); tl = t.lower()
+    if not target:
+        return make_execution_result("open", "", False, failure_reason="Nothing to open")
+    t = str(target).strip()
+    tl = t.lower()
     for pfx in ["open ", "launch ", "start ", "go to ", "navigate to ", "visit ", "browse "]:
-        if tl.startswith(pfx): tl = tl[len(pfx):].strip(); t = t[len(pfx):].strip()
+        if tl.startswith(pfx):
+            tl = tl[len(pfx):].strip()
+            t = t[len(pfx):].strip()
     expected_url = ""
     expected_app = ""
+    expected_title = ""
 
     def _do_open():
-        nonlocal expected_url, expected_app
-        if tl in SITES:
-            expected_url = SITES[tl]
-            webbrowser.open(SITES[tl])
-            speak(f"Opening {tl}.")
-            return {"status": "ok", "opened": SITES[tl]}
-        for site, url in SITES.items():
-            if site in tl:
-                expected_url = url
-                webbrowser.open(url)
-                speak(f"Opening {site}.")
-                return {"status": "ok", "opened": url}
-        if tl in APPS:
-            expected_app = tl
-            _launch_windows_app(APPS[tl])
-            speak(f"Opening {tl}.")
-            return {"status": "ok", "opened": APPS[tl]}
-        for app, exe in APPS.items():
-            if app in tl:
-                expected_app = app
-                _launch_windows_app(exe)
-                speak(f"Opening {app}.")
-                return {"status": "ok", "opened": exe}
+        nonlocal expected_url, expected_app, expected_title
+        site_match = _best_dict_match(tl, SITES)
+        if site_match:
+            site_key, site_url = site_match
+            expected_url = site_url
+            expected_title = site_key
+            speak(f"Opening {site_key}.")
+            return browser_navigate(
+                site_url,
+                expected_title_hint=site_key,
+                expected_content=site_key.split()[0],
+                action_name="open",
+            )
+        app_match = _best_dict_match(tl, APPS)
+        if app_match:
+            app_key, app_exe = app_match
+            expected_app = app_key
+            expected_title = app_key
+            _launch_windows_app(app_exe)
+            speak(f"Opening {app_key}.")
+            return {"opened": app_exe, "app": app_key}
         if tl.startswith(("http://", "https://")):
             expected_url = t
-            webbrowser.open(t)
-            return {"status": "ok", "opened": t}
+            expected_title = urllib.parse.urlparse(t).netloc.replace("www.", "").split(".")[0]
+            return browser_navigate(t, expected_title_hint=expected_title, action_name="open")
         if re.match(r"^[a-z0-9\-]+\.[a-z]{2,}$", tl) and " " not in tl:
             expected_url = "https://" + tl
-            webbrowser.open(expected_url)
-            return {"status": "ok", "opened": expected_url}
+            expected_title = tl.split(".")[0]
+            return browser_navigate(
+                expected_url,
+                expected_title_hint=expected_title,
+                action_name="open",
+            )
         p = Path(t)
         if p.exists():
             os.startfile(str(p))
-            update_runtime_state(active_file=str(p) if p.is_file() else "", active_folder=str(p) if p.is_dir() else "")
-            return {"status": "ok", "opened": str(p)}
+            update_runtime_state(
+                active_file=str(p) if p.is_file() else "",
+                active_folder=str(p) if p.is_dir() else "",
+            )
+            return {"opened": str(p)}
         if len(t.split()) <= 4:
             expected_app = tl
             subprocess.Popen(t, shell=True)
-            return {"status": "ok", "opened": t}
-        return {"status": "error", "message": f"Could not open: {target[:80]}"}
+            return {"opened": t}
+        return make_execution_result("open", "", False, failure_reason=f"Could not open: {target[:80]}")
 
     def _verify_open():
         if expected_url:
-            host = urllib.parse.urlparse(expected_url).netloc.lower().replace("www.", "")
-            if verify_window_contains(host.split(".")[0]) or verify_screen_ocr(host.split(".")[0]):
-                update_runtime_state(active_application="browser", current_url=expected_url, active_tab=host)
-                return True
-            try:
-                if psutil:
-                    browsers = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"}
-                    if any((p.info.get("name") or "").lower() in browsers for p in psutil.process_iter(["name"])):
-                        update_runtime_state(active_application="browser", current_url=expected_url, active_tab=host)
-                        return True
-            except Exception:
-                pass
-            return False
+            return verify_browser_page(expected_url, expected_title, expected_title.split()[0])
         if expected_app:
             app_key = expected_app.lower()
-            exe_hint = " ".join(APPS.get(app_key, [app_key])).lower()
-            if verify_window_contains(app_key):
+            exe_hint = APPS.get(app_key, app_key).lower()
+            verified_window = False
+            if verify_window_contains(app_key, baseline=_win_baseline):
                 update_runtime_state(active_application=app_key)
-                return True
-            try:
-                if psutil:
-                    for proc in psutil.process_iter(["name"]):
+                verified_window = True
+            if PSUTIL_OK:
+                try:
+                    new_process_found = False
+                    for proc in psutil.process_iter(["pid", "name"]):
                         pname = (proc.info.get("name") or "").lower()
-                        if app_key in pname or any(piece and piece in pname for piece in re.split(r"[\s.\\/-]+", exe_hint)):
+                        pid = proc.info.get("pid")
+                        is_match = app_key in pname or any(
+                            piece and piece in pname
+                            for piece in re.split(r"[\s.\\/-]+", exe_hint)
+                        )
+                        if is_match and pid not in _pid_baseline:
+                            new_process_found = True
                             update_runtime_state(active_application=app_key)
-                            return True
-            except Exception:
-                pass
-            return False
-        return verify_window_contains(tl) or verify_screen_ocr(tl)
+                            break
+                    if new_process_found:
+                        return True, "new_process"
+                except Exception:
+                    pass
+            if verified_window:
+                return True, "new_window_title"
+            return False, "app not detected (no new window or process since launch attempt)"
+        ok = verify_window_contains(tl, baseline=_win_baseline) or verify_screen_ocr(tl)
+        return (ok, "window_or_ocr" if ok else "no window or OCR match")
+
+    _win_baseline = list_windows()
+    _pid_baseline: set = set()
+    if PSUTIL_OK:
+        try:
+            _pid_baseline = {p.pid for p in psutil.process_iter(["pid"])}
+        except Exception:
+            _pid_baseline = set()
+
+    inner = _do_open()
+    if isinstance(inner, dict) and inner.get("verified") is not None:
+        return inner
+    if isinstance(inner, dict) and inner.get("status") == "error":
+        return inner
+
+    payload = inner if isinstance(inner, dict) else {"opened": inner}
 
     return run_with_verification(
-        _do_open,
+        lambda: payload,
         _verify_open,
         f"open {tl}",
-        correction_func=lambda: webbrowser.open(SITES.get(tl, f"https://www.google.com/search?q={urllib.parse.quote(tl)}")),
+        correction_func=lambda: webbrowser.open(
+            expected_url or SITES.get(tl, f"https://www.google.com/search?q={urllib.parse.quote(tl)}")
+        ),
+        action_name="open",
     )
 
 
@@ -2367,36 +2871,416 @@ def ask_ai_brain(prompt: str, mem_ctx: bool = True) -> str:
         return f"I searched for '{prompt[:60]}' but couldn't get a clear answer. {e}"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TASK PLANNER + RECOVERY ENGINE + LONG-RUNNING WORKFLOWS (v31)
+# ══════════════════════════════════════════════════════════════════════════════
+EXECUTABLE_ACTIONS = frozenset({
+    # Core (original list — unchanged)
+    "open", "search_web", "read_inbox", "send_email", "draft_email_in_browser",
+    "organize_folder", "process_invoices", "screenshot", "web_research",
+    "speak", "get_system_info", "get_time", "get_date",
+    "find_leads_and_email", "bulk_email", "check_social_messages",
+    "list_payment_queue", "research_and_write", "create_file", "create_excel",
+    "create_folder_files", "create_word_report", "summarize_pdf",
+    "browser_read_page", "browser_search_workflow", "browser_extract_and_summarize",
+    "research_to_notepad", "generate_report", "save_report",
+    # Added: real, confirmed exec_cmd branches that were silently dropped
+    # from AI-planned multi-step goals because they weren't on this list.
+    # Each name below is verified to match an exact `action == "..."` or
+    # `action in {...}` branch in exec_cmd, backed by a real implemented
+    # function — no aliases, no unimplemented placeholders.
+    "analyze_competitors", "approve_payment", "reject_payment",
+    "book_meeting", "check_calendar", "create_newsletter", "daily_summary",
+    "draft_contract", "extract_invoice", "find_leads", "generate_ad_document",
+    "generate_invoice", "generate_job_description", "generate_proposal",
+    "generate_social_content", "investor_email_report", "monitor_errors",
+    "rename_files", "read_spreadsheet", "track_expense",
+    "post_twitter", "post_linkedin", "post_facebook", "wa_send",
+    "start_social_replies", "stop_social_replies",
+})
+
+
+
+def _validate_executable_step(step: dict) -> bool:
+    action = str(step.get("action", "")).lower().strip()
+    return bool(action) and action in EXECUTABLE_ACTIONS
+
+
 def ai_plan_task(task: str) -> Optional[list]:
     """
-    Ask AI to decompose a free-form goal into a list of exec_cmd-compatible
-    action dicts. Returns None if parsing fails (caller falls back to ask_ai).
+    Ask AI to decompose a free-form goal into executable action dicts.
+    Only returns steps whose actions are in EXECUTABLE_ACTIONS.
     """
-    valid_actions = [
-        "open", "search_web", "read_inbox", "send_email", "draft_email_in_browser",
-        "organize_folder", "process_invoices", "screenshot", "web_research",
-        "ask_ai", "speak", "get_system_info", "get_time", "get_date",
-        "find_leads_and_email", "bulk_email", "check_social_messages",
-        "list_payment_queue", "enterprise_automation", "research_and_write",
-    ]
+    valid_actions = sorted(EXECUTABLE_ACTIONS)
     prompt = (
         f"You are Dex, a desktop automation agent. Convert this user goal into a JSON array "
         f"of action steps. Each step must be a JSON object with an 'action' key chosen from: "
-        f"{', '.join(valid_actions)}. Max 6 steps. Respond ONLY with a valid JSON array, "
+        f"{', '.join(valid_actions)}. Max 8 steps. Respond ONLY with a valid JSON array, "
         f"no markdown, no explanation.\n\nGoal: {task}"
     )
     try:
         raw = ask_ai_brain(prompt, mem_ctx=False)
         raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
         m = re.search(r"\[.*\]", raw, re.DOTALL)
-        if not m: return None
+        if not m:
+            return None
         steps = json.loads(m.group())
-        if not isinstance(steps, list) or not steps: return None
-        validated = [s for s in steps if isinstance(s, dict) and "action" in s]
-        return validated[:6] if validated else None
+        if not isinstance(steps, list) or not steps:
+            return None
+        validated = [s for s in steps if isinstance(s, dict) and _validate_executable_step(s)]
+        return validated[:8] if validated else None
     except Exception as e:
         log.warning("ai_plan_task failed: %s", e)
         return None
+
+
+def _step_graph_from_commands(commands: List[dict], goal: str) -> dict:
+    """Build step / execution / verification graph from parsed commands."""
+    steps = []
+    for i, cmd in enumerate(commands):
+        if not isinstance(cmd, dict):
+            continue
+        action = str(cmd.get("action", "")).lower()
+        steps.append({
+            "id": f"step_{i + 1}",
+            "action": action,
+            "params": {k: v for k, v in cmd.items() if k != "action"},
+            "depends_on": [f"step_{i}"] if i > 0 else [],
+            "status": "pending",
+            "verified": False,
+            "attempts": 0,
+            "max_attempts": 3,
+            "failure_reason": "",
+            "verification_reason": "",
+            "result": None,
+            "alternatives_tried": [],
+        })
+    return {
+        "goal": goal,
+        "workflow_id": hashlib.md5(f"{goal}-{time.time()}".encode()).hexdigest()[:12],
+        "status": "running",
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "updated_at": "",
+        "steps": steps,
+        "completed": [],
+        "failed": [],
+    }
+
+
+def decompose_goal_to_graph(goal: str) -> dict:
+    """
+    Goal → task decomposition → step graph.
+    Uses local parser first; AI planner only for unrecognized multi-step goals.
+    """
+    goal = goal.strip()
+    parts = _split_compound_task(goal)
+    all_commands: List[dict] = []
+    if len(parts) > 1:
+        for part in parts:
+            parsed = local_parse(part)
+            if parsed:
+                all_commands.extend(parsed)
+            elif len(part.split()) <= 5:
+                all_commands.append({"action": "open", "target": part})
+    else:
+        parsed = local_parse(goal)
+        if parsed:
+            all_commands = parsed
+        else:
+            ai_steps = ai_plan_task(goal)
+            if ai_steps:
+                all_commands = ai_steps
+            elif len(goal.split()) <= 5:
+                all_commands = [{"action": "open", "target": goal}]
+    if not all_commands:
+        return _step_graph_from_commands([], goal)
+    return _step_graph_from_graph_commands(all_commands, goal)
+
+
+def _step_graph_from_graph_commands(commands: List[dict], goal: str) -> dict:
+    return _step_graph_from_commands(commands, goal)
+
+
+def _save_workflow_state(graph: dict) -> None:
+    try:
+        WORKFLOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WORKFLOW_STATE_FILE.write_text(json.dumps(graph, indent=2, default=str), encoding="utf-8")
+    except Exception as e:
+        log.warning("workflow save: %s", e)
+
+
+def _load_workflow_state() -> Optional[dict]:
+    try:
+        if WORKFLOW_STATE_FILE.exists():
+            data = json.loads(WORKFLOW_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("status") == "running":
+                return data
+    except Exception as e:
+        log.warning("workflow load: %s", e)
+    return None
+
+
+def cancel_active_workflow(reason: str = "user cancelled") -> dict:
+    global _active_workflow
+    _abort_flag.set()
+    with _workflow_lock:
+        wf = dict(_active_workflow) if _active_workflow else _load_workflow_state()
+        if wf:
+            wf["status"] = "cancelled"
+            wf["cancel_reason"] = reason
+            wf["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            _save_workflow_state(wf)
+            _active_workflow = {}
+    _abort_flag.clear()
+    speak("Workflow cancelled.")
+    audit.info("WORKFLOW_CANCELLED reason=%s", reason)
+    return make_execution_result("cancel_workflow", reason, True, verification_reason="workflow cancelled")
+
+
+def get_workflow_progress() -> dict:
+    with _workflow_lock:
+        wf = _active_workflow or _load_workflow_state() or {}
+    if not wf:
+        return make_execution_result("workflow_status", "no active workflow", True, verification_reason="informational")
+    total = len(wf.get("steps", []))
+    done = len(wf.get("completed", []))
+    return make_execution_result(
+        "workflow_status",
+        f"{done}/{total} steps",
+        True,
+        verification_reason="informational",
+        workflow=wf,
+        progress_pct=round(100 * done / total, 1) if total else 0,
+    )
+
+
+RECOVERY_ALTERNATIVES: Dict[str, List[dict]] = {
+    "open": [
+        {},
+        {"action": "search_web", "note": "fallback search"},
+    ],
+    "search_web": [
+        {},
+        {"action": "open", "target": "google"},
+    ],
+    "create_file": [
+        {},
+        {"action": "create_file", "retry_notepad": True},
+    ],
+    "screenshot": [
+        {},
+        {"action": "screenshot"},
+    ],
+    "summarize_pdf": [
+        {},
+        {"action": "summarize_pdf"},
+    ],
+    "research_and_write": [
+        {},
+        {"action": "browser_search_workflow"},
+    ],
+    "browser_search_workflow": [
+        {},
+        {"action": "research_to_notepad"},
+    ],
+}
+
+
+def _build_recovery_command(step: dict, alt_index: int, last_failure: str) -> dict:
+    """Build alternate executable command for a failed step."""
+    action = step.get("action", "")
+    params = dict(step.get("params") or {})
+    cmd = {"action": action, **params}
+    alts = RECOVERY_ALTERNATIVES.get(action, [{}])
+    alt = alts[min(alt_index, len(alts) - 1)] if alts else {}
+    if alt_index == 0:
+        return cmd
+    if alt.get("action") == "search_web" and params.get("target"):
+        cmd = {"action": "search_web", "query": str(params.get("target", ""))}
+    elif alt.get("action") == "open" and alt.get("target"):
+        cmd = {"action": "open", "target": alt["target"]}
+    elif alt.get("action") == "browser_search_workflow":
+        q = params.get("query") or _session_context.get("last_goal") or "research topic"
+        cmd = {"action": "browser_search_workflow", "query": str(q)}
+    elif alt.get("action") == "research_to_notepad":
+        q = params.get("query") or str(last_failure)[:80] or "research"
+        cmd = {"action": "research_to_notepad", "query": q}
+    elif alt.get("retry_notepad"):
+        cmd = dict(cmd)
+    audit.info("RECOVERY_ALT action=%s alt_index=%s cmd=%s failure=%s", action, alt_index, cmd, last_failure[:80])
+    return cmd
+
+
+def recover_step(step: dict, last_result: dict, token: str, alt_index: int) -> dict:
+    """Recovery layer: retry with alternate execution path."""
+    failure = (
+        last_result.get("failure_reason")
+        or last_result.get("message")
+        or "unknown failure"
+    )
+    cmd = _build_recovery_command(step, alt_index, failure)
+    step.setdefault("alternatives_tried", []).append({"alt_index": alt_index, "cmd": cmd})
+    audit.info(
+        "RECOVERY step=%s attempt=%s alt=%s reason=%s",
+        step.get("id"), step.get("attempts"), alt_index, failure[:100],
+    )
+    speak(f"Retrying step {step.get('id', '?')} using alternate method.")
+    return finalize_cmd_result(str(cmd.get("action", "?")), exec_cmd(cmd, token))
+
+
+def replan_after_failure(graph: dict, failed_step: dict, token: str) -> Optional[dict]:
+    """Re-plan remaining work when recovery exhausts retries."""
+    goal = graph.get("goal", "")
+    failure = failed_step.get("failure_reason") or "step failed"
+    remaining_goal = (
+        f"Original goal: {goal}. Step '{failed_step.get('action')}' failed: {failure}. "
+        f"Provide a simpler JSON array of remaining executable steps only."
+    )
+    new_steps = ai_plan_task(remaining_goal)
+    if not new_steps:
+        return None
+    base = len(graph.get("steps", []))
+    for i, cmd in enumerate(new_steps):
+        graph["steps"].append({
+            "id": f"replan_{base + i + 1}",
+            "action": cmd.get("action"),
+            "params": {k: v for k, v in cmd.items() if k != "action"},
+            "depends_on": [],
+            "status": "pending",
+            "verified": False,
+            "attempts": 0,
+            "max_attempts": 2,
+            "failure_reason": "",
+            "verification_reason": "",
+            "result": None,
+            "alternatives_tried": [],
+            "replanned": True,
+        })
+    audit.info("REPLAN added %s steps after failure on %s", len(new_steps), failed_step.get("id"))
+    speak(f"Re-planning. Added {len(new_steps)} alternate steps.")
+    return graph
+
+
+def execute_planned_workflow(goal: str, token: str, graph: Optional[dict] = None) -> dict:
+    """
+    Execute step graph with progress tracking, recovery, cancellation, persistence.
+    """
+    global _active_workflow
+    _abort_flag.clear()
+    if graph is None:
+        graph = decompose_goal_to_graph(goal)
+    if not graph.get("steps"):
+        unknown = exec_cmd({"action": "unknown_task", "task": goal}, token)
+        return {
+            "status": "error", "ok": 0, "total": 0, "verified": False,
+            "result": unknown.get("failure_reason", "no steps"), "steps": [unknown],
+        }
+
+    with _workflow_lock:
+        _active_workflow = graph
+    _save_workflow_state(graph)
+
+    total = len(graph["steps"])
+    ok_count = 0
+    results: List[dict] = []
+    speak(f"Starting workflow: {total} steps.")
+
+    for idx, step in enumerate(graph["steps"]):
+        if _abort_flag.is_set():
+            graph["status"] = "cancelled"
+            _save_workflow_state(graph)
+            return {
+                "status": "error", "ok": ok_count, "total": total, "verified": False,
+                "result": "Workflow cancelled", "steps": results, "workflow": graph,
+            }
+
+        if step.get("status") == "completed":
+            ok_count += 1
+            continue
+
+        step_id = step.get("id", f"step_{idx + 1}")
+        action = step.get("action", "?")
+        params = step.get("params") or {}
+        cmd = {"action": action, **params}
+
+        speak(f"Step {idx + 1} of {total}: {action}.")
+        log.info("WORKFLOW %s action=%s params=%s", step_id, action, str(params)[:120])
+
+        step_result = None
+        verified = False
+        max_attempts = int(step.get("max_attempts") or 3)
+
+        for attempt in range(1, max_attempts + 1):
+            if _abort_flag.is_set():
+                break
+            step["attempts"] = attempt
+            if attempt == 1:
+                step_result = finalize_cmd_result(action, exec_cmd(cmd, token))
+            else:
+                step_result = recover_step(step, step_result or {}, token, attempt - 1)
+
+            verified = is_verified_step(step_result)
+            if verified:
+                break
+            time.sleep(0.3 + attempt * 0.2)
+
+        if not verified and not _abort_flag.is_set():
+            replan_after_failure(graph, {
+                **step,
+                "failure_reason": (step_result or {}).get("failure_reason", "failed"),
+            }, token)
+            _save_workflow_state(graph)
+
+        step["result"] = step_result
+        step["verified"] = verified
+        step["status"] = "completed" if verified else "failed"
+        step["failure_reason"] = "" if verified else (step_result or {}).get("failure_reason", "failed")
+        step["verification_reason"] = (step_result or {}).get("verification_reason", "")
+        step["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        graph["updated_at"] = step["updated_at"]
+
+        results.append(step_result or {})
+        if verified:
+            ok_count += 1
+            graph.setdefault("completed", []).append(step_id)
+        else:
+            graph.setdefault("failed", []).append(step_id)
+            log.warning("WORKFLOW step failed: %s — %s", step_id, step.get("failure_reason"))
+
+        _save_workflow_state(graph)
+        update_runtime_state(
+            last_action=f"workflow_{step_id}",
+            last_result=step.get("verification_reason") or step.get("failure_reason"),
+            last_verified=verified,
+        )
+
+    graph["status"] = "completed" if ok_count == total else ("cancelled" if _abort_flag.is_set() else "partial")
+    _save_workflow_state(graph)
+    with _workflow_lock:
+        _active_workflow = {}
+
+    verified_all = ok_count == total and total > 0
+    summary = f"Workflow {'verified' if verified_all else 'incomplete'}: {ok_count}/{total} — {goal[:60]}"
+    _session_context["last_goal"] = goal
+    _session_context["last_result"] = summary
+    _session_context["turns"].append(f"workflow: {summary}")
+
+    if verified_all:
+        speak(jarvis_done())
+    elif ok_count > 0:
+        speak(f"Completed {ok_count} of {total} steps. Some steps could not be verified.")
+    else:
+        speak("The workflow could not be completed.")
+
+    return {
+        "status": "ok" if verified_all else "error",
+        "ok": ok_count,
+        "total": total,
+        "verified": verified_all,
+        "result": summary,
+        "steps": results,
+        "workflow": graph,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2471,10 +3355,52 @@ def generate_report(report_type: str, data: str = "") -> dict:
     content = ask_ai_brain(prompt)
     p = DATA_DIR / f"{report_type.replace(' ', '_')}_{datetime.date.today()}.txt"
     p.write_text(content, encoding="utf-8")
-    try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
-    except Exception: pass
-    speak(f"{report_type.title()} report ready.")
-    return {"status": "ok", "report": content[:500]}
+    verified = p.exists() and p.stat().st_size > 0
+    if verified:
+        try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+        except Exception: pass
+        _session_context["last_report"] = str(p)
+        _session_context["last_report_type"] = report_type
+        speak(f"{report_type.title()} report ready.")
+    else:
+        speak(f"Failed to generate {report_type} report.")
+    return make_execution_result(
+        "generate_report", str(p), verified,
+        verification_reason="report file on disk" if verified else "report not saved",
+        failure_reason="" if verified else "report file missing",
+        report=content[:500],
+        path=str(p),
+    )
+
+
+def save_report(content: str, filename: str = "", path: str = "") -> dict:
+    if not content:
+        return make_execution_result("save_report", "", False, failure_reason="no content to save")
+    if not filename:
+        filename = f"report_{int(time.time())}.txt"
+    if not filename.lower().endswith(".txt"):
+        filename += ".txt"
+    target_path = Path(path) if path else DATA_DIR
+    if path.lower() in ("desktop", "~\\desktop", "desktop\\"):
+        target_path = Path.home() / "Desktop"
+    target_path.mkdir(parents=True, exist_ok=True)
+    p = target_path / filename
+    p.write_text(content, encoding="utf-8")
+    verified = p.exists() and p.stat().st_size > 0
+    if verified:
+        try: subprocess.Popen(f'notepad.exe "{p}"', shell=True)
+        except Exception: pass
+        _session_context["last_report"] = str(p)
+        _session_context["last_saved_file"] = str(p)
+        speak(f"Report saved as {filename}.")
+    else:
+        speak(f"Failed to save report.")
+    return make_execution_result(
+        "save_report", str(p), verified,
+        verification_reason="file on disk with content" if verified else "file not created or empty",
+        failure_reason="" if verified else "file creation failed",
+        path=str(p),
+    )
 
 
 def generate_proposal(client: str, service: str) -> dict:
@@ -2845,11 +3771,17 @@ def _split_compound_task(task: str) -> list:
             if len(parts) > 1:
                 return parts[:6]
     if " and " in tl:
-        idx   = tl.index(" and ")
-        left  = task[:idx].strip()
-        right = task[idx + 5:].strip()
-        if left and right and _has_action_verb(left) and _has_action_verb(right):
-            return [left, right]
+        raw_parts = re.split(r"\s+and\s+", task, flags=re.IGNORECASE)
+        parts = [p.strip() for p in raw_parts if p.strip()]
+        if len(parts) > 1:
+            filtered_parts = []
+            for i, part in enumerate(parts):
+                if _has_action_verb(part):
+                    filtered_parts.append(part)
+                elif i > 0 and filtered_parts:
+                    filtered_parts[-1] = filtered_parts[-1] + " and " + part
+            if len(filtered_parts) > 1:
+                return filtered_parts[:6]
     return [task]
 
 
@@ -2859,6 +3791,21 @@ def _split_compound_task(task: str) -> list:
 def local_parse(task: str) -> list:
     t  = task.strip()
     tl = t.lower()
+
+    if re.search(r"\b(?:cancel|stop|abort|never\s+mind)\b.*\b(?:task|workflow|that|it)\b", tl) or \
+       re.fullmatch(r"(?:stop|cancel|abort|nevermind|never mind)", tl):
+        return [{"action": "cancel_workflow"}]
+
+    if re.search(r"\b(?:workflow|task)\s+(?:status|progress)\b", tl) or re.fullmatch(r"progress", tl):
+        return [{"action": "workflow_status"}]
+
+    if re.search(r"\b(?:read|summarize)\s+(?:this\s+)?(?:web\s+)?page\b", tl) or \
+       re.search(r"\bwhat(?:'s| is)\s+on\s+(?:this|the)\s+page\b", tl):
+        return [{"action": "browser_extract_and_summarize"}]
+
+    m = re.search(r"(?:search|google)\s+(.+?)\s+(?:and\s+)?(?:save|write)\s+(?:report|results)", tl)
+    if m:
+        return [{"action": "browser_search_workflow", "query": m.group(1).strip()}]
 
     if re.search(r"\b(voice|microphone|mic)\s+(status|health|diagnostic|diagnostics)\b", tl):
         return [{"action": "voice_status"}]
@@ -3197,7 +4144,7 @@ def local_parse(task: str) -> list:
     if m: return [{"action": "open", "target": m.group(1).strip()}]
 
     m = re.search(r"(?:google|search\s+for|look\s+up|search|find)\s+(.+?)(?:\s+on\s+google)?$", tl)
-    if m and "youtube" not in tl and "email" not in tl and "lead" not in tl:
+    if m and "youtube" not in tl and "email" not in tl and "lead" not in tl and "research" not in tl:
         q = m.group(1).strip()
         if q and len(q) > 1: return [{"action": "search_web", "query": q}]
 
@@ -3280,8 +4227,8 @@ def local_parse(task: str) -> list:
     if re.search(r"\b(?:ping|test|status|are\s+you\s+there)\b", tl):
         return [{"action": "ping"}]
 
-    # ULTIMATE FALLBACK — AI brain
-    return [{"action": "ask_ai", "prompt": task}]
+    # No parser match — caller must treat as unknown (no AI auto-fallback)
+    return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3289,15 +4236,15 @@ def local_parse(task: str) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 def exec_cmd(cmd: dict, token: str = None) -> dict:
     if not isinstance(cmd, dict):
-        return {"status": "error", "message": "Command must be a dict"}
+        return make_execution_result("exec_cmd", "", False, failure_reason="Command must be a dict")
     action = str(cmd.get("action", "")).lower().strip()
     if not action:
-        return {"status": "error", "message": "No action specified"}
+        return make_execution_result("exec_cmd", "", False, failure_reason="No action specified")
 
     raw_str = " ".join(str(v) for v in cmd.values()).lower()
     if any(b in raw_str for b in BLOCKED_COMMANDS):
         log.warning("BLOCKED: %s", action)
-        return {"status": "blocked", "message": "Command blocked for safety"}
+        return make_execution_result(action, "", False, failure_reason="Command blocked for safety", status="blocked")
 
     log.info("EXEC action=%s", action)
     audit.info("ACTION=EXEC | %s", action)
@@ -3330,7 +4277,22 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             print(f"\n  [Dex AI]\n{resp}\n")
             speak(resp[:300])
             _notify("Dex AI", resp[:150])
-            return {"status": "ok", "response": resp}
+            return make_execution_result(
+                action, resp[:500], True,
+                verification_reason="informational Q&A response",
+                executed=False,
+                advisory_only=True,
+                response=resp,
+            )
+
+        if action == "unknown_task":
+            task_txt = str(cmd.get("task") or cmd.get("prompt") or "")
+            speak("I don't know how to do that yet. Try rephrasing or say help.")
+            return make_execution_result(
+                action, task_txt, False,
+                failure_reason="Unknown task — no executable action mapped",
+                message=f"Could not execute: {task_txt[:80]}",
+            )
 
         # ── ENTERPRISE AUTOMATION ─────────────────────────────────────────────
         if action == "enterprise_automation":
@@ -3344,7 +4306,14 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
             print(f"\n  [BUSINESS TASK]\n{resp}\n")
             speak(resp[:300])
             _notify("Dex", resp[:150])
-            return {"status": "ok", "response": resp}
+            return make_execution_result(
+                action, resp[:500], False,
+                verification_reason="guidance only — no desktop action executed",
+                failure_reason="Guidance provided but task was not executed on desktop",
+                executed=False,
+                advisory_only=True,
+                response=resp,
+            )
 
         # ── DAILY SUMMARY ─────────────────────────────────────────────────────
         if action == "daily_summary":
@@ -3731,8 +4700,20 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"screenshot", "take_screenshot", "capture_screen"}:
             speak("Taking a screenshot.")
             ss = take_screenshot(save=True)
-            if ss: speak("Screenshot taken."); return {"status": "ok", "screenshot": ss}
-            return {"status": "error", "message": "Screenshot failed"}
+            if ss:
+                ss_path = sorted(SS_DIR.glob("ss_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+                path = str(ss_path[0]) if ss_path else ""
+                verified = bool(path and Path(path).exists())
+                speak("Screenshot taken." if verified else "Screenshot may have failed.")
+                return make_execution_result(
+                    action, path or "screenshot captured",
+                    verified,
+                    verification_reason="screenshot file on disk" if verified else "no screenshot file",
+                    failure_reason="" if verified else "screenshot file not found",
+                    screenshot=ss,
+                    path=path,
+                )
+            return make_execution_result(action, "", False, failure_reason="Screenshot failed")
 
         if action in {"ocr", "ocr_screen", "read_screen"}:
             text = read_screen_text()
@@ -3820,15 +4801,12 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"search_web", "search", "google", "google_search"}:
             q = str(cmd.get("query") or cmd.get("text") or "")
             target_url = f"https://www.google.com/search?q={urllib.parse.quote(q)}" if q else "https://www.google.com"
-            def _do_search():
-                speak(f"Searching for {q[:50]}." if q else "Opening Google.")
-                webbrowser.open(target_url)
-                return {"status": "ok", "url": target_url}
-            return run_with_verification(
-                _do_search,
-                lambda: verify_window_contains("google") or verify_screen_ocr("google"),
-                f"search google {q[:50]}",
-                correction_func=lambda: webbrowser.open(target_url),
+            speak(f"Searching for {q[:50]}." if q else "Opening Google.")
+            return browser_navigate(
+                target_url,
+                expected_title_hint="google",
+                expected_content="google",
+                action_name="search_web",
             )
 
         if action in {"web_research", "research"}:
@@ -3876,6 +4854,30 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
                                  str(cmd.get("by") or "css"), bool(cmd.get("submit", False)))
         if action == "selenium_click":
             return selenium_click(str(cmd.get("selector") or ""), str(cmd.get("by") or "css"))
+
+        # ── BROWSER AGENT (v31) ───────────────────────────────────────────────
+        if action == "browser_read_page":
+            return browser_read_page(int(cmd.get("max_chars") or 8000))
+        if action == "browser_search_workflow":
+            return browser_search_workflow(
+                str(cmd.get("query") or cmd.get("text") or ""),
+                str(cmd.get("filename") or cmd.get("name") or ""),
+            )
+        if action == "browser_extract_and_summarize":
+            return browser_extract_and_summarize(str(cmd.get("query") or cmd.get("topic") or ""))
+        if action in {"save_report", "save_research_report"}:
+            content = str(cmd.get("content") or cmd.get("text") or cmd.get("body") or "")
+            filename = str(cmd.get("name") or cmd.get("filename") or "")
+            path = str(cmd.get("path") or "")
+            if not content:
+                content = ask_ai_brain(f"Write a short business report about: {cmd.get('topic') or 'daily operations'}")
+            return save_report(content, filename, path)
+
+        # ── WORKFLOW CONTROL (v31) ────────────────────────────────────────────
+        if action in {"cancel_workflow", "cancel_task", "stop_task", "abort_task"}:
+            return cancel_active_workflow(str(cmd.get("reason") or "user cancelled"))
+        if action in {"workflow_status", "task_progress", "progress"}:
+            return get_workflow_progress()
 
         # ── MEMORY ────────────────────────────────────────────────────────────
         if action in {"remember", "save_fact", "memorize"}:
@@ -3951,22 +4953,31 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         tgt = (cmd.get("url") or cmd.get("app") or cmd.get("target") or cmd.get("name") or "")
         if tgt:
             res = smart_open(str(tgt))
-            if res.get("status") == "ok": return res
+            if res.get("verified"):
+                return finalize_cmd_result(action, res)
 
         res = smart_open(action.replace("_", " ").strip())
-        if res.get("status") == "ok": return res
+        if res.get("verified"):
+            return finalize_cmd_result(action, res)
 
-        # ABSOLUTE FALLBACK — ask AI
-        log.warning("Unhandled action: '%s' — routing to AI brain", action)
-        speak("Let me think about how to handle that.")
-        resp = ask_ai_brain(f"How do I: {action} {str(cmd)[:100]}")
-        speak(resp[:200])
-        return {"status": "ok", "response": resp}
+        log.warning("Unhandled action: '%s'", action)
+        speak("I don't know how to execute that action.")
+        return make_execution_result(
+            action,
+            str(cmd)[:200],
+            False,
+            failure_reason=f"Unhandled action: {action}",
+            message=f"No executor for action: {action}",
+        )
 
     except Exception as e:
         log.error("exec_cmd [%s]: %s", action, e, exc_info=True)
         speak("I ran into a problem with that. Let me try a different approach.")
-        return {"status": "error", "message": f"Exception in {action}: {e}"}
+        return make_execution_result(
+            action, "", False,
+            failure_reason=str(e),
+            message=f"Exception in {action}: {e}",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3974,17 +4985,18 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 def execute_task(task: str, token: str) -> dict:
     if not task or not task.strip():
-        return {"status": "error", "ok": 0, "total": 0, "result": "Empty task"}
-    if not _desktop_task_lock.acquire(blocking=False):
-        _remember_task_queue(task, "queued")
-        with _desktop_task_lock:
-            _remember_task_queue(task, "running")
-            return execute_task(task, token)
-    try:
-        return _execute_task_locked(task, token)
-    finally:
-        _remember_task_queue(task, "finished")
-        _desktop_task_lock.release()
+        return {
+            "status": "error", "ok": 0, "total": 0,
+            "result": "Empty task", "verified": False,
+            "failure_reason": "empty task",
+        }
+    _remember_task_queue(task, "queued")
+    with _desktop_task_lock:
+        _remember_task_queue(task, "running")
+        try:
+            return _execute_task_locked(task, token)
+        finally:
+            _remember_task_queue(task, "finished")
 
 
 def _execute_task_locked(task: str, token: str) -> dict:
@@ -3997,70 +5009,71 @@ def _execute_task_locked(task: str, token: str) -> dict:
     # ── COMPOUND TASK SPLITTING ───────────────────────────────────────────────
     parts = _split_compound_task(task)
     if len(parts) > 1:
-        log.info("COMPOUND TASK: %d parts", len(parts))
-        speak(f"Got it. I'll handle that in {len(parts)} steps.")
-        total_ok = 0
-        for i, part in enumerate(parts, 1):
-            speak(f"Step {i}: {part[:40]}.")
-            r = execute_task(part, token)
-            if r.get("status") == "ok" and r.get("ok", 0) >= r.get("total", 1):
-                total_ok += 1
-            time.sleep(0.4)
-        status = "ok" if total_ok == len(parts) else "error"
-        speak((jarvis_done() if status == "ok" else "I could not verify every step.") + f" Completed {total_ok} of {len(parts)} steps.")
-        return {"status": status, "ok": total_ok, "total": len(parts), "verified": status == "ok"}
+        log.info("COMPOUND TASK: %d parts — workflow engine", len(parts))
+        speak(f"Got it. Planning {len(parts)} steps.")
+        return execute_planned_workflow(task, token)
 
     # ── SINGLE TASK ───────────────────────────────────────────────────────────
     commands = local_parse(task)
 
     if not commands:
-        tl    = task.lower().strip()
+        tl = task.lower().strip()
         words = tl.split()
         is_open_like = len(words) <= 5 and not any(
             w in tl for w in ["send", "email", "search", "find", "create", "write", "post", "process", "organize"])
         if is_open_like:
             res = smart_open(task)
-            if res.get("status") == "ok":
+            if is_verified_step(res):
                 _convo.append(f"dex: Opened {task[:60]}")
                 with _mem_lock:
                     MEMORY["task_history"].append(f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
                 save_memory()
-                return {"status": "ok", "ok": 1, "total": 1, "verified": True, "result": f"Opened: {task}"}
+                return {
+                    "status": "ok", "ok": 1, "total": 1,
+                    "verified": True,
+                    "result": f"Opened: {task}",
+                    "steps": [res],
+                }
 
-        # Try AI planner for complex unrecognized tasks
-        ai_steps = ai_plan_task(task)
-        if ai_steps:
-            log.info("AI planner produced %d steps", len(ai_steps))
-            speak(f"Let me break that down. {len(ai_steps)} steps.")
-            ok_count = 0
-            for i, step in enumerate(ai_steps, 1):
-                speak(f"Step {i}: {step.get('action', '?')}.")
-                res = exec_cmd(step, token)
-                if res.get("status") in ("ok", "skipped") and res.get("verified", True) is not False: ok_count += 1
-                time.sleep(0.2)
-            status = "ok" if ok_count == len(ai_steps) else "error"
-            if status == "ok": speak(jarvis_done())
-            else: speak("I ran the plan, but not every step verified.")
-            return {"status": status, "ok": ok_count, "total": len(ai_steps), "verified": status == "ok"}
+        # Try AI planner workflow for complex unrecognized tasks
+        graph = decompose_goal_to_graph(task)
+        if graph.get("steps"):
+            return execute_planned_workflow(task, token, graph)
 
         speak("I'm not sure how to do that. Try rephrasing, or say 'help' for options.")
-        return {"status": "error", "ok": 0, "total": 0, "result": f"Could not parse: {task[:80]}"}
+        unknown_res = exec_cmd({"action": "unknown_task", "task": task}, token)
+        return {
+            "status": "error", "ok": 0, "total": 0,
+            "verified": False,
+            "result": unknown_res.get("failure_reason") or f"Could not parse: {task[:80]}",
+            "steps": [unknown_res],
+        }
 
-    ok_count = 0; total = len(commands); results = []
-    print(f"  [TASK] {total} step{'s' if total > 1 else ''}...")
+    total = len(commands)
+    # Multi-step parsed commands → workflow engine (recovery + replan)
+    if total > 1:
+        return execute_planned_workflow(task, token, _step_graph_from_commands(commands, task))
+
+    ok_count = 0
+    results = []
+    print(f"  [TASK] {total} step...")
 
     for i, c in enumerate(commands):
-        if not isinstance(c, dict): total -= 1; continue
+        if not isinstance(c, dict):
+            total -= 1
+            continue
         step_action = c.get("action", "?")
         log.info("  Step %d/%d: %s", i + 1, total, step_action)
-        if total > 1:
-            print(f"  [STEP {i+1}/{total}] {step_action}")
         try:
-            res = exec_cmd(c, token); results.append(res)
-            if res.get("status") in ("ok", "skipped") and res.get("verified", True) is not False:
+            res = finalize_cmd_result(step_action, exec_cmd(c, token))
+            results.append(res)
+            if is_verified_step(res):
                 ok_count += 1
             else:
-                log.warning("  Step %d failed: %s", i + 1, res.get("message", "?"))
+                log.warning(
+                    "  Step %d failed: %s | %s",
+                    i + 1, res.get("failure_reason", "?"), res.get("message", "?"),
+                )
             time.sleep(0.1)
         except Exception as e:
             log.error("  Step %d exception: %s", i + 1, e)
@@ -4069,6 +5082,9 @@ def _execute_task_locked(task: str, token: str) -> dict:
     with _mem_lock:
         MEMORY["task_history"].append(f"{datetime.datetime.now().strftime('%H:%M')} {task[:80]}")
     save_memory()
+    _session_context["last_goal"] = task
+    _session_context["last_command"] = task
+    _session_context["turns"].append(f"user: {task[:80]}")
 
     verified_all = ok_count == total and total > 0
     HEALTH["tasks_ok"] += ok_count if verified_all else 0
@@ -4109,7 +5125,7 @@ def setup_autostart():
 # ══════════════════════════════════════════════════════════════════════════════
 def login() -> Optional[str]:
     print("\n" + "=" * 55)
-    print("  DACEXY AGENT v30.0 — Login")
+    print("  DACEXY AGENT v31.0 — Login")
     print("=" * 55)
     print("  Register at: dacexy.vercel.app\n")
     try:
@@ -4214,6 +5230,66 @@ def _is_wake_word(heard: str) -> bool:
     return any(re.search(r"\b" + re.escape(w) + r"\b", h) for w in WAKE_WORDS)
 
 
+def _extract_inline_voice_command(heard: str) -> str:
+    """If user says 'Hey Dex open YouTube', skip second listen."""
+    h = heard.lower().strip()
+    for w in sorted(WAKE_WORDS, key=len, reverse=True):
+        m = re.search(r"\b" + re.escape(w) + r"\b\s+(.+)", h)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _enrich_voice_followup(command: str) -> str:
+    """Use recent task history for short follow-ups like 'do it again'."""
+    tl = command.lower().strip()
+    if not tl:
+        return command
+    followup_markers = (
+        "do it", "do that", "again", "repeat", "same thing", "open it",
+        "that one", "continue", "go ahead", "yes do it",
+    )
+    if tl in followup_markers or any(tl.startswith(m) for m in followup_markers):
+        with _mem_lock:
+            recent = list(MEMORY["task_history"])
+        if recent:
+            last = recent[-1]
+            if " " in last:
+                return last.split(" ", 1)[1].strip()
+    return command
+
+
+def _voice_command_is_risky(command: str) -> bool:
+    tl = command.lower()
+    return any(
+        k in tl for k in (
+            "delete", "send email", "bulk email", "pay ", "payment",
+            "run command", "execute", "shutdown", "format ",
+        )
+    )
+
+
+def _voice_is_interrupt(command: str) -> bool:
+    tl = command.lower().strip()
+    return tl in {
+        "stop", "cancel", "abort", "never mind", "nevermind", "quiet", "stop dex",
+        "cancel task", "stop task", "abort task",
+    } or bool(re.search(r"\b(?:stop|cancel|abort)\b", tl))
+
+
+def _voice_respond_to_task_result(result: dict) -> None:
+    if result.get("verified"):
+        speak(jarvis_done())
+        return
+    reason = (
+        result.get("failure_reason")
+        or result.get("result")
+        or result.get("message")
+        or "I could not verify completion."
+    )
+    speak(f"I could not verify that. {str(reason)[:140]}")
+
+
 def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
@@ -4283,37 +5359,44 @@ def _voice_loop():
 
         _voice_diag["wake_hits"] = int(_voice_diag.get("wake_hits", 0)) + 1
         log.info("Wake word detected: '%s'", heard)
-        speak("Yes sir?")
-        time.sleep(0.3)
 
-        # Listen for command — longer phrase time, no re-calibration
-        command = ""
-        try:
-            with sr.Microphone() as csrc:
-                try:
-                    caudio = rec.listen(csrc, timeout=8, phrase_time_limit=40)
-                except sr.WaitTimeoutError:
-                    speak("I didn't catch that.")
-                    continue
+        command = _extract_inline_voice_command(heard)
+        if not command:
+            speak("Yes sir?")
+            time.sleep(0.3)
+
+            # Listen for command — longer phrase time, no re-calibration
             try:
-                command = rec.recognize_google(caudio, language="en-IN").strip()
-            except sr.UnknownValueError:
-                _voice_diag["last_error"] = "command not understood"
-                speak("Could you repeat that?")
+                with sr.Microphone() as csrc:
+                    try:
+                        caudio = rec.listen(csrc, timeout=8, phrase_time_limit=40)
+                    except sr.WaitTimeoutError:
+                        speak("I didn't catch that.")
+                        continue
+                try:
+                    command = rec.recognize_google(caudio, language="en-IN").strip()
+                except sr.UnknownValueError:
+                    _voice_diag["last_error"] = "command not understood"
+                    speak("Could you repeat that?")
+                    continue
+                except sr.RequestError:
+                    _voice_diag.update({"last_error": "speech recognition request failed", "push_to_talk": True})
+                    continue
+            except Exception as e:
+                _voice_diag.update({"last_error": str(e), "push_to_talk": True})
                 continue
-            except sr.RequestError:
-                _voice_diag.update({"last_error": "speech recognition request failed", "push_to_talk": True})
-                continue
-        except Exception as e:
-            _voice_diag.update({"last_error": str(e), "push_to_talk": True})
-            continue
 
         if not command:
             continue
 
+        command = _enrich_voice_followup(command)
         _voice_diag["last_command"] = command
         log.info("Voice command: '%s'", command)
         print(f"\n  [VOICE] \"{command}\"")
+
+        if _voice_is_interrupt(command):
+            cancel_active_workflow("voice interrupt")
+            continue
 
         with _tok_lock:
             tok = _cur_token
@@ -4321,11 +5404,18 @@ def _voice_loop():
             speak("I'm not logged in yet.")
             continue
 
+        _session_context["last_command"] = command
+        _session_context["turns"].append(f"user: {command[:80]}")
+
+        if _voice_command_is_risky(command):
+            speak("That sounds sensitive. I'll ask for your approval before executing.")
+
         speak(jarvis_confirm())
 
         def _run(t_=tok, cmd_=command):
             try:
-                execute_task(cmd_, t_)
+                result = execute_task(cmd_, t_)
+                _voice_respond_to_task_result(result)
             except Exception as exc:
                 log.error("Voice task: %s", exc)
                 speak("Sorry, I ran into an error with that.")
@@ -4354,7 +5444,7 @@ def update_token(t: str):
 # ══════════════════════════════════════════════════════════════════════════════
 def _interactive_shell(token: str, tok_ref: list):
     print("\n" + "=" * 65)
-    print("  DEX v30.0 — COMMAND CENTER")
+    print("  DEX v31.0 — COMMAND CENTER")
     print("=" * 65)
     print(f"  Email    : {_smtp_cfg.get('email') or 'NOT CONFIGURED'}")
     print(f"  Voice    : {'ON — say Hey Dex' if _voice_on else 'OFF'}")
@@ -4430,7 +5520,7 @@ async def run_websocket(token: str):
                 await ws.send(json.dumps({
                     "type": "init", "platform": platform.system(),
                     "machine": platform.machine(), "hostname": socket.gethostname(),
-                    "version": "30.0",
+                    "version": "31.0",
                     "features": [
                         "voice3", "vision", "browser", "email", "social_selenium",
                         "bulk_email", "lead_gen", "web_research", "scheduler", "memory",
@@ -4490,7 +5580,7 @@ async def run_websocket(token: str):
                                 asyncio.run_coroutine_threadsafe(ws_send({
                                     "type": "task_result", "task_id": tid_,
                                     "status": r_.get("status", "ok"),
-                                    "ok": r_.get("ok", 1 if r_.get("status") in ("ok", "skipped") and r_.get("verified", True) is not False else 0),
+                                    "ok": r_.get("ok", 1 if r_.get("verified") else 0),
                                     "total": r_.get("total", 1),
                                     "result": str(r_.get("result") or r_.get("message") or r_.get("opened") or "done"),
                                     "data": r_,
@@ -4541,7 +5631,7 @@ async def run_websocket(token: str):
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    global _running
+    global _running, _chromedriver_path
 
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--command", help="Run one command through the verified executor and exit.")
@@ -4552,13 +5642,20 @@ def main():
         globals()["TTS_LIB_OK"] = False
 
     print("\n" + "=" * 65)
-    print("  DEX v30.0 — YOUR AI BUSINESS CO-ASSISTANT")
+    print("  DEX v31.0 — YOUR AI BUSINESS CO-ASSISTANT")
     print("  Voice · Email · Files · Social · Finance · Operations")
     print("=" * 65 + "\n")
 
     init_tts()
     load_memory()
     _load_runtime_state()
+
+    if SELENIUM_OK:
+        try:
+            _chromedriver_path = ChromeDriverManager().install()
+            log.info("ChromeDriver path cached: %s", _chromedriver_path)
+        except Exception as e:
+            log.warning("ChromeDriver caching failed: %s", e)
 
     if args.command:
         result = execute_task(args.command, get_token() or "")
@@ -4627,7 +5724,7 @@ def main():
     threading.Thread(target=_interactive_shell, args=(token, tok_ref), daemon=True, name="Shell").start()
 
     print("  " + "─" * 63)
-    print("  Dex v30.0 — LIVE")
+    print("  Dex v31.0 — LIVE")
     print(f"  Voice    : {'ON — say Hey Dex / Dex / Jarvis' if voice_ok else 'OFF (PyAudio not installed)'}")
     print(f"  Email    : {_smtp_cfg.get('email') or 'Not configured (type: configure email)'}")
     print(f"  Dashboard: dacexy.vercel.app")
