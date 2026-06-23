@@ -255,6 +255,12 @@ try:
 except Exception:
     docx_lib = None; DOCX_OK = False
 
+try:
+    import dex_tools; _DEX_TOOLS_OK = True
+except Exception as _dex_tools_err:
+    dex_tools = None; _DEX_TOOLS_OK = False
+    print(f"  [BOOT] dex_tools not loaded ({_dex_tools_err}); falling back to legacy planner.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -2909,15 +2915,26 @@ def _validate_executable_step(step: dict) -> bool:
 def ai_plan_task(task: str) -> Optional[list]:
     """
     Ask AI to decompose a free-form goal into executable action dicts.
-    Only returns steps whose actions are in EXECUTABLE_ACTIONS.
+
+    v32: now schema-aware. If dex_tools is available, the planner sees every
+    tool's actual parameters (not just bare action names), which is what was
+    previously missing — the AI could pick the right action but routinely
+    guessed at or omitted required arguments. Falls back to the original
+    bare-name prompt if dex_tools failed to import for any reason, so this
+    never becomes a hard dependency.
     """
-    valid_actions = sorted(EXECUTABLE_ACTIONS)
-    prompt = (
-        f"You are Dex, a desktop automation agent. Convert this user goal into a JSON array "
-        f"of action steps. Each step must be a JSON object with an 'action' key chosen from: "
-        f"{', '.join(valid_actions)}. Max 8 steps. Respond ONLY with a valid JSON array, "
-        f"no markdown, no explanation.\n\nGoal: {task}"
-    )
+    if _DEX_TOOLS_OK:
+        prompt = dex_tools.build_tool_prompt(task, max_steps=8)
+        valid_names = dex_tools.ALL_TOOL_ACTION_NAMES
+    else:
+        valid_actions = sorted(EXECUTABLE_ACTIONS)
+        prompt = (
+            f"You are Dex, a desktop automation agent. Convert this user goal into a JSON array "
+            f"of action steps. Each step must be a JSON object with an 'action' key chosen from: "
+            f"{', '.join(valid_actions)}. Max 8 steps. Respond ONLY with a valid JSON array, "
+            f"no markdown, no explanation.\n\nGoal: {task}"
+        )
+        valid_names = EXECUTABLE_ACTIONS
     try:
         raw = ask_ai_brain(prompt, mem_ctx=False)
         raw = re.sub(r"```(?:json)?", "", raw).strip().strip("`")
@@ -2927,7 +2944,10 @@ def ai_plan_task(task: str) -> Optional[list]:
         steps = json.loads(m.group())
         if not isinstance(steps, list) or not steps:
             return None
-        validated = [s for s in steps if isinstance(s, dict) and _validate_executable_step(s)]
+        validated = [
+            s for s in steps
+            if isinstance(s, dict) and str(s.get("action", "")).lower().strip() in valid_names
+        ]
         return validated[:8] if validated else None
     except Exception as e:
         log.warning("ai_plan_task failed: %s", e)
@@ -3795,6 +3815,14 @@ def local_parse(task: str) -> list:
     if re.search(r"\b(?:cancel|stop|abort|never\s+mind)\b.*\b(?:task|workflow|that|it)\b", tl) or \
        re.fullmatch(r"(?:stop|cancel|abort|nevermind|never mind)", tl):
         return [{"action": "cancel_workflow"}]
+
+    if re.fullmatch(r"(?:pause|hold on|wait a (?:sec|second|moment))", tl) or \
+       re.search(r"\bpause\b.*\b(?:task|workflow|agent|that|it)\b", tl):
+        return [{"action": "pause_workflow"}]
+
+    if re.fullmatch(r"(?:resume|continue|keep going|go on)", tl) or \
+       re.search(r"\bresume\b.*\b(?:task|workflow|agent|that|it)\b", tl):
+        return [{"action": "resume_workflow"}]
 
     if re.search(r"\b(?:workflow|task)\s+(?:status|progress)\b", tl) or re.fullmatch(r"progress", tl):
         return [{"action": "workflow_status"}]
@@ -4879,6 +4907,23 @@ def exec_cmd(cmd: dict, token: str = None) -> dict:
         if action in {"workflow_status", "task_progress", "progress"}:
             return get_workflow_progress()
 
+        # ── AGENT LOOP CONTROL (v32) ───────────────────────────────────────────
+        if action in {"pause_workflow", "pause_task", "pause_agent"}:
+            if _DEX_TOOLS_OK:
+                dex_tools.pause_loop()
+                return make_execution_result(action, "paused", True, verification_reason="loop paused")
+            return make_execution_result(action, "", False, failure_reason="dex_tools not loaded")
+        if action in {"resume_workflow", "resume_task", "resume_agent"}:
+            if _DEX_TOOLS_OK:
+                dex_tools.resume_loop()
+                return make_execution_result(action, "resumed", True, verification_reason="loop resumed")
+            return make_execution_result(action, "", False, failure_reason="dex_tools not loaded")
+        if action in {"agent_loop_status", "loop_status"}:
+            if _DEX_TOOLS_OK:
+                state = dex_tools.loop_state()
+                return make_execution_result(action, state, True, verification_reason="informational", loop=state)
+            return make_execution_result(action, "", False, failure_reason="dex_tools not loaded")
+
         # ── MEMORY ────────────────────────────────────────────────────────────
         if action in {"remember", "save_fact", "memorize"}:
             fact = str(cmd.get("fact") or cmd.get("text") or "")
@@ -5009,8 +5054,10 @@ def _execute_task_locked(task: str, token: str) -> dict:
     # ── COMPOUND TASK SPLITTING ───────────────────────────────────────────────
     parts = _split_compound_task(task)
     if len(parts) > 1:
-        log.info("COMPOUND TASK: %d parts — workflow engine", len(parts))
+        log.info("COMPOUND TASK: %d parts — agent loop", len(parts))
         speak(f"Got it. Planning {len(parts)} steps.")
+        if _DEX_TOOLS_OK:
+            return dex_tools.agent_loop(task, token)
         return execute_planned_workflow(task, token)
 
     # ── SINGLE TASK ───────────────────────────────────────────────────────────
@@ -5038,6 +5085,8 @@ def _execute_task_locked(task: str, token: str) -> dict:
         # Try AI planner workflow for complex unrecognized tasks
         graph = decompose_goal_to_graph(task)
         if graph.get("steps"):
+            if _DEX_TOOLS_OK:
+                return dex_tools.agent_loop(task, token)
             return execute_planned_workflow(task, token, graph)
 
         speak("I'm not sure how to do that. Try rephrasing, or say 'help' for options.")
@@ -5649,6 +5698,10 @@ def main():
     init_tts()
     load_memory()
     _load_runtime_state()
+
+    if _DEX_TOOLS_OK:
+        dex_tools.bind(sys.modules[__name__])
+        log.info("dex_tools bound: %d tools registered", len(dex_tools.TOOL_REGISTRY))
 
     if SELENIUM_OK:
         try:
