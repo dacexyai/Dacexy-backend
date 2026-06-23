@@ -545,6 +545,9 @@ _tts_engine        = None
 _tts_lock          = threading.Lock()
 _voice_on          = False
 _cur_token         = None
+# ── Barge-in (interrupt-while-speaking) state ────────────────────────────────
+_tts_speaking      = threading.Event()   # set while pyttsx3 is actively producing audio
+_tts_interrupt     = threading.Event()   # set to request the current utterance stop NOW
 _tok_lock          = threading.Lock()
 _smtp_cfg: Dict    = {}
 _sched_jobs: List  = []
@@ -654,6 +657,14 @@ def _tts_worker():
     CRITICAL: pyttsx3 engine created HERE inside the thread.
     Windows SAPI5 is COM STA — must be initialized on the same thread it runs on.
     pythoncom.CoInitialize() sets up the STA apartment for this thread.
+
+    Barge-in: registers pyttsx3's "started-word" callback (fires once per
+    word as it's spoken) and checks _tts_interrupt on every word. If set,
+    calls engine.stop() immediately — this is pyttsx3's real interrupt
+    primitive, safe to call from inside the callback since it runs on the
+    same event loop thread that runAndWait() is driving. This is what makes
+    "stop" / "wait" / a new wake word spoken mid-sentence actually cut Dex
+    off instead of waiting for the whole sentence to finish.
     """
     global _tts_engine
 
@@ -665,6 +676,28 @@ def _tts_worker():
             log.warning("TTS: COM init skipped: %s", e)
 
     eng = None
+
+    def _on_word(name=None, location=None, length=None):
+        if _tts_interrupt.is_set():
+            try:
+                eng.stop()
+            except Exception:
+                pass
+
+    def _on_start(name=None):
+        _tts_speaking.set()
+
+    def _on_finish(name=None, completed=None):
+        _tts_speaking.clear()
+
+    def _wire_callbacks(engine_obj):
+        try:
+            engine_obj.connect("started-word", _on_word)
+            engine_obj.connect("started-utterance", _on_start)
+            engine_obj.connect("finished-utterance", _on_finish)
+        except Exception as e:
+            log.warning("TTS: callback wiring failed (no barge-in): %s", e)
+
     if TTS_LIB_OK:
         try:
             eng = pyttsx3.init()
@@ -679,9 +712,10 @@ def _tts_worker():
                         break
             except Exception:
                 pass
+            _wire_callbacks(eng)
             with _tts_lock:
                 _tts_engine = eng
-            log.info("TTS engine created in worker thread OK")
+            log.info("TTS engine created in worker thread OK (barge-in armed)")
         except Exception as e:
             log.warning("TTS engine init failed: %s", e)
             eng = None
@@ -693,6 +727,7 @@ def _tts_worker():
             if text is None:
                 break
             s = str(text)[:500]
+            _tts_interrupt.clear()
             if eng:
                 try:
                     eng.say(s)
@@ -703,12 +738,15 @@ def _tts_worker():
                         eng = pyttsx3.init()
                         eng.setProperty("rate", 170)
                         eng.setProperty("volume", 1.0)
+                        _wire_callbacks(eng)
                         with _tts_lock:
                             _tts_engine = eng
                         eng.say(s)
                         eng.runAndWait()
                     except Exception as e2:
                         log.warning("TTS reinit failed: %s", e2)
+                finally:
+                    _tts_speaking.clear()
             else:
                 log.warning("TTS engine unavailable, text: %s", s[:80])
         except queue.Empty:
@@ -742,11 +780,26 @@ def init_tts():
         log.warning("TTS init: %s", e)
 
 
-def speak(text: str):
-    """Speak text aloud AND stream to dashboard. Always called for every action."""
+def speak(text: str, urgent: bool = False):
+    """
+    Speak text aloud AND stream to dashboard. Always called for every action.
+
+    urgent=True is for interrupts (cancel/pause/new wake word while Dex is
+    already talking): it clears whatever is still queued and signals the TTS
+    worker to stop the current utterance immediately via barge-in, instead
+    of waiting for the current sentence to finish.
+    """
     if not text:
         return
     s = str(text)[:500]
+    if urgent:
+        try:
+            while True:
+                _tts_q.get_nowait()
+                _tts_q.task_done()
+        except queue.Empty:
+            pass
+        _tts_interrupt.set()
     try:
         print(f"\n  [Dex] {s}")
         sys.stdout.flush()
@@ -770,6 +823,21 @@ def speak(text: str):
             )
     except Exception:
         pass
+
+
+def interrupt_speech() -> None:
+    """Stop Dex mid-sentence right now, without queuing a new line."""
+    try:
+        while True:
+            _tts_q.get_nowait()
+            _tts_q.task_done()
+    except queue.Empty:
+        pass
+    _tts_interrupt.set()
+
+
+def is_speaking() -> bool:
+    return _tts_speaking.is_set()
 
 
 def jarvis_confirm() -> str:
@@ -1034,7 +1102,7 @@ def real_click(x: int, y: int, button: str = "left", clicks: int = 1, duration: 
         return {"status": "error", "message": str(e)}
 
 
-def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
+def real_type(text: str, clear_first: bool = False, human_speed: bool = False, verify_ocr: bool = False):
     if not text: return
     text = str(text)[:100_000]
     active_win_before = get_active_win()
@@ -1062,7 +1130,14 @@ def real_type(text: str, clear_first: bool = False, human_speed: bool = False):
         if CLIP_OK:
             pyperclip.copy("")
             time.sleep(0.05)
-        if OCR_OK and len(text) > 10:
+        # OCR verification is opt-in only (verify_ocr=True). Running a full-screen
+        # OCR pass on every type call was the single largest latency source on
+        # long writing tasks (multi-second pytesseract scan per chunk). The
+        # clipboard-paste path is already deterministic, so OCR adds cost
+        # without adding real confidence for normal typing. Callers that
+        # specifically need pixel-level proof (e.g. typing into an unknown
+        # field where paste might silently fail) can pass verify_ocr=True.
+        if verify_ocr and OCR_OK and len(text) > 10:
             screen_text = read_screen_text()
             text_lower = text.lower().strip()
             screen_lower = screen_text.lower()
@@ -5409,10 +5484,17 @@ def _voice_loop():
         _voice_diag["wake_hits"] = int(_voice_diag.get("wake_hits", 0)) + 1
         log.info("Wake word detected: '%s'", heard)
 
+        # ── BARGE-IN ─────────────────────────────────────────────────────────
+        # If Dex is mid-sentence when a new wake word lands, cut it off right
+        # now instead of waiting for the sentence to finish — this is the
+        # actual Jarvis-style behavior people expect: talk over it anytime.
+        if _tts_speaking.is_set():
+            interrupt_speech()
+            log.info("Barge-in: interrupted active speech for new wake word")
+
         command = _extract_inline_voice_command(heard)
         if not command:
             speak("Yes sir?")
-            time.sleep(0.3)
 
             # Listen for command — longer phrase time, no re-calibration
             try:
@@ -5444,6 +5526,7 @@ def _voice_loop():
         print(f"\n  [VOICE] \"{command}\"")
 
         if _voice_is_interrupt(command):
+            interrupt_speech()
             cancel_active_workflow("voice interrupt")
             continue
 
