@@ -54,7 +54,7 @@ _PACKAGES = [
     ("pygetwindow",       "pygetwindow"),
     ("plyer",             "plyer"),
     ("speechrecognition", "speech_recognition"),
-    ("beautifulsoup4",    "bs4"),
+    ("sounddevice",       "sounddevice"),
     ("g4f",               "g4f"),
     ("keyboard",          "keyboard"),
     ("schedule",          "schedule"),
@@ -85,19 +85,26 @@ for _pkg, _imp in _PACKAGES:
         print(f"  [BOOT] Installing {_pkg}...")
         _pip_install(_pkg)
 
-try:
-    from selenium import webdriver as _chk_sel
-except ImportError:
-    _pip_install("selenium", "webdriver-manager")
+# Selenium is OPTIONAL — do not auto-install at startup (causes 30-60s hang)
+# It is only needed for social media posting (Twitter/LinkedIn/Facebook)
+# and will be imported lazily when those actions are explicitly called.
 
 PYAUDIO_OK = False
+SOUNDDEVICE_OK = False
+
 try:
     import pyaudio; PYAUDIO_OK = True
 except ImportError:
-    _pip_install("PyAudio")
+    # Try pre-built wheel first (most reliable on Windows)
     try:
+        subprocess.call(
+            [sys.executable, "-m", "pip", "install", "PyAudio", "-q",
+             "--only-binary=:all:", "--no-warn-script-location"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+        )
         import pyaudio; PYAUDIO_OK = True
-    except ImportError:
+    except Exception:
+        # Try pipwin (Windows binary installer)
         try:
             _pip_install("pipwin")
             subprocess.call(
@@ -107,6 +114,18 @@ except ImportError:
             import pyaudio; PYAUDIO_OK = True
         except Exception:
             pass
+
+# sounddevice is the fallback audio backend if PyAudio fails
+# It works out-of-the-box on Windows without any build tools
+try:
+    import sounddevice as sd_audio; SOUNDDEVICE_OK = True
+except ImportError:
+    sd_audio = None; SOUNDDEVICE_OK = False
+
+if not PYAUDIO_OK and not SOUNDDEVICE_OK:
+    print("  [BOOT] WARNING: No audio backend (PyAudio/sounddevice) — voice input disabled")
+elif not PYAUDIO_OK and SOUNDDEVICE_OK:
+    print("  [BOOT] PyAudio unavailable, using sounddevice for voice input")
 
 CV2_OK = False
 try:
@@ -190,7 +209,7 @@ except Exception:
     WINREG_OK = False
 
 try:
-    import speech_recognition as sr; VOICE_OK = PYAUDIO_OK
+    import speech_recognition as sr; VOICE_OK = PYAUDIO_OK or SOUNDDEVICE_OK
 except Exception:
     sr = None; VOICE_OK = False
 
@@ -2161,10 +2180,14 @@ def book_meeting(with_email: str, subject: str, date_str: str, duration_min: int
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SELENIUM BROWSER AUTOMATION
+# SELENIUM BROWSER AUTOMATION (social media only — NOT for general navigation)
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_driver(headless: bool = False):
-    global _selenium_driver
+    """Get/create Selenium driver. ONLY used for social media posting automation.
+    General browser navigation uses webbrowser.open() — instant, no startup cost.
+    This function lazy-loads selenium+webdriver_manager on first social media call.
+    """
+    global _selenium_driver, SELENIUM_OK, webdriver
     with _sel_lock:
         if _selenium_driver:
             try:
@@ -2174,8 +2197,49 @@ def _get_driver(headless: bool = False):
                 try: _selenium_driver.quit()
                 except Exception: pass
                 _selenium_driver = None
-        if not SELENIUM_OK: return None
-        opts = ChromeOptions()
+
+        # Lazy-import selenium — do not load at startup, only on first social post
+        if not SELENIUM_OK:
+            try:
+                from selenium import webdriver as _wd
+                from selenium.webdriver.common.by import By as _By
+                from selenium.webdriver.common.keys import Keys as _Keys
+                from selenium.webdriver.common.action_chains import ActionChains as _AC
+                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                from selenium.webdriver.support import expected_conditions as _EC
+                from selenium.webdriver.chrome.service import Service as _CS
+                from selenium.webdriver.chrome.options import Options as _CO
+                webdriver = _wd
+                globals().update({
+                    "By": _By, "Keys": _Keys, "ActionChains": _AC,
+                    "WebDriverWait": _WDW, "EC": _EC,
+                    "ChromeService": _CS, "ChromeOptions": _CO,
+                })
+                SELENIUM_OK = True
+                log.info("Selenium lazy-loaded OK")
+            except ImportError:
+                try:
+                    subprocess.call(
+                        [sys.executable, "-m", "pip", "install", "selenium", "webdriver-manager", "-q"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+                    )
+                    from selenium import webdriver as _wd
+                    webdriver = _wd
+                    SELENIUM_OK = True
+                except Exception as e2:
+                    log.warning("Selenium install failed: %s", e2)
+                    return None
+
+        # Import ChromeOptions/ChromeService if SELENIUM_OK but vars not set
+        try:
+            _CO = globals().get("ChromeOptions") or __import__("selenium.webdriver.chrome.options", fromlist=["Options"]).Options
+            _CS = globals().get("ChromeService") or __import__("selenium.webdriver.chrome.service", fromlist=["Service"]).Service
+            _CDM = __import__("webdriver_manager.chrome", fromlist=["ChromeDriverManager"]).ChromeDriverManager
+        except Exception as e:
+            log.warning("Selenium driver components missing: %s", e)
+            return None
+
+        opts = _CO()
         if headless: opts.add_argument("--headless=new")
         opts.add_argument("--start-maximized")
         opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -2183,10 +2247,11 @@ def _get_driver(headless: bool = False):
         opts.add_experimental_option("useAutomationExtension", False)
         opts.add_argument("--no-sandbox"); opts.add_argument("--disable-dev-shm-usage")
         try:
-            if _chromedriver_path:
-                svc = ChromeService(executable_path=_chromedriver_path)
-            else:
-                svc = ChromeService(ChromeDriverManager().install())
+            global _chromedriver_path
+            if not _chromedriver_path:
+                speak("Setting up browser automation. This may take a moment.")
+                _chromedriver_path = _CDM().install()
+            svc = _CS(executable_path=_chromedriver_path)
             drv = webdriver.Chrome(service=svc, options=opts)
             drv.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             _selenium_driver = drv
@@ -2290,30 +2355,20 @@ def browser_navigate(
     retries: int = 2,
     action_name: str = "browser_navigate",
 ) -> dict:
-    """Unified browser path: Observe → Execute → Verify URL/title/content → Retry."""
+    """Open URL in default browser instantly — uses webbrowser.open(), no Selenium overhead.
+    Selenium is only used for social media automation (Twitter/LinkedIn/Facebook),
+    NOT for general navigation which must be instant.
+    """
     if not url:
         return make_execution_result(action_name, "", False, failure_reason="no url")
 
+    # Track last URL for browser_read_page
+    update_runtime_state(current_url=url)
+
     def _execute(attempt: int, observe_state: dict) -> dict:
-        method = "selenium"
-        if SELENIUM_OK:
-            drv = _get_driver()
-            if drv:
-                try:
-                    drv.get(url)
-                    if wait_for_css:
-                        WebDriverWait(drv, timeout).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_css))
-                        )
-                    return {
-                        "method": method,
-                        "url": drv.current_url,
-                        "title": drv.title,
-                        "opened": url,
-                    }
-                except Exception as e:
-                    log.warning("browser_navigate selenium attempt %s: %s", attempt, e)
+        # Direct open — instant, no driver startup delay
         webbrowser.open(url)
+        time.sleep(1.5)   # small settle time for browser to open
         return {"method": "webbrowser", "url": url, "opened": url}
 
     def _verify(observe_only: bool = False) -> Tuple[bool, str]:
@@ -2322,15 +2377,6 @@ def browser_navigate(
         return verify_browser_page(url, expected_title_hint, expected_content)
 
     def _correct(attempt: int) -> None:
-        if SELENIUM_OK and attempt > 1:
-            with _sel_lock:
-                global _selenium_driver
-                if _selenium_driver:
-                    try:
-                        _selenium_driver.quit()
-                    except Exception:
-                        pass
-                    _selenium_driver = None
         webbrowser.open(url)
 
     speak(f"Opening {expected_title_hint or url[:40]}.")
@@ -2344,22 +2390,46 @@ def browser_navigate(
     )
 
 
-def browser_read_page(max_chars: int = 8000) -> dict:
-    """Read visible page text from Selenium or OCR fallback."""
+def browser_read_page(max_chars: int = 8000, url: str = "") -> dict:
+    """Read page text via requests+BeautifulSoup (no Selenium required).
+    Uses the last opened URL from runtime state if none given.
+    Falls back to screen OCR if requests fails.
+    """
     action = "browser_read_page"
     text = ""
     meta = observe_browser_state()
-    drv = _get_driver()
-    if drv:
+
+    # Get URL to read — use argument or last opened URL
+    target_url = url or _runtime_state.get("current_url", "")
+
+    # Primary: requests + BeautifulSoup (fast, no browser needed)
+    if target_url and REQUESTS_OK:
         try:
-            text = (drv.find_element(By.TAG_NAME, "body").text or "").strip()
-            meta["url"] = drv.current_url
-            meta["title"] = drv.title
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ",
+            }
+            resp = req_lib.get(target_url, headers=headers, timeout=10)
+            if resp.ok:
+                if BS4_OK:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    # Remove scripts/styles/nav clutter
+                    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                        tag.decompose()
+                    text = soup.get_text(separator=" ", strip=True)
+                else:
+                    # Strip HTML tags manually
+                    text = re.sub(r"<[^>]+>", " ", resp.text)
+                    text = re.sub(r"\s+", " ", text).strip()
+                meta["url"] = target_url
+                meta["method"] = "requests"
         except Exception as e:
-            log.warning("browser_read_page selenium: %s", e)
+            log.warning("browser_read_page requests: %s", e)
+
+    # Fallback: OCR the current screen
     if not text:
         text = read_screen_text().strip()
         meta["method"] = "ocr"
+
     text = text[:max_chars]
     verified = len(text) > 40
     return make_execution_result(
@@ -5414,6 +5484,29 @@ def _voice_respond_to_task_result(result: dict) -> None:
     speak(f"I could not verify that. {str(reason)[:140]}")
 
 
+def _sd_listen(duration: float = 5.0, sample_rate: int = 16000) -> "Optional[sr.AudioData]":
+    """Record audio using sounddevice and wrap in sr.AudioData.
+    Used as PyAudio fallback when PyAudio is not installed.
+    """
+    if not SOUNDDEVICE_OK or not sr:
+        return None
+    try:
+        import sounddevice as _sd
+        import numpy as _np
+        audio_np = _sd.rec(
+            int(duration * sample_rate),
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+            blocking=True,
+        )
+        raw_bytes = audio_np.tobytes()
+        return sr.AudioData(raw_bytes, sample_rate, 2)  # 2 bytes per sample (int16)
+    except Exception as e:
+        log.warning("sounddevice listen error: %s", e)
+        return None
+
+
 def _voice_loop():
     global _voice_on
     if not VOICE_OK or not sr:
@@ -5432,19 +5525,23 @@ def _voice_loop():
     rec.non_speaking_duration             = 0.25
 
     # ONE-TIME ambient calibration at startup
-    try:
-        with sr.Microphone() as src:
-            print("  [VOICE] Calibrating microphone...")
-            rec.adjust_for_ambient_noise(src, duration=1.5)
-        log.info("Voice calibrated, threshold=%.0f", rec.energy_threshold)
-        _voice_diag.update({"microphone": "ready", "energy_threshold": rec.energy_threshold, "last_error": ""})
-        # Set a floor — don't go too sensitive
-        if rec.energy_threshold < 200:
-            rec.energy_threshold = 200
-    except Exception as e:
-        log.warning("Voice calibration: %s", e)
+    if PYAUDIO_OK:
+        try:
+            with sr.Microphone() as src:
+                print("  [VOICE] Calibrating microphone...")
+                rec.adjust_for_ambient_noise(src, duration=1.5)
+            log.info("Voice calibrated, threshold=%.0f", rec.energy_threshold)
+            _voice_diag.update({"microphone": "ready", "energy_threshold": rec.energy_threshold, "last_error": ""})
+            if rec.energy_threshold < 200:
+                rec.energy_threshold = 200
+        except Exception as e:
+            log.warning("Voice calibration: %s", e)
+            rec.energy_threshold = 300
+            _voice_diag.update({"microphone": "error", "energy_threshold": rec.energy_threshold, "last_error": str(e), "push_to_talk": True})
+    elif SOUNDDEVICE_OK:
+        print("  [VOICE] Using sounddevice backend (no PyAudio)")
         rec.energy_threshold = 300
-        _voice_diag.update({"microphone": "error", "energy_threshold": rec.energy_threshold, "last_error": str(e), "push_to_talk": True})
+        _voice_diag.update({"microphone": "sounddevice", "energy_threshold": 300, "last_error": ""})
 
     print("  [VOICE] Active! Say: Hey Dex / Dex / Dacexy / Jarvis")
     speak("Hey! Dex is online. Say Hey Dex whenever you need me.")
@@ -5452,14 +5549,30 @@ def _voice_loop():
     while _voice_on and _running:
         heard = ""
         try:
-            with sr.Microphone() as src:
-                # Short timeout + short phrase limit for fast wake-word catch
+            # Get audio — use PyAudio (sr.Microphone) or sounddevice fallback
+            audio = None
+            if PYAUDIO_OK:
                 try:
-                    audio = rec.listen(src, timeout=3, phrase_time_limit=5)
-                except sr.WaitTimeoutError:
-                    continue
-                except OSError:
-                    time.sleep(1.5); continue
+                    with sr.Microphone() as src:
+                        try:
+                            audio = rec.listen(src, timeout=3, phrase_time_limit=5)
+                        except sr.WaitTimeoutError:
+                            continue
+                        except OSError:
+                            time.sleep(1.5); continue
+                except Exception as e:
+                    _voice_diag.update({"last_error": str(e)})
+                    time.sleep(0.8); continue
+            elif SOUNDDEVICE_OK:
+                # sounddevice: record 4 seconds, check if wake word
+                audio = _sd_listen(duration=4.0)
+                if audio is None:
+                    time.sleep(0.5); continue
+            else:
+                time.sleep(1.0); continue
+
+            if audio is None:
+                continue
 
             try:
                 heard = rec.recognize_google(audio, language="en-IN").lower().strip()
@@ -5498,12 +5611,26 @@ def _voice_loop():
 
             # Listen for command — longer phrase time, no re-calibration
             try:
-                with sr.Microphone() as csrc:
-                    try:
-                        caudio = rec.listen(csrc, timeout=8, phrase_time_limit=40)
-                    except sr.WaitTimeoutError:
-                        speak("I didn't catch that.")
+                caudio = None
+                if PYAUDIO_OK:
+                    with sr.Microphone() as csrc:
+                        try:
+                            caudio = rec.listen(csrc, timeout=8, phrase_time_limit=40)
+                        except sr.WaitTimeoutError:
+                            speak("I didn't catch that.")
+                            continue
+                elif SOUNDDEVICE_OK:
+                    caudio = _sd_listen(duration=10.0)
+                    if caudio is None:
+                        speak("Could you repeat that?")
                         continue
+                else:
+                    continue
+
+                if caudio is None:
+                    speak("I didn't catch that.")
+                    continue
+
                 try:
                     command = rec.recognize_google(caudio, language="en-IN").strip()
                 except sr.UnknownValueError:
@@ -5786,12 +5913,9 @@ def main():
         dex_tools.bind(sys.modules[__name__])
         log.info("dex_tools bound: %d tools registered", len(dex_tools.TOOL_REGISTRY))
 
-    if SELENIUM_OK:
-        try:
-            _chromedriver_path = ChromeDriverManager().install()
-            log.info("ChromeDriver path cached: %s", _chromedriver_path)
-        except Exception as e:
-            log.warning("ChromeDriver caching failed: %s", e)
+    # ChromeDriver is only resolved lazily when social media posting is called
+    # Do NOT run ChromeDriverManager().install() at startup — it downloads a file
+    # and blocks the entire agent for 30-60 seconds before voice even starts.
 
     if args.command:
         result = execute_task(args.command, get_token() or "")
