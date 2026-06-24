@@ -555,12 +555,19 @@ from src.shared.config.settings import settings
 
 _counters = defaultdict(lambda: {"count": 0, "reset_at": 0})
 
+# Paths that must never be rate limited: platform health checks (Render, etc.)
+# poll /health frequently, and if it ever gets a 429 the deploy can be stuck
+# in "Deploying" forever because the platform never sees a clean 200.
+_EXEMPT_PATHS = {"/health", "/", "/docs", "/redoc", "/openapi.json"}
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        path = request.url.path
+        if path in _EXEMPT_PATHS or path.startswith("/metrics"):
+            return await call_next(request)
         if not settings.RATE_LIMIT_ENABLED:
             return await call_next(request)
         ip = request.client.host if request.client else "unknown"
-        path = request.url.path
         if "/auth/" in path:
             limit = settings.RATE_LIMIT_AUTH_RPM
         elif "/ai/" in path:
