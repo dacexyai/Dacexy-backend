@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_TIMEOUT: int = 180
     DEEPSEEK_MAX_RETRIES: int = 3
+    GEMINI_API_KEY: str = ""
     REPLICATE_API_TOKEN: str = ""
     STABILITY_API_KEY: str = ""
     BYTEZ_API_KEY: str = ""
@@ -1775,6 +1776,37 @@ _agent_lines = [
     "    resp = Response(content=sh_content, media_type='application/octet-stream')",
     "    resp.headers['Content-Disposition'] = 'attachment; filename=install_dacexy_agent.sh'",
     '    return resp',
+    '',
+    "@router.post('/gemini-token')",
+    'async def issue_gemini_token(user: User = Depends(_get_current_user)):',
+    "    if not settings.GEMINI_API_KEY:",
+    "        raise HTTPException(status_code=503, detail='Voice service is temporarily unavailable')",
+    '    import datetime as _dt',
+    "    expire_time = (_dt.datetime.utcnow() + _dt.timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'",
+    "    session_expire_time = (_dt.datetime.utcnow() + _dt.timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'",
+    '    try:',
+    '        async with httpx.AsyncClient(timeout=10) as client:',
+    "            resp = await client.post(",
+    "                'https://generativelanguage.googleapis.com/v1beta/authTokens',",
+    "                headers={'x-goog-api-key': settings.GEMINI_API_KEY, 'Content-Type': 'application/json'},",
+    "                json={'uses': 1, 'expireTime': expire_time, 'newSessionExpireTime': session_expire_time},",
+    '            )',
+    '        resp.raise_for_status()',
+    '        data = resp.json()',
+    "        token = data.get('name') or data.get('token')",
+    '        if not token:',
+    "            raise ValueError('Unexpected token response shape')",
+    '    except Exception as e:',
+    "        log.error(f'Gemini token mint failed: {e}')",
+    "        raise HTTPException(status_code=502, detail='Voice service is temporarily unavailable')",
+    '    import time as _time',
+    '    return {',
+    "        'token': token,",
+    "        'expires_at': _time.time() + 1800,",
+    "        'model': 'gemini-2.0-flash-live-001',",
+    "        'voice_name': 'Charon',",
+    "        'language_code': 'en-IN',",
+    '    }',
 ]
 
 w("src/interfaces/http/routes/agent.py", "\n".join(_agent_lines))       
